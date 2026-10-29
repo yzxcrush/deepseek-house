@@ -337,7 +337,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.2.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.3.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -372,6 +372,13 @@
             <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
           </svg>
         </button>
+        <button class="icon-btn icon-btn--compact" id="workbench-toggle" type="button" data-action="toggle-workbench" aria-label="工作台" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
+            <path d="M9.5 4.5v15"></path>
+            <path d="M9.5 12h12"></path>
+          </svg>
+        </button>
         <button class="icon-btn" type="button" data-action="open-search" aria-label="搜索会话">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <circle cx="11" cy="11" r="7"></circle>
@@ -379,6 +386,28 @@
           </svg>
         </button>
       </header>
+
+      <!-- ARCH v2 P4：工作台左侧固定文件树栏（宽屏/横屏生效） -->
+      <aside class="workbench-files" id="workbench-files" aria-hidden="true" aria-label="工作区文件">
+        <div class="workbench-head">
+          <div class="workbench-head-main">
+            <span class="workbench-title">工作区</span>
+            <span class="workbench-path" id="workbench-path"></span>
+          </div>
+          <button class="icon-btn workbench-icon" id="workbench-refresh" type="button" data-action="workbench-refresh" aria-label="刷新工作区文件">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"></path>
+              <path d="M20.5 4v7h-7"></path>
+            </svg>
+          </button>
+          <button class="icon-btn workbench-icon" type="button" data-action="collapse-workbench" aria-label="收起工作台">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M15 5l-7 7 7 7"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="workbench-tree" id="workbench-tree" role="list"></div>
+      </aside>
 
       <div class="chat-main">
         <!-- 空状态：logo + 4 个建议提示词卡片 -->
@@ -459,6 +488,7 @@
             <button class="terminal-tool terminal-tool--close" type="button" data-action="terminal-close" aria-label="关闭终端">关闭</button>
           </span>
         </div>
+        <div class="terminal-resize" id="terminal-resize" role="separator" aria-label="拖动调整终端高度"></div>
         <pre class="terminal-output" id="terminal-output" aria-live="polite"></pre>
         <div class="terminal-input-row">
           <span class="terminal-prompt" aria-hidden="true">$</span>
@@ -467,8 +497,11 @@
         </div>
       </section>
 
+      <!-- ARCH v2 P4：待发送图片缩略图 chips -->
+      <div class="composer-images" id="composer-images" hidden></div>
+
       <footer class="composer" id="composer">
-        <button class="round-btn round-btn--attach" type="button" data-action="composer-plugins" aria-label="插件与附件">
+        <button class="round-btn round-btn--attach" id="btn-attach" type="button" data-action="open-attachment-sheet" aria-label="添加附件">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 11.5 12.5 20a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.8 3.8 0 0 1 5.4 5.4l-8.6 8.6a2 2 0 0 1-2.8-2.8l7.9-7.9"></path>
           </svg>
@@ -664,6 +697,19 @@
             <span class="form-label">API Key</span>
             <span class="form-control form-control--hint">已保存在设备私有存储</span>
           </div>
+          <div class="form-row">
+            <span class="form-label">应用锁（指纹/密码）</span>
+            <div class="form-control">
+              <label class="switch">
+                <input type="checkbox" id="set-applock" data-applock-toggle aria-label="应用锁">
+                <span class="switch-track"></span>
+              </label>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="form-label">本地加密</span>
+            <span class="form-control form-control--hint" id="set-encryption-status">检测中…</span>
+          </div>
           <button class="form-row form-row--button" type="button" data-action="logout">
             <span class="form-label danger-text">退出登录</span>
             <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -674,7 +720,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>2.2.0</span></div>
+          <div class="about-row"><span>版本</span><span>2.3.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -1074,6 +1120,12 @@
         </svg>
         <span>插件面板</span>
       </button>
+      <button class="drawer-item" type="button" data-action="open-build-panel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14.8 6.2a4.2 4.2 0 0 0-5.5 5.5L4 17v3h3l5.3-5.3a4.2 4.2 0 0 0 5.5-5.5l-2.6 2.6-2.4-2.4 2.5-2.7Z"></path>
+        </svg>
+        <span>构建任务</span>
+      </button>
     </nav>
 
     <div class="drawer-divider"></div>
@@ -1081,7 +1133,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v2.2.0</span>
+      <span class="drawer-version">v2.3.0</span>
     </div>
   </aside>
 
@@ -1385,6 +1437,7 @@
       <div class="picker-handle" id="plugin-panel-handle" aria-hidden="true"></div>
       <div class="picker-head">
         <div class="picker-title" id="plugin-panel-title">插件面板</div>
+        <button class="plugin-panel-build" type="button" data-action="open-build-panel" aria-label="构建任务">构建任务</button>
         <button class="icon-btn" type="button" data-action="close-plugin-panel" aria-label="关闭插件面板">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18"></path>
@@ -1399,6 +1452,83 @@
         </svg>
         <p>暂无插件面板</p>
         <small>插件可通过 DSPlugins 注册 uiSlot 按钮或面板，出现在这里。</small>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 附件操作表（ARCH v2 P4） ============================ -->
+  <div class="model-picker attachment-sheet" id="attachment-sheet" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="attachment-title">
+    <div class="model-picker-sheet attachment-sheet-panel">
+      <div class="picker-handle" aria-hidden="true"></div>
+      <div class="picker-head">
+        <div class="picker-title" id="attachment-title">添加附件</div>
+        <button class="icon-btn" type="button" data-action="close-attachment-sheet" aria-label="关闭附件菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="attachment-list">
+        <button class="attachment-item" type="button" data-action="pick-image" data-source="camera">
+          <span class="attachment-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"></path>
+              <circle cx="12" cy="13" r="3.4"></circle>
+            </svg>
+          </span>
+          <span class="attachment-text"><b>拍照</b><small>调用相机拍照并压缩</small></span>
+        </button>
+        <button class="attachment-item" type="button" data-action="pick-image" data-source="gallery">
+          <span class="attachment-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
+              <circle cx="8.5" cy="9.5" r="1.6"></circle>
+              <path d="m4.5 17 4.5-4.5 3 3 2.5-2.5 5 4"></path>
+            </svg>
+          </span>
+          <span class="attachment-text"><b>从相册选择</b><small>最多 4 张，自动压缩</small></span>
+        </button>
+        <button class="attachment-item" type="button" data-action="composer-plugins">
+          <span class="attachment-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
+            </svg>
+          </span>
+          <span class="attachment-text"><b>插件与附件</b><small>管理插件 / 从文件导入</small></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 图片全屏预览（ARCH v2 P4） ============================ -->
+  <div class="image-viewer" id="image-viewer" role="dialog" aria-modal="true" aria-hidden="true" aria-label="图片预览">
+    <button class="image-viewer-close" type="button" data-action="close-image-viewer" aria-label="关闭图片预览">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <path d="M6 6l12 12M18 6 6 18"></path>
+      </svg>
+    </button>
+    <img class="image-viewer-img" id="image-viewer-img" src="" alt="图片预览">
+  </div>
+
+  <!-- ============================ 构建任务面板（ARCH v2 P4） ============================ -->
+  <div class="model-picker build-panel" id="build-panel" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="build-panel-title">
+    <div class="model-picker-sheet build-panel-sheet">
+      <div class="picker-handle" aria-hidden="true"></div>
+      <div class="picker-head">
+        <div class="picker-title" id="build-panel-title">构建任务</div>
+        <button class="icon-btn" type="button" data-action="close-build-panel" aria-label="关闭构建任务面板">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="picker-scroll build-task-scroll" id="build-tasks"></div>
+      <div class="plugins-empty build-empty" id="build-empty" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14.8 6.2a4.2 4.2 0 0 0-5.5 5.5L4 17v3h3l5.3-5.3a4.2 4.2 0 0 0 5.5-5.5l-2.6 2.6-2.4-2.4 2.5-2.7Z"></path>
+        </svg>
+        <p>还没有构建任务</p>
+        <small>让 AI 调用 pack_apk / repack_apk / decompile_apk / run_gradle 时，任务会出现在这里并可展开日志。</small>
       </div>
     </div>
   </div>

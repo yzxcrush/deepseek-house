@@ -73,7 +73,11 @@
     stream: true,
     theme: 'dark',
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
-    contextBudget: 24000 /* ARCH v2 P3：上下文预算（字符），压缩阈值 80% */
+    contextBudget: 24000, /* ARCH v2 P3：上下文预算（字符），压缩阈值 80% */
+    /* ARCH v2 P4：工作台 / 终端高度 / 应用锁 */
+    workbench: false,
+    terminalHeight: 260,
+    appLock: false
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -164,7 +168,10 @@
       stream: DEFAULT_PREFS.stream,
       theme: DEFAULT_PREFS.theme,
       systemPrompt: DEFAULT_PREFS.systemPrompt,
-      contextBudget: DEFAULT_PREFS.contextBudget
+      contextBudget: DEFAULT_PREFS.contextBudget,
+      workbench: DEFAULT_PREFS.workbench,
+      terminalHeight: DEFAULT_PREFS.terminalHeight,
+      appLock: DEFAULT_PREFS.appLock
     };
   }
 
@@ -251,6 +258,9 @@
     if (raw.theme === 'light' || raw.theme === 'dark') p.theme = raw.theme;
     if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
     if (raw.contextBudget !== undefined) p.contextBudget = Math.round(clampNum(raw.contextBudget, 500, 200000));
+    if (raw.workbench !== undefined) p.workbench = !!raw.workbench;
+    if (raw.terminalHeight !== undefined) p.terminalHeight = Math.round(clampNum(raw.terminalHeight, 120, 800));
+    if (raw.appLock !== undefined) p.appLock = !!raw.appLock;
     // 安全：apiKey 永远不写入 localStorage
     return p;
   }
@@ -289,6 +299,25 @@
       msg.toolLog = raw.toolLog.slice(-200).map(function (line) { return String(line === null || line === undefined ? '' : line).slice(0, 500); });
     } else if (Array.isArray(raw.logs)) {
       msg.toolLog = raw.logs.slice(-200).map(function (line) { return String(line === null || line === undefined ? '' : line).slice(0, 500); });
+    }
+    /* ARCH v2 P4：F6 图片消息（dataUrl 数组，最多 4 张） */
+    if (Array.isArray(raw.images) && raw.images.length) {
+      var images = [];
+      for (var im = 0; im < raw.images.length && images.length < 4; im++) {
+        var dataUrl = raw.images[im];
+        if (typeof dataUrl === 'string' && /^data:image\//i.test(dataUrl)) images.push(dataUrl);
+      }
+      if (images.length) msg.images = images;
+    }
+    if (Array.isArray(raw.imageMeta) && raw.imageMeta.length) {
+      msg.imageMeta = raw.imageMeta.slice(0, 4).map(function (item) {
+        if (!item || typeof item !== 'object') return { width: 0, height: 0, name: '' };
+        return {
+          width: Number(item.width) || 0,
+          height: Number(item.height) || 0,
+          name: item.name === null || item.name === undefined ? '' : String(item.name)
+        };
+      });
     }
     if (raw.error) msg.error = String(raw.error);
     if (raw.streaming) msg.streaming = true;
@@ -384,37 +413,304 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * 持久化
+   * 持久化（ARCH v2 P4 F9：WebCrypto AES-GCM 本地加密）
+   * - 有 Bridge.getStorageSecret()（Base64 32B）且 WebCrypto 可用：状态 JSON 加密后写
+   *   localStorage['dsh.v1.enc']，写成功后删除明文键 'dsh.v1'；无密钥/无 WebCrypto 回退明文。
+   * - 首次从明文迁移：先成功写 enc 再删明文，失败保留旧键（不丢数据）。
+   * - 加密为异步：save() 去抖后排队写入；Store.flush()/loadAsync() 可等待。
    * ------------------------------------------------------------------ */
 
-  function load(force) {
-    if (state && !force) return state;
-    var raw = null;
-    try { raw = storage.getItem(KEY); } catch (e) { raw = null; }
-    var parsed = null;
-    if (raw) {
-      try { parsed = JSON.parse(raw); } catch (e2) { parsed = null; }
+  var ENC_KEY = 'dsh.v1.enc';
+  var ENC_VERSION = 1;
+  var secretCache; /* undefined=未探测；null=不可用；string=Base64 */
+  var cryptoKeyCache = null;
+  var ready = false;
+  var loadPromise = null;
+  var loadListeners = [];
+  var errorListeners = [];
+  var saveTimer = null;
+  var saveChain = Promise.resolve();
+  var latestJson = null;
+  var lastError = '';
+  var lastSaveAt = 0;
+
+  function bridgeRef() {
+    try { return global.Bridge || null; } catch (e) { return null; }
+  }
+
+  function getSecret() {
+    if (secretCache !== undefined) return secretCache;
+    var secret = '';
+    try {
+      var B = bridgeRef();
+      if (B && typeof B.getStorageSecret === 'function') secret = String(B.getStorageSecret() || '');
+    } catch (e) { secret = ''; }
+    secretCache = secret || null;
+    return secretCache;
+  }
+
+  function notifyLoad() {
+    ready = true;
+    var copy = loadListeners.slice();
+    for (var i = 0; i < copy.length; i++) {
+      try { copy[i](state); } catch (e) { warn('load listener 异常：' + (e && e.message)); }
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      if (raw) warn('本地数据损坏，已重置');
-      state = freshState();
-      save();
+  }
+
+  function notifyError(message) {
+    lastError = String(message || '');
+    warn(lastError);
+    var copy = errorListeners.slice();
+    for (var i = 0; i < copy.length; i++) {
+      try { copy[i](lastError); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function base64ToBytes(b64) {
+    var text = String(b64 || '');
+    if (!text) return new Uint8Array(0);
+    try {
+      var bin = global.atob(text);
+      var out = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    } catch (e) { return new Uint8Array(0); }
+  }
+
+  function bytesToBase64(bytes) {
+    var chunks = [];
+    var limit = 0x8000;
+    for (var i = 0; i < bytes.length; i += limit) {
+      chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + limit)));
+    }
+    try { return global.btoa(chunks.join('')); } catch (e) { return ''; }
+  }
+
+  function getCryptoKey() {
+    if (cryptoKeyCache) return Promise.resolve(cryptoKeyCache);
+    var secret = getSecret();
+    if (!secret) return Promise.resolve(null);
+    var cryptoObj = global.crypto;
+    if (!cryptoObj || !cryptoObj.subtle || typeof global.TextEncoder === 'undefined') return Promise.resolve(null);
+    try {
+      var raw = base64ToBytes(secret);
+      if (!raw || raw.length < 16) return Promise.resolve(null);
+      return cryptoObj.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']).then(function (key) {
+        cryptoKeyCache = key;
+        return key;
+      }, function () { return null; });
+    } catch (e) { return Promise.resolve(null); }
+  }
+
+  function encryptJson(json) {
+    return getCryptoKey().then(function (key) {
+      if (!key) return null;
+      var cryptoObj = global.crypto;
+      var iv = new Uint8Array(12);
+      try { cryptoObj.getRandomValues(iv); } catch (e) { return null; }
+      var data = new global.TextEncoder().encode(json);
+      return cryptoObj.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, data).then(function (buffer) {
+        return {
+          v: ENC_VERSION,
+          iv: bytesToBase64(iv),
+          data: bytesToBase64(new Uint8Array(buffer)),
+          updatedAt: Date.now()
+        };
+      });
+    }).catch(function (e) {
+      warn('加密失败：' + (e && e.message));
+      return null;
+    });
+  }
+
+  function decryptPayload(payload) {
+    return getCryptoKey().then(function (key) {
+      if (!key) throw new Error('无可用的本地加密密钥');
+      if (!payload || !payload.iv || !payload.data) throw new Error('加密数据格式错误');
+      var cryptoObj = global.crypto;
+      var iv = base64ToBytes(payload.iv);
+      var data = base64ToBytes(payload.data);
+      if (!iv.length || !data.length) throw new Error('加密数据为空');
+      return cryptoObj.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, data).then(function (buffer) {
+        return new global.TextDecoder().decode(new Uint8Array(buffer));
+      });
+    });
+  }
+
+  function readPlainRaw() {
+    try { return storage.getItem(KEY); } catch (e) { return null; }
+  }
+
+  function readEncRaw() {
+    try { return storage.getItem(ENC_KEY); } catch (e) { return null; }
+  }
+
+  function writeEnc(raw) {
+    try { storage.setItem(ENC_KEY, raw); return true; } catch (e) { return false; }
+  }
+
+  function removePlain() {
+    try { storage.removeItem(KEY); return true; } catch (e) { return false; }
+  }
+
+  function encryptedSave(json) {
+    return encryptJson(json).then(function (payload) {
+      if (!payload) {
+        /* 加密不可用：回退明文（保留旧键；不删除 enc，避免丢数据） */
+        var fallback = false;
+        try { storage.setItem(KEY, json); fallback = true; } catch (e) { /* ignore */ }
+        notifyError(fallback ? '本地加密不可用，已回退明文存储' : '本地存储写入失败');
+        return false;
+      }
+      var raw = '';
+      try { raw = JSON.stringify(payload); } catch (e2) { raw = ''; }
+      if (!raw || !writeEnc(raw)) {
+        notifyError('本地加密写入失败（已保留旧数据）');
+        return false;
+      }
+      /* 加密写成功后才删除明文键：首次迁移/后续保存都不丢数据 */
+      removePlain();
+      lastSaveAt = Date.now();
+      return true;
+    });
+  }
+
+  function scheduleEncryptedSave(json) {
+    latestJson = json;
+    if (saveTimer) return;
+    saveTimer = setTimeout(function () {
+      saveTimer = null;
+      var target = latestJson;
+      latestJson = null;
+      if (!target) return;
+      saveChain = saveChain.then(function () { return encryptedSave(target); }, function () { return encryptedSave(target); });
+    }, 80);
+  }
+
+  function load(force) {
+    if (state && !force) { ready = true; return state; }
+    if (force) {
+      secretCache = undefined;
+      cryptoKeyCache = null;
+      loadPromise = null;
+      ready = false;
+    }
+    var plainRaw = readPlainRaw();
+    var encRaw = readEncRaw();
+    var parsed = null;
+    if (plainRaw) {
+      try { parsed = JSON.parse(plainRaw); } catch (e) { parsed = null; }
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      state = normalizeState(parsed);
+      ready = true;
+      notifyLoad();
+      /* 有密钥时把明文数据迁移为加密存储（异步；失败保留明文键） */
+      if (getSecret()) save();
       return state;
     }
-    state = normalizeState(parsed);
+    if (plainRaw) warn('本地数据损坏，已重置');
+    if (encRaw && !plainRaw) {
+      /* 仅有加密数据：先返回空态，异步解密后通知 listener；App.boot 会 loadAsync 后刷新 */
+      state = freshState();
+      loadPromise = (function () {
+        var payload = null;
+        try { payload = JSON.parse(encRaw); } catch (e) { payload = null; }
+        return decryptPayload(payload).then(function (text) {
+          var decrypted = null;
+          try { decrypted = JSON.parse(text); } catch (e2) { decrypted = null; }
+          if (decrypted && typeof decrypted === 'object' && !Array.isArray(decrypted)) {
+            state = normalizeState(decrypted);
+            save(); /* 重新排队加密保存（保持 enc 最新） */
+          } else {
+            notifyError('本地加密数据解密后格式异常，已使用空数据');
+          }
+          notifyLoad();
+          return state;
+        }, function (err) {
+          notifyError('本地数据解密失败：' + (err && err.message ? err.message : err));
+          notifyLoad();
+          return state;
+        });
+      })();
+      return state;
+    }
+    state = freshState();
+    ready = true;
+    notifyLoad();
     save();
     return state;
   }
 
   function save() {
     if (!state) return false;
-    try {
-      storage.setItem(KEY, JSON.stringify(state));
-      return true;
-    } catch (e) {
-      warn('保存失败（可能存储空间不足）：' + (e && e.message));
+    var json = '';
+    try { json = JSON.stringify(state); } catch (e) {
+      warn('保存失败（序列化错误）：' + (e && e.message));
       return false;
     }
+    if (!getSecret()) {
+      /* 无密钥 / 无 WebCrypto：回退明文存储 */
+      try { storage.setItem(KEY, json); return true; } catch (e2) {
+        warn('保存失败（可能存储空间不足）：' + (e2 && e2.message));
+        return false;
+      }
+    }
+    scheduleEncryptedSave(json);
+    return true;
+  }
+
+  function flush() {
+    if (saveTimer && latestJson) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      var target = latestJson;
+      latestJson = null;
+      saveChain = saveChain.then(function () { return encryptedSave(target); }, function () { return encryptedSave(target); });
+    }
+    return saveChain;
+  }
+
+  function loadAsync(force) {
+    load(force);
+    if (loadPromise) return loadPromise.then(function () { return state; }, function () { return state; });
+    return Promise.resolve(state);
+  }
+
+  function isReady() {
+    return !!ready;
+  }
+
+  function getEncryptionState() {
+    var plain = !!readPlainRaw();
+    var enc = !!readEncRaw();
+    return {
+      ready: !!ready,
+      secretAvailable: !!getSecret(),
+      encrypted: enc,
+      plaintext: plain,
+      saving: !!saveTimer || !!latestJson,
+      lastSaveAt: lastSaveAt,
+      error: lastError
+    };
+  }
+
+  function onLoad(fn) {
+    if (typeof fn !== 'function') return function () { };
+    loadListeners.push(fn);
+    return function () {
+      var idx = loadListeners.indexOf(fn);
+      if (idx >= 0) loadListeners.splice(idx, 1);
+    };
+  }
+
+  function onError(fn) {
+    if (typeof fn !== 'function') return function () { };
+    errorListeners.push(fn);
+    return function () {
+      var idx = errorListeners.indexOf(fn);
+      if (idx >= 0) errorListeners.splice(idx, 1);
+    };
   }
 
   function getState() {
@@ -462,6 +758,9 @@
     if (patch.theme !== undefined) state.prefs.theme = patch.theme === 'light' ? 'light' : 'dark';
     if (patch.systemPrompt !== undefined) state.prefs.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
     if (patch.contextBudget !== undefined) state.prefs.contextBudget = Math.round(clampNum(patch.contextBudget, 500, 200000));
+    if (patch.workbench !== undefined) state.prefs.workbench = !!patch.workbench;
+    if (patch.terminalHeight !== undefined) state.prefs.terminalHeight = Math.round(clampNum(patch.terminalHeight, 120, 800));
+    if (patch.appLock !== undefined) state.prefs.appLock = !!patch.appLock;
     // apiKey 不落 localStorage（由原生 SharedPreferences 保存）
     save();
     return getPrefs();
@@ -1102,8 +1401,15 @@
     DEFAULT_PREFS: DEFAULT_PREFS,
     defaultPrefs: defaultPrefs,
     load: load,
+    loadAsync: loadAsync,
     save: save,
+    flush: flush,
+    isReady: isReady,
+    getEncryptionState: getEncryptionState,
+    onLoad: onLoad,
+    onError: onError,
     getState: getState,
+    ENC_KEY: ENC_KEY,
 
     getPrefs: getPrefs,
     setPrefs: setPrefs,

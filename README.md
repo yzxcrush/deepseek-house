@@ -25,7 +25,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.2.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.3.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -45,7 +45,7 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.2.0.apk`
+产物：`dist/DeepSeekHouse-2.3.0.apk`
 
 ### 云端构建（GitHub Actions）
 
@@ -74,6 +74,14 @@ CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → 
 - **插件市场**：https 索引 JSON（`{version,plugins:[{id,name,version,author,description,url,sha256,hmac,tags}]}`）→ 拉取/安装/更新/卸载；安装前 **SHA-256 + HMAC 双重校验**，校验失败不落盘
 - **记忆系统**：SQLite 存储会话摘要 / 长期偏好 / 项目记忆；每次请求自动注入 system prompt；超过上下文预算 80% 时自动摘要旧消息并保留最近对话，消息流显示「已压缩」提示
 - 已内置示例插件与文档：`docs/PLUGINS.md`
+
+## 🖥 工作台与移动端 AI 工作站收尾（P4，v2.3.0）
+
+- **工作台三栏**：聊天顶栏「工作台」开关，宽屏/横屏下左侧固定文件树、中间对话、底部终端（可拖拽高度并记忆）；手机竖屏保持抽屉模式
+- **全局构建任务面板**：聚合 `pack_apk`/`repack_apk`/`decompile_apk`/`run_gradle` 等构建任务，进度条 + 日志，实时状态（构建中/完成/失败）
+- **图片消息**：拍照/相册 → 缩略图待发送 → 气泡图片网格与全屏预览；请求自动使用 `content` 数组（`image_url`）
+- **系统集成**：生成期前台服务通知、完成通知（后台时）、从其他 App 分享文本/图片直接进入新会话
+- **应用锁 + 本地加密**：指纹/密码锁开关；启用后 localStorage 以 AES-GCM 加密（密钥来自 Android Keystore 包裹的随机密钥）
 
 路线图：P2 = MCP Client（JSON-RPC 2.0 / streamable-http）+ Termux 构建服务（pack_apk 等）；P3 = 插件系统（HousePlugin / 市场 / HMAC）+ 记忆与上下文压缩；P4 = 三栏 UI 与构建进度。
 

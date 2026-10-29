@@ -96,7 +96,12 @@
     /* ARCH v2 P2：MCP Client 事件 */
     'mcp-status': true,
     'mcp-tools': true,
-    'mcp-progress': true
+    'mcp-progress': true,
+    /* ARCH v2 P4：F6 图片 / F7 前台状态 / F8 分享进入 */
+    'image-picked': true,
+    'image-error': true,
+    'app-state': true,
+    'shared': true
   };
 
   var eventWaiters = Object.create(null); // type -> [{predicate, finish}]
@@ -1072,6 +1077,50 @@
       long_term: mockMemoryKvCopy('long_term'),
       project: mockMemoryKvCopy('project')
     };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P4：F6 图片 / F7 前台通知 / F8 分享进入 / F9 应用锁与存储密钥 —— mock
+   * ------------------------------------------------------------------ */
+
+  var MOCK_STORAGE_SECRET = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='; /* 32 字节示例密钥（Base64） */
+  var MOCK_IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  var mockP4 = {
+    foregroundActive: false,
+    foregroundText: '',
+    notifications: [],
+    appLock: false,
+    lastImage: null,
+    lastShared: null,
+    storageSecret: '' /* 默认空：若原生没有 getStorageSecret 则回退明文存储；QA 可用 __mockP4.setSecret 打开加密 */
+  };
+
+  function mockP4ImagePicked(source) {
+    var cfg = Bridge.__mockConfig || {};
+    var dataUrl = cfg.imageDataUrl ? String(cfg.imageDataUrl) : MOCK_IMAGE_DATA_URL;
+    var evt = {
+      type: 'image-picked',
+      dataUrl: dataUrl,
+      width: Number(cfg.imageWidth) || 1,
+      height: Number(cfg.imageHeight) || 1,
+      name: (String(source || 'gallery') === 'camera' ? 'mock-camera' : 'mock-gallery') + '.jpg'
+    };
+    mockP4.lastImage = evt;
+    emitAgentLater(60, evt);
+    return true;
+  }
+
+  /** mock 模拟系统分享进入（ACTION_SEND） */
+  function mockP4EmitShared(text, imageDataUrl) {
+    var evt = {
+      type: 'shared',
+      text: text === null || text === undefined ? '' : String(text),
+      imageDataUrl: imageDataUrl === null || imageDataUrl === undefined ? '' : String(imageDataUrl)
+    };
+    mockP4.lastShared = evt;
+    emitAgentLater(20, evt);
+    return true;
   }
 
   /** mock 下模拟「同一 requestId 的 execTool → tool-confirm → tool-result」完整事件流 */
@@ -2660,6 +2709,93 @@
     },
 
     /* ------------------------------------------------------------------ *
+     * ARCH v2 P4：F6 图片选择 / F7 前台服务与通知 / F9 应用锁与存储密钥
+     * ------------------------------------------------------------------ */
+    pickImage: function (source) {
+      var src = String(source === null || source === undefined ? '' : source).toLowerCase() === 'camera' ? 'camera' : 'gallery';
+      if (hasNative && hasNativeMethod('pickImage')) {
+        try { DSNative.pickImage(src); return true; } catch (e) { warn('pickImage 失败：' + (e && e.message)); return false; }
+      }
+      return mockP4ImagePicked(src);
+    },
+
+    /** F6：等待 image-picked / image-error 的 Promise（app handlers 用）；resolve {ok, dataUrl?, ...} */
+    pickImageAsync: function (source, timeoutMs) {
+      var timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 120000;
+      return new Promise(function (resolve) {
+        var done = false;
+        var offs = [];
+        function finish(res) {
+          if (done) return;
+          done = true;
+          for (var i = 0; i < offs.length; i++) { try { offs[i](); } catch (e) { /* ignore */ } }
+          offs = [];
+          clearTimeout(timer);
+          resolve(res);
+        }
+        var timer = setTimeout(function () { finish({ ok: false, error: '选择图片超时' }); }, timeout);
+        offs.push(waitForEvent('image-picked', function () { return true; }, timeout).then(function (evt) {
+          if (!evt) return;
+          finish({ ok: true, dataUrl: String(evt.dataUrl || ''), width: Number(evt.width) || 0, height: Number(evt.height) || 0, name: evt.name ? String(evt.name) : '' });
+        }));
+        offs.push(waitForEvent('image-error', function () { return true; }, timeout).then(function (evt) {
+          if (!evt) return;
+          finish({ ok: false, error: evt.message ? String(evt.message) : '图片获取失败' });
+        }));
+        /* 注意：waitForEvent 在超时时也会 resolve null，上面有守卫 */
+        if (Bridge.pickImage(source) === false) finish({ ok: false, error: '无法打开图片来源' });
+      });
+    },
+
+    setForeground: function (active, text) {
+      var on = !!active;
+      var label = String(text === null || text === undefined ? '' : text);
+      if (hasNative && hasNativeMethod('setForeground')) {
+        try { DSNative.setForeground(on, label); return true; } catch (e) { warn('setForeground 失败：' + (e && e.message)); return false; }
+      }
+      mockP4.foregroundActive = on;
+      mockP4.foregroundText = on ? label : '';
+      return true;
+    },
+
+    notify: function (title, text) {
+      var t = String(title === null || title === undefined ? '' : title);
+      var body = String(text === null || text === undefined ? '' : text);
+      if (hasNative && hasNativeMethod('notify')) {
+        try { DSNative.notify(t, body); return true; } catch (e) { warn('notify 失败：' + (e && e.message)); return false; }
+      }
+      mockP4.notifications.push({ title: t, text: body, at: Date.now() });
+      return true;
+    },
+
+    setAppLock: function (enabled) {
+      var on = !!enabled;
+      if (hasNative && hasNativeMethod('setAppLock')) {
+        try { DSNative.setAppLock(on); return true; } catch (e) { warn('setAppLock 失败：' + (e && e.message)); return false; }
+      }
+      mockP4.appLock = on;
+      return true;
+    },
+
+    isAppLockEnabled: function () {
+      if (hasNative && hasNativeMethod('isAppLockEnabled')) {
+        try { return !!DSNative.isAppLockEnabled(); } catch (e) { warn('isAppLockEnabled 失败：' + (e && e.message)); return false; }
+      }
+      return !!mockP4.appLock;
+    },
+
+    /** F9：32 字节随机密钥 Base64（Android Keystore 包裹）；不可用返回 ""（Store 回退明文） */
+    getStorageSecret: function () {
+      if (hasNative && hasNativeMethod('getStorageSecret')) {
+        try {
+          var raw = DSNative.getStorageSecret();
+          return raw === null || raw === undefined ? '' : String(raw);
+        } catch (e) { warn('getStorageSecret 失败：' + (e && e.message)); return ''; }
+      }
+      return String(mockP4.storageSecret || '');
+    },
+
+    /* ------------------------------------------------------------------ *
      * ARCH v2 P1：事件 Promise 辅助（app.js / QA 使用）
      * ------------------------------------------------------------------ */
     waitForEvent: waitForEvent,
@@ -2768,6 +2904,40 @@
     save: function (server) { return mockMcpSave(server); },
     remove: function (id) { return mockMcpDelete(id); },
     reset: function () { mockSeedMcp(); return true; }
+  };
+
+  /* ARCH v2 P4：图片/通知/应用锁/分享 mock 调试入口（仅测试使用） */
+  Bridge.__mockP4 = {
+    state: function () {
+      return {
+        foregroundActive: !!mockP4.foregroundActive,
+        foregroundText: mockP4.foregroundText,
+        notifications: mockP4.notifications.slice(),
+        appLock: !!mockP4.appLock,
+        lastImage: mockP4.lastImage,
+        lastShared: mockP4.lastShared,
+        storageSecret: mockP4.storageSecret
+      };
+    },
+    setSecret: function (secret) {
+      mockP4.storageSecret = secret === null || secret === undefined ? '' : String(secret);
+      return mockP4.storageSecret;
+    },
+    defaultSecret: MOCK_STORAGE_SECRET,
+    shared: function (text, imageDataUrl) { return mockP4EmitShared(text, imageDataUrl); },
+    pickImage: function (source) { return mockP4ImagePicked(source); },
+    reset: function () {
+      mockP4 = {
+        foregroundActive: false,
+        foregroundText: '',
+        notifications: [],
+        appLock: false,
+        lastImage: null,
+        lastShared: null,
+        storageSecret: ''
+      };
+      return true;
+    }
   };
 
   Bridge.clipboard = {

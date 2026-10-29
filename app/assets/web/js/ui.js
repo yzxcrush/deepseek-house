@@ -181,8 +181,24 @@
       loaded: false
     },
     pluginSlots: [],
-    pluginPanelOpen: false
+    pluginPanelOpen: false,
+    /* ARCH v2 P4：工作台 / 构建任务 / 待发送图片 / 安全设置 */
+    workbench: {
+      enabled: false,
+      active: false,
+      terminalHeight: 0,
+      resizing: false
+    },
+    pendingImages: [],
+    buildTasks: [],
+    buildPanelOpen: false,
+    security: {
+      appLock: false,
+      encrypted: false
+    }
   };
+
+  var WORKBENCH_KEY = 'dsh.workbench';
 
   var UI = {};
   window.UI = UI;
@@ -1188,10 +1204,11 @@
              state.screen === 'memory') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
-      state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen ||
+      state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen || state.buildPanelOpen ||
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) ||
       isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal')) ||
-      isModalOpen(r('mcp-form-modal')) || isModalOpen(r('memory-item-modal'));
+      isModalOpen(r('mcp-form-modal')) || isModalOpen(r('memory-item-modal')) ||
+      isModalOpen(r('attachment-sheet')) || isModalOpen(r('image-viewer'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1460,6 +1477,41 @@
     }
   }
 
+  function buildFileNodeEl(entry) {
+    var node = document.createElement('button');
+    node.type = 'button';
+    node.className = 'file-node ' + (entry.isDir ? 'file-node--dir' : 'file-node--file');
+    node.setAttribute('data-action', 'file-node');
+    node.setAttribute('data-path', entry.path);
+    node.setAttribute('data-dir', entry.isDir ? '1' : '0');
+    node.setAttribute('role', 'listitem');
+    node.style.paddingLeft = (10 + Math.min(fileDepth(entry), 6) * 14) + 'px';
+
+    var icon = el('span', 'file-node-icon');
+    icon.innerHTML = entry.isDir ? ICON.folder : ICON.file;
+    node.appendChild(icon);
+    node.appendChild(makeText('span', 'file-node-name', entry.name));
+    var size = fileSizeText(entry.size);
+    if (!entry.isDir && size) node.appendChild(makeText('span', 'file-node-size', size));
+    return node;
+  }
+
+  function fillFileTreeBox(box, entries, errorText) {
+    if (!box) return;
+    box.textContent = '';
+    if (errorText) {
+      box.appendChild(makeText('div', 'file-empty file-empty--error', '目录读取失败：' + errorText));
+      return;
+    }
+    if (!entries.length) {
+      box.appendChild(makeText('div', 'file-empty', '空目录'));
+      return;
+    }
+    entries.forEach(function (entry) {
+      box.appendChild(buildFileNodeEl(entry));
+    });
+  }
+
   function renderFileTree(entries, opts) {
     var data = state.fileDrawer;
     var options = {};
@@ -1502,26 +1554,13 @@
         state.refs['file-empty'] = empty;
         box.appendChild(empty);
       } else {
-        data.entries.forEach(function (entry) {
-          var node = document.createElement('button');
-          node.type = 'button';
-          node.className = 'file-node ' + (entry.isDir ? 'file-node--dir' : 'file-node--file');
-          node.setAttribute('data-action', 'file-node');
-          node.setAttribute('data-path', entry.path);
-          node.setAttribute('data-dir', entry.isDir ? '1' : '0');
-          node.setAttribute('role', 'listitem');
-          node.style.paddingLeft = (10 + Math.min(fileDepth(entry), 6) * 14) + 'px';
-
-          var icon = el('span', 'file-node-icon');
-          icon.innerHTML = entry.isDir ? ICON.folder : ICON.file;
-          node.appendChild(icon);
-          node.appendChild(makeText('span', 'file-node-name', entry.name));
-          var size = fileSizeText(entry.size);
-          if (!entry.isDir && size) node.appendChild(makeText('span', 'file-node-size', size));
-          box.appendChild(node);
-        });
+        data.entries.forEach(function (entry) { box.appendChild(buildFileNodeEl(entry)); });
       }
     }
+
+    /* ARCH v2 P4：工作台左栏复用同一份目录数据 */
+    fillFileTreeBox(r('workbench-tree'), data.entries, errorText);
+    updateWorkbenchPath();
 
     renderFileCrumbs();
     var foot = r('file-foot');
@@ -1807,12 +1846,16 @@
     if (source.ok === false || cs === 'error' || cs === 'failed' || cs === 'fail') {
       return { key: 'error', label: '失败' };
     }
-    /* 结果 / ok 为权威状态，避免执行阶段写入的 running 残留 */
-    if (source.ok === true || cs === 'success' || cs === 'ok' || cs === 'done' || cs === 'confirmed' || hasResult) {
+    /* 完成态（ok=true / success）优先显示「成功」 */
+    if (source.ok === true || cs === 'success' || cs === 'ok' || cs === 'done' || cs === 'confirmed') {
       return { key: 'success', label: '成功' };
     }
+    /* P4 修复：运行中优先于 content/result 判定（流式工具输出时不应误显示成功） */
     if (cs === 'running' || cs === 'executing' || source.running === true) {
       return { key: 'running', label: '运行中' };
+    }
+    if (hasResult) {
+      return { key: 'success', label: '成功' };
     }
     return { key: 'running', label: '运行中' };
   }
@@ -2686,17 +2729,17 @@
     if (msg.ok === true) percent = 100;
     else if (percent == null) percent = 0;
     var failed = msg.ok === false;
-    var done = percent >= 100 || msg.ok === true;
+    /* 完成态只由 ok=true 决定：进度 100% 但结果未回时仍算运行中（避免提前显示完成/成功） */
+    var done = msg.ok === true;
     var statusKey = String(info.status || '').toLowerCase();
     var statusText;
     if (failed) statusText = '构建失败';
     else if (statusKey === 'pending' || statusKey === 'waiting') statusText = '等待确认…';
     else if (statusKey === 'rejected' || statusKey === 'denied') statusText = '已拒绝';
     else if (statusKey === 'error' || statusKey === 'failed') statusText = '构建失败';
-    else if (percent >= 100) statusText = '完成';
-    else if (statusKey === 'running' || statusKey === 'executing' || statusKey === 'success' ||
-             statusKey === 'done' || statusKey === 'ok') statusText = '构建中…';
-    else statusText = info.status || (done ? '完成' : '构建中…');
+    else if (done) statusText = '完成';
+    else if (statusKey === 'success' || statusKey === 'done' || statusKey === 'ok') statusText = '完成';
+    else statusText = '构建中…';
 
     build.wrap.hidden = false;
     build.wrap.classList.toggle('is-done', done && !failed);
@@ -3399,6 +3442,632 @@
     if (!invoke('onSlotAction', slotId, actionId, payload)) UI.toast('插件动作尚未就绪');
   }
 
+  /* ================================================================== *
+   * ARCH v2 P4：工作台三栏（宽屏/横屏）
+   * 持久化：localStorage['dsh.workbench'] = {enabled, terminalHeight}
+   * ================================================================== */
+  function readWorkbenchPrefs() {
+    try {
+      if (!window.localStorage) return null;
+      var raw = window.localStorage.getItem(WORKBENCH_KEY);
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      return data && typeof data === 'object' ? data : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function saveWorkbenchPrefs() {
+    try {
+      if (!window.localStorage) return;
+      window.localStorage.setItem(WORKBENCH_KEY, JSON.stringify({
+        enabled: !!state.workbench.enabled,
+        terminalHeight: Math.round(state.workbench.terminalHeight) || 0
+      }));
+    } catch (err) { /* 静默 */ }
+  }
+
+  function loadWorkbenchPrefs() {
+    var data = readWorkbenchPrefs();
+    if (data) {
+      state.workbench.enabled = data.enabled === true;
+      var stored = Number(data.terminalHeight);
+      state.workbench.terminalHeight = isFinite(stored) && stored > 0 ? Math.round(stored) : 0;
+    }
+    applyTerminalHeight();
+    applyWorkbench();
+    if (state.workbench.active) requestWorkbenchTree();
+  }
+
+  function isWorkbenchWide() {
+    var width = Number(window.innerWidth) || 0;
+    var height = Number(window.innerHeight) || 0;
+    if (width >= 600) return true;
+    return width > 0 && height > 0 && width > height;
+  }
+
+  function applyWorkbench() {
+    var active = !!state.workbench.enabled && isWorkbenchWide();
+    state.workbench.active = active;
+    var screen = r('screen-chat');
+    if (screen) screen.classList.toggle('is-workbench', active);
+    var aside = r('workbench-files');
+    if (aside) aside.setAttribute('aria-hidden', active ? 'false' : 'true');
+    var btn = r('workbench-toggle');
+    if (btn) {
+      btn.classList.toggle('is-on', !!state.workbench.enabled);
+      btn.setAttribute('aria-pressed', state.workbench.enabled ? 'true' : 'false');
+    }
+    updateWorkbenchPath();
+    return active;
+  }
+
+  function updateWorkbenchPath() {
+    var el = r('workbench-path');
+    if (!el) return;
+    var data = state.fileDrawer;
+    var path = data.path || data.root || state.workspace.root || '';
+    el.textContent = path || '未设置工作区';
+    el.title = path;
+  }
+
+  function requestWorkbenchTree() {
+    var handled = invoke('onOpenFile');
+    if (!handled) handled = invoke('onListDir', state.fileDrawer.path || '');
+    return handled;
+  }
+
+  function refreshWorkbenchTree() {
+    var path = state.fileDrawer.path || state.workspace.root || '';
+    if (invoke('onOpenFile', path, true)) return true;
+    if (invoke('onListDir', path)) return true;
+    showFilePlaceholder('文件服务尚未就绪');
+    return false;
+  }
+
+  function toggleWorkbench(force) {
+    var next = force === undefined ? !state.workbench.enabled : !!force;
+    state.workbench.enabled = next;
+    saveWorkbenchPrefs();
+    applyWorkbench();
+    if (next) {
+      if (isWorkbenchWide()) {
+        requestWorkbenchTree();
+      } else {
+        UI.toast('竖屏为文件抽屉模式，横屏自动切换工作台');
+        openFileDrawer();
+      }
+    }
+    if (typeof state.cb.onToggleWorkbench === 'function') invoke('onToggleWorkbench', next);
+    return next;
+  }
+
+  function setWorkbenchEnabled(on) {
+    return toggleWorkbench(!!on);
+  }
+
+  function getWorkbenchState() {
+    return {
+      enabled: !!state.workbench.enabled,
+      active: !!state.workbench.active,
+      terminalHeight: state.workbench.terminalHeight || 0
+    };
+  }
+
+  /* ---------- 终端高度拖拽 + 记忆 ---------- */
+  function applyTerminalHeight() {
+    var panel = r('terminal-panel');
+    if (!panel) return;
+    var height = state.workbench.terminalHeight;
+    panel.style.height = height > 0 ? (Math.round(height) + 'px') : '';
+  }
+
+  function setTerminalHeight(px) {
+    var height = Number(px);
+    if (!isFinite(height) || height <= 0) {
+      state.workbench.terminalHeight = 0;
+      applyTerminalHeight();
+      saveWorkbenchPrefs();
+      return 0;
+    }
+    var maxHeight = Math.max(180, Math.round((Number(window.innerHeight) || 640) * 0.7));
+    height = Math.max(120, Math.min(maxHeight, Math.round(height)));
+    state.workbench.terminalHeight = height;
+    applyTerminalHeight();
+    saveWorkbenchPrefs();
+    return height;
+  }
+
+  function getTerminalHeight() {
+    return state.workbench.terminalHeight || 0;
+  }
+
+  var terminalResize = { active: false, startY: 0, startHeight: 0, pointerId: null };
+
+  function onTerminalResizeStart(event) {
+    var panel = r('terminal-panel');
+    if (!panel || panel.hidden) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    var startHeight = panel.offsetHeight || Math.round((Number(window.innerHeight) || 640) * 0.4);
+    terminalResize.active = true;
+    terminalResize.startY = event.clientY;
+    terminalResize.startHeight = startHeight;
+    terminalResize.pointerId = event.pointerId;
+    state.workbench.resizing = true;
+    var screen = r('screen-chat');
+    if (screen) screen.classList.add('is-resizing-terminal');
+    if (event.target && event.target.setPointerCapture) {
+      try { event.target.setPointerCapture(event.pointerId); } catch (err) { /* 静默 */ }
+    }
+    if (event.preventDefault) event.preventDefault();
+  }
+
+  function onTerminalResizeMove(event) {
+    if (!terminalResize.active) return;
+    var panel = r('terminal-panel');
+    if (!panel) return;
+    var height = terminalResize.startHeight - (event.clientY - terminalResize.startY);
+    var maxHeight = Math.max(180, Math.round((Number(window.innerHeight) || 640) * 0.7));
+    height = Math.max(120, Math.min(maxHeight, height));
+    state.workbench.terminalHeight = Math.round(height);
+    panel.style.height = Math.round(height) + 'px';
+  }
+
+  function onTerminalResizeEnd() {
+    if (!terminalResize.active) return;
+    terminalResize.active = false;
+    state.workbench.resizing = false;
+    var screen = r('screen-chat');
+    if (screen) screen.classList.remove('is-resizing-terminal');
+    saveWorkbenchPrefs();
+    if (typeof state.cb.onTerminalResized === 'function') invoke('onTerminalResized', state.workbench.terminalHeight);
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P4：构建任务面板
+   * tasks: [{id,toolName|tool,serverId|server,percent,status,line?,lines?,logs?}]
+   * ================================================================== */
+  function normalizeBuildStatus(value) {
+    var status = String(value == null ? '' : value).toLowerCase();
+    if (status === 'success' || status === 'ok' || status === 'done' || status === 'complete' ||
+        status === 'completed' || status === 'finished') return 'success';
+    if (status === 'error' || status === 'failed' || status === 'fail' || status === 'rejected') return 'error';
+    return 'running';
+  }
+
+  function buildStatusLabel(status) {
+    if (status === 'success') return '完成';
+    if (status === 'error') return '失败';
+    return '构建中';
+  }
+
+  function appendBuildLines(target, value) {
+    if (value == null) return;
+    buildLogLines(value).forEach(function (line) {
+      /* 连续重复行去重（任务同时带 lines 与 line 时避免重复） */
+      if (target.length && target[target.length - 1] === line) return;
+      target.push(line);
+    });
+  }
+
+  function createBuildTask(raw, index) {
+    if (!raw || typeof raw !== 'object') return null;
+    var tool = raw.toolName || raw.tool || raw.name || 'build';
+    var id = raw.id != null ? String(raw.id) : (String(tool) + '#' + index);
+    var lines = [];
+    appendBuildLines(lines, raw.lines != null ? raw.lines : (raw.logs != null ? raw.logs : raw.log));
+    appendBuildLines(lines, raw.line);
+    var percent = raw.percent != null ? clampPercent(raw.percent) : null;
+    return {
+      id: id,
+      toolName: String(tool),
+      server: raw.serverId != null ? String(raw.serverId) : (raw.server != null ? String(raw.server) : ''),
+      percent: percent,
+      status: normalizeBuildStatus(raw.status),
+      line: raw.line != null ? String(raw.line) : '',
+      lines: lines.slice(-200),
+      updatedAt: raw.updatedAt != null ? raw.updatedAt : Date.now()
+    };
+  }
+
+  function applyBuildTaskPatch(task, patch) {
+    if (!task || !patch || typeof patch !== 'object') return task;
+    if (patch.status != null) task.status = normalizeBuildStatus(patch.status);
+    if (patch.percent != null) task.percent = clampPercent(patch.percent);
+    if (patch.serverId != null) task.server = String(patch.serverId);
+    else if (patch.server != null) task.server = String(patch.server);
+    if (patch.toolName != null) task.toolName = String(patch.toolName);
+    else if (patch.tool != null) task.toolName = String(patch.tool);
+    if (patch.lines != null || patch.logs != null || patch.log != null) {
+      task.lines = [];
+      appendBuildLines(task.lines, patch.lines != null ? patch.lines : (patch.logs != null ? patch.logs : patch.log));
+      task.lines = task.lines.slice(-200);
+    }
+    if (patch.line != null) {
+      appendBuildLines(task.lines, patch.line);
+      task.lines = task.lines.slice(-200);
+      task.line = String(patch.line);
+    }
+    if (patch.updatedAt != null) task.updatedAt = patch.updatedAt;
+    else task.updatedAt = Date.now();
+    return task;
+  }
+
+  function findBuildTask(id) {
+    var key = String(id == null ? '' : id);
+    var found = null;
+    (state.buildTasks || []).forEach(function (task) {
+      if (task.id === key) found = task;
+    });
+    return found;
+  }
+
+  function buildTaskNode(task) {
+    var card = el('div', 'build-task');
+    card.setAttribute('data-build-id', task.id);
+
+    var head = el('div', 'build-task-head');
+    head.appendChild(makeText('span', 'build-task-name', task.toolName));
+    if (task.server) head.appendChild(makeText('span', 'build-task-server', task.server));
+    head.appendChild(makeText('span', 'build-task-badge build-task-badge--' + task.status, buildStatusLabel(task.status)));
+    card.appendChild(head);
+
+    var percent = task.percent;
+    if (percent == null) percent = task.status === 'success' ? 100 : 0;
+    var progress = el('div', 'tool-progress');
+    if (task.status === 'success') progress.classList.add('is-done');
+    if (task.status === 'error') progress.classList.add('is-error');
+    var progressHead = el('div', 'tool-progress-head');
+    progressHead.appendChild(makeText('span', 'tool-progress-label',
+      task.status === 'success' ? '完成' : (task.status === 'error' ? '构建失败' : '构建中…')));
+    progressHead.appendChild(makeText('span', 'tool-progress-percent', percent + '%'));
+    var track = el('div', 'tool-progress-track');
+    var fill = el('div', 'tool-progress-fill');
+    fill.style.width = percent + '%';
+    track.appendChild(fill);
+    progress.appendChild(progressHead);
+    progress.appendChild(track);
+    card.appendChild(progress);
+
+    card.appendChild(makeText('div', 'build-task-meta',
+      '日志 ' + task.lines.length + ' 行 · ' + buildStatusLabel(task.status)));
+
+    if (task.lines.length) {
+      var details = document.createElement('details');
+      details.className = 'tool-details tool-log-details';
+      details.open = false;
+      var summary = document.createElement('summary');
+      summary.appendChild(makeText('span', 'tool-details-label', '日志'));
+      summary.appendChild(makeText('span', 'tool-log-count', task.lines.length + ' 行'));
+      var caret = el('span', 'tool-details-caret');
+      caret.innerHTML = ICON.chevronDown;
+      summary.appendChild(caret);
+      var pre = el('pre', 'tool-log');
+      pre.textContent = task.lines.join('\n');
+      details.appendChild(summary);
+      details.appendChild(pre);
+      details.addEventListener('toggle', function () {
+        if (details.open) pre.scrollTop = pre.scrollHeight;
+      });
+      card.appendChild(details);
+      card.addEventListener('click', function (event) {
+        if (event.target && event.target.closest && event.target.closest('summary')) return;
+        details.open = !details.open;
+      });
+    }
+    return card;
+  }
+
+  function renderBuildTaskList() {
+    var box = r('build-tasks');
+    if (box) {
+      box.textContent = '';
+      (state.buildTasks || []).forEach(function (task) {
+        box.appendChild(buildTaskNode(task));
+      });
+    }
+    var empty = r('build-empty');
+    if (empty) empty.hidden = (state.buildTasks || []).length > 0;
+    return state.buildTasks;
+  }
+
+  function renderBuildTasks(tasks) {
+    var list = [];
+    (Array.isArray(tasks) ? tasks : []).forEach(function (item, index) {
+      var task = createBuildTask(item, index);
+      if (task) list.push(task);
+    });
+    state.buildTasks = list;
+    return renderBuildTaskList();
+  }
+
+  function updateBuildTask(taskOrId, patch) {
+    var target = null;
+    if (taskOrId && typeof taskOrId === 'object') {
+      var created = createBuildTask(taskOrId, state.buildTasks.length);
+      if (!created) return null;
+      var existing = findBuildTask(created.id);
+      if (existing) {
+        applyBuildTaskPatch(existing, taskOrId);
+        if (patch && typeof patch === 'object') applyBuildTaskPatch(existing, patch);
+        target = existing;
+      } else {
+        state.buildTasks.push(created);
+        target = created;
+      }
+    } else if (taskOrId != null) {
+      var key = String(taskOrId);
+      target = findBuildTask(key);
+      if (!target) {
+        target = createBuildTask({ id: key, status: 'running' }, state.buildTasks.length);
+        if (!target) return null;
+        state.buildTasks.push(target);
+      }
+      applyBuildTaskPatch(target, patch);
+    }
+    renderBuildTaskList();
+    return target;
+  }
+
+  function openBuildPanel() {
+    if (!state.buildPanelOpen) {
+      state.buildPanelOpen = true;
+      var panel = r('build-panel');
+      if (panel) {
+        panel.classList.add('is-open');
+        panel.setAttribute('aria-hidden', 'false');
+      }
+      syncDepth();
+    }
+    /* 防重入：app.js 的 onOpenBuildPanel 会再调 UI.openBuildPanel 刷新任务 */
+    if (!state.buildPanelLoading) {
+      state.buildPanelLoading = true;
+      try { invoke('onOpenBuildPanel'); } finally { state.buildPanelLoading = false; }
+    }
+    renderBuildTaskList();
+  }
+
+  function closeBuildPanel() {
+    if (!state.buildPanelOpen) return;
+    state.buildPanelOpen = false;
+    var panel = r('build-panel');
+    if (panel) {
+      panel.classList.remove('is-open');
+      panel.setAttribute('aria-hidden', 'true');
+    }
+    syncDepth();
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P4：待发送图片 + 图片消息 + 全屏预览
+   * ================================================================== */
+  function normalizePendingImage(image) {
+    if (!image) return null;
+    if (typeof image === 'string') {
+      return { dataUrl: image, width: 0, height: 0, name: '' };
+    }
+    if (typeof image !== 'object' || !image.dataUrl) return null;
+    return {
+      dataUrl: String(image.dataUrl),
+      width: Number(image.width) || 0,
+      height: Number(image.height) || 0,
+      name: image.name == null ? '' : String(image.name)
+    };
+  }
+
+  function renderPendingImages() {
+    var box = r('composer-images');
+    if (!box) return;
+    box.textContent = '';
+    state.pendingImages.forEach(function (image, index) {
+      var chip = el('div', 'composer-image-chip');
+      var img = document.createElement('img');
+      img.src = image.dataUrl;
+      img.alt = image.name || ('图片 ' + (index + 1));
+      chip.appendChild(img);
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'composer-image-remove';
+      remove.setAttribute('data-action', 'remove-pending-image');
+      remove.setAttribute('data-index', String(index));
+      remove.setAttribute('aria-label', '移除图片');
+      remove.innerHTML = ICON.x;
+      chip.appendChild(remove);
+      box.appendChild(chip);
+    });
+    box.hidden = state.pendingImages.length === 0;
+  }
+
+  function getPendingImages() {
+    return state.pendingImages.map(function (image) {
+      return {
+        dataUrl: image.dataUrl,
+        width: image.width,
+        height: image.height,
+        name: image.name
+      };
+    });
+  }
+
+  function setPendingImages(images) {
+    var list = [];
+    (Array.isArray(images) ? images : []).forEach(function (image) {
+      var normalized = normalizePendingImage(image);
+      if (normalized) list.push(normalized);
+    });
+    if (list.length > 4) {
+      list = list.slice(0, 4);
+      UI.toast('最多添加 4 张图片');
+    }
+    state.pendingImages = list;
+    renderPendingImages();
+    return getPendingImages();
+  }
+
+  function addPendingImage(image) {
+    var normalized = normalizePendingImage(image);
+    if (!normalized) return false;
+    if (state.pendingImages.length >= 4) {
+      UI.toast('最多添加 4 张图片');
+      return false;
+    }
+    state.pendingImages.push(normalized);
+    renderPendingImages();
+    return true;
+  }
+
+  function removePendingImage(index) {
+    var position = Number(index);
+    if (!isFinite(position) || position < 0 || position >= state.pendingImages.length) return null;
+    state.pendingImages.splice(position, 1);
+    renderPendingImages();
+    invoke('onRemoveImage', position);
+    return state.pendingImages.length;
+  }
+
+  function clearPendingImages() {
+    state.pendingImages = [];
+    renderPendingImages();
+  }
+
+  function openAttachmentSheet() {
+    closeEmojiPanel();
+    var sheet = r('attachment-sheet');
+    if (!sheet) return;
+    sheet.classList.add('is-open');
+    sheet.setAttribute('aria-hidden', 'false');
+    syncDepth();
+  }
+
+  function closeAttachmentSheet() {
+    var sheet = r('attachment-sheet');
+    if (!sheet) return;
+    sheet.classList.remove('is-open');
+    sheet.setAttribute('aria-hidden', 'true');
+    syncDepth();
+  }
+
+  function pickImage(source) {
+    var value = source === 'camera' ? 'camera' : 'gallery';
+    closeAttachmentSheet();
+    if (!invoke('onPickImage', value)) UI.toast('图片选择服务尚未就绪');
+  }
+
+  function openImageViewer(src) {
+    var value = src == null ? '' : String(src);
+    if (!value) return;
+    var viewer = r('image-viewer');
+    var img = r('image-viewer-img');
+    if (!viewer || !img) return;
+    img.src = value;
+    viewer.classList.add('is-open');
+    viewer.setAttribute('aria-hidden', 'false');
+    syncDepth();
+  }
+
+  function closeImageViewer() {
+    var viewer = r('image-viewer');
+    if (!viewer) return;
+    viewer.classList.remove('is-open');
+    viewer.setAttribute('aria-hidden', 'true');
+    var img = r('image-viewer-img');
+    if (img) img.src = '';
+    syncDepth();
+  }
+
+  function imageListOf(value) {
+    var out = [];
+    (Array.isArray(value) ? value : []).forEach(function (item) {
+      if (item == null || item === '') return;
+      if (typeof item === 'string') out.push(item);
+      else if (typeof item === 'object' && item.dataUrl) out.push(String(item.dataUrl));
+    });
+    return out.slice(0, 4);
+  }
+
+  function renderMessageImages(container, images) {
+    if (!container) return;
+    var list = imageListOf(images);
+    var key = list.length + '|' + list.map(function (src) {
+      return String(src.length) + ':' + String(src).slice(-16);
+    }).join(',');
+    if (container.getAttribute('data-image-key') === key) return;
+    container.setAttribute('data-image-key', key);
+    container.textContent = '';
+    if (!list.length) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    container.className = 'msg-images' + (list.length === 1 ? ' msg-images--single' : '');
+    list.forEach(function (src, index) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'msg-image-btn';
+      btn.setAttribute('data-action', 'open-image-viewer');
+      btn.setAttribute('data-src', src);
+      btn.setAttribute('aria-label', '查看图片 ' + (index + 1));
+      var img = document.createElement('img');
+      img.className = 'msg-image';
+      img.src = src;
+      img.alt = '图片 ' + (index + 1);
+      img.loading = 'lazy';
+      btn.appendChild(img);
+      container.appendChild(btn);
+    });
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P4：应用锁 / 本地加密状态
+   * ================================================================== */
+  function setSecurityInfo(info) {
+    var data = info && typeof info === 'object' ? info : {};
+    if (Object.prototype.hasOwnProperty.call(data, 'appLock')) state.security.appLock = !!data.appLock;
+    if (Object.prototype.hasOwnProperty.call(data, 'encrypted')) state.security.encrypted = !!data.encrypted;
+    var toggle = r('set-applock');
+    if (toggle) toggle.checked = !!state.security.appLock;
+    var status = r('set-encryption-status');
+    if (status) {
+      status.classList.remove('is-on', 'is-warn');
+      if (data.message != null && String(data.message) !== '') {
+        status.textContent = String(data.message);
+        status.classList.add(state.security.encrypted ? 'is-on' : 'is-warn');
+      } else if (state.security.encrypted) {
+        status.textContent = '已启用 · AES-GCM（本机密钥）';
+        status.classList.add('is-on');
+      } else {
+        status.textContent = '未启用（明文存储）';
+        status.classList.add('is-warn');
+      }
+    }
+    return {
+      appLock: !!state.security.appLock,
+      encrypted: !!state.security.encrypted
+    };
+  }
+
+  function toggleAppLock(enabled) {
+    var next = !!enabled;
+    var toggle = r('set-applock');
+    if (!invoke('onToggleAppLock', next)) {
+      if (toggle) toggle.checked = !next;
+      UI.toast('应用锁服务尚未就绪');
+      return false;
+    }
+    state.security.appLock = next;
+    if (toggle) toggle.checked = next;
+    return true;
+  }
+
+  /* 打开设置页时刷新 MCP 服务器统计与安全状态（不依赖进入 MCP 管理页） */
+  function refreshSettingsStats() {
+    if (!invoke('onRefreshMcpStats')) invoke('onOpenMcp');
+    if (!invoke('onRefreshSecurity')) {
+      setSecurityInfo({ appLock: state.security.appLock, encrypted: state.security.encrypted });
+    }
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -3455,7 +4124,11 @@
     closeModelPickerPanel(true);
     closeAgentPickerPanel(true);
     closePluginPanel();
+    closeAttachmentSheet();
+    closeBuildPanel();
+    closeImageViewer();
     if (name !== 'chat') closeEmojiPanel();
+    if (name === 'settings') refreshSettingsStats();
     syncDepth();
   }
 
@@ -3943,6 +4616,13 @@
     var refs = { root: root, bubble: bubble, role: role };
 
     if (role === 'user' || role === 'note') {
+      /* ARCH v2 P4：用户消息图片网格（≤4 张，点击全屏预览） */
+      if (role === 'user') {
+        var msgImages = el('div', 'msg-images');
+        msgImages.hidden = true;
+        bubble.appendChild(msgImages);
+        refs.images = msgImages;
+      }
       var plain = el('div', 'msg-content');
       plain.textContent = msg.content == null ? '' : String(msg.content);
       bubble.appendChild(plain);
@@ -4184,6 +4864,9 @@
 
     /* ARCH v2 P1：工具调用卡片字段（状态/参数/结果） */
     if (refs.toolCard) applyToolCardFields(msg, refs);
+
+    /* ARCH v2 P4：用户消息图片网格 */
+    if (refs.images) renderMessageImages(refs.images, msg.images);
 
     /* 正文 */
     if (refs.textMode) {
@@ -4473,8 +5156,27 @@
     var input = r('composer-input');
     if (!input) return;
     var text = String(input.value || '').trim();
-    if (!text) return;
+    var images = state.pendingImages.slice();
+    if (!text && !images.length) return;
     var isCommand = text.charAt(0) === '/';
+
+    /* ARCH v2 P4：带图片发送走 onSendWithImages(text, [dataUrl...]) */
+    if (images.length && !isCommand) {
+      if (typeof state.cb.onSendWithImages !== 'function') {
+        UI.toast('图片发送服务尚未就绪');
+        return;
+      }
+      var dataUrls = images.map(function (image) { return image.dataUrl; });
+      if (!invoke('onSendWithImages', text, dataUrls)) return;
+      input.value = '';
+      autosize();
+      clearPendingImages();
+      closeDrawer();
+      try { input.focus(); } catch (err) { /* 静默 */ }
+      return;
+    }
+
+    if (!text) return;
     var fn = isCommand ? state.cb.onCommand : state.cb.onSend;
     if (typeof fn !== 'function') return;
     invoke(isCommand ? 'onCommand' : 'onSend', text);
@@ -5083,6 +5785,9 @@
     if (isModalOpen(r('file-preview-modal'))) { closeFilePreview(); return true; }
     if (isModalOpen(r('mcp-form-modal'))) { closeMcpForm(); return true; }
     if (isModalOpen(r('memory-item-modal'))) { closeMemoryItemForm(); return true; }
+    if (isModalOpen(r('image-viewer'))) { closeImageViewer(); return true; }
+    if (isModalOpen(r('attachment-sheet'))) { closeAttachmentSheet(); return true; }
+    if (state.buildPanelOpen) { closeBuildPanel(); return true; }
     if (state.pluginPanelOpen) { closePluginPanel(); return true; }
     if (state.fileDrawer.open) { closeFileDrawer(); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
@@ -5340,6 +6045,42 @@
         break;
       case 'slot-action':
         runPluginSlotAction(node.getAttribute('data-slot-id'), node.getAttribute('data-slot-action'));
+        break;
+      /* -------- ARCH v2 P4：工作台 / 构建任务 / 图片 -------- */
+      case 'toggle-workbench':
+        toggleWorkbench();
+        break;
+      case 'collapse-workbench':
+        toggleWorkbench(false);
+        break;
+      case 'workbench-refresh':
+        refreshWorkbenchTree();
+        break;
+      case 'open-build-panel':
+        closePluginPanel();
+        closeDrawer();
+        openBuildPanel();
+        break;
+      case 'close-build-panel':
+        closeBuildPanel();
+        break;
+      case 'open-attachment-sheet':
+        openAttachmentSheet();
+        break;
+      case 'close-attachment-sheet':
+        closeAttachmentSheet();
+        break;
+      case 'pick-image':
+        pickImage(node.getAttribute('data-source'));
+        break;
+      case 'remove-pending-image':
+        removePendingImage(node.getAttribute('data-index'));
+        break;
+      case 'open-image-viewer':
+        openImageViewer(node.getAttribute('data-src'));
+        break;
+      case 'close-image-viewer':
+        closeImageViewer();
         break;
       case 'open-backup':
         openModal(r('backup-modal'));
@@ -5606,6 +6347,11 @@
     var pluginId = target.getAttribute('data-plugin-toggle');
     if (pluginId) {
       invoke('onPluginToggle', pluginId, !!target.checked);
+      return;
+    }
+    /* ARCH v2 P4：应用锁开关 */
+    if (target.id === 'set-applock') {
+      toggleAppLock(!!target.checked);
     }
   }
 
@@ -5737,6 +6483,7 @@
 
     window.addEventListener('resize', function () {
       if (state.autoScroll) scrollToBottom();
+      applyWorkbench();
     });
 
     bindModalBackdrop(r('install-modal'), function () { closeModal(r('install-modal')); });
@@ -5753,6 +6500,21 @@
         if (event.target === pluginPanel) closePluginPanel();
       });
     }
+    /* ARCH v2 P4：附件操作表 / 构建任务面板 / 图片预览 点击遮罩关闭 */
+    bindModalBackdrop(r('attachment-sheet'), function () { closeAttachmentSheet(); });
+    bindModalBackdrop(r('build-panel'), function () { closeBuildPanel(); });
+    var imageViewer = r('image-viewer');
+    if (imageViewer) {
+      imageViewer.addEventListener('click', function (event) {
+        if (event.target === imageViewer) closeImageViewer();
+      });
+    }
+    /* 终端高度拖拽 */
+    var resizeHandle = r('terminal-resize');
+    if (resizeHandle) resizeHandle.addEventListener('pointerdown', onTerminalResizeStart, { passive: false });
+    window.addEventListener('pointermove', onTerminalResizeMove, { passive: true });
+    window.addEventListener('pointerup', onTerminalResizeEnd);
+    window.addEventListener('pointercancel', onTerminalResizeEnd);
     bindModelPickerEvents();
     bindAgentPickerEvents();
     bindFileDrawerDrag();
@@ -5820,7 +6582,13 @@
       'memory-summaries', 'memory-summaries-empty', 'memory-count', 'set-memory-row', 'set-memory-label',
       'memory-item-modal', 'memory-item-title', 'memory-item-key', 'memory-item-value',
       'memory-item-error', 'memory-item-save',
-      'plugin-panel', 'plugin-panel-title', 'plugin-panel-handle', 'plugin-slots', 'plugin-slots-empty'
+      'plugin-panel', 'plugin-panel-title', 'plugin-panel-handle', 'plugin-slots', 'plugin-slots-empty',
+      /* ARCH v2 P4：工作台 / 构建任务 / 图片 / 安全 */
+      'workbench-toggle', 'workbench-files', 'workbench-tree', 'workbench-path',
+      'workbench-refresh', 'terminal-resize',
+      'composer-images', 'attachment-sheet', 'image-viewer', 'image-viewer-img',
+      'build-panel', 'build-panel-title', 'build-tasks', 'build-empty',
+      'set-applock', 'set-encryption-status'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -5949,6 +6717,9 @@
     cacheRefs();
     state.initialized = true;
     bindEvents();
+    loadWorkbenchPrefs();
+    renderPendingImages();
+    renderBuildTaskList();
     showScreenImpl('chats');
     buildEmojiPanel();
     setTerminalOpen(false);
@@ -6392,5 +7163,31 @@
   UI.isPluginPanelOpen = function () { return state.pluginPanelOpen; };
   UI.getPluginSlots = function () { return (state.pluginSlots || []).slice(); };
 
-  UI.version = '2.2.0';
+  /* ARCH v2 P4：工作台 / 构建任务 / 图片消息 / 应用锁 */
+  UI.toggleWorkbench = function (open) { return toggleWorkbench(open); };
+  UI.setWorkbenchEnabled = function (on) { return setWorkbenchEnabled(on); };
+  UI.isWorkbenchOpen = function () { return !!state.workbench.enabled; };
+  UI.isWorkbenchActive = function () { return !!state.workbench.active; };
+  UI.getWorkbenchState = getWorkbenchState;
+  UI.setTerminalHeight = function (px) { return setTerminalHeight(px); };
+  UI.getTerminalHeight = getTerminalHeight;
+  UI.renderBuildTasks = function (tasks) { return renderBuildTasks(tasks); };
+  UI.updateBuildTask = function (taskOrId, patch) { return updateBuildTask(taskOrId, patch); };
+  UI.getBuildTasks = function () { return (state.buildTasks || []).slice(); };
+  UI.openBuildPanel = openBuildPanel;
+  UI.closeBuildPanel = closeBuildPanel;
+  UI.isBuildPanelOpen = function () { return !!state.buildPanelOpen; };
+  UI.setPendingImages = function (images) { return setPendingImages(images); };
+  UI.addPendingImage = function (image) { return addPendingImage(image); };
+  UI.getPendingImages = getPendingImages;
+  UI.removePendingImage = function (index) { return removePendingImage(index); };
+  UI.clearPendingImages = clearPendingImages;
+  UI.openAttachmentSheet = openAttachmentSheet;
+  UI.closeAttachmentSheet = closeAttachmentSheet;
+  UI.openImageViewer = function (src) { openImageViewer(src); };
+  UI.closeImageViewer = closeImageViewer;
+  UI.setSecurityInfo = setSecurityInfo;
+  UI.refreshSettingsStats = refreshSettingsStats;
+
+  UI.version = '2.3.0';
 })();

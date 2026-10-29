@@ -91,6 +91,11 @@
   var SUMMARY_MAX_ENTRIES = 20;
   var MARKET_URL_KEY = 'dsh.marketUrl';
   var MEMORY_SCOPES = { 'long_term': true, 'project': true };
+  /* ARCH v2 P4（F6–F9 / 工作台 / 构建任务） */
+  var MAX_PENDING_IMAGES = 4;
+  var MAX_IMAGE_DATAURL_CHARS = 220000; /* ≈160KB 图片（base64）阈值：前端无法再压缩时提示 */
+  var MAX_BUILD_TASKS = 20;
+  var VISION_MODEL_RE = /(vision|vl[-_.]|gpt-4o|gpt-4\.1|gpt-4-turbo|claude|gemini|qwen-vl|glm-4v|omni|multimodal)/i;
   var AUTO_TITLE = false; /* 会话名=智能体名，默认「DeepSeek + 模型型号」，不随首条消息自动改名 */
   var FLUSH_INTERVAL = 50;
   var TOAST_THROTTLE = 700;
@@ -154,7 +159,14 @@
     marketOpening: false,
     pluginPanelOpening: false,
     contextCompressed: {}, /* chatId -> { markerId, count } */
-    contextSummaryOverride: {} /* chatId -> 最新会话摘要（压缩后立即注入，避免原生异步写延迟） */
+    contextSummaryOverride: {}, /* chatId -> 最新会话摘要（压缩后立即注入，避免原生异步写延迟） */
+    /* ARCH v2 P4：待发送图片 / 前台状态 / 构建任务 */
+    pendingImages: [], /* [{dataUrl,width,height,name}]（≤4 张） */
+    appForeground: true, /* 原生 app-state 事件 */
+    foregroundActive: false, /* 是否已启动 F7 前台服务 */
+    buildTasks: [], /* [{id,toolName,serverId,percent,status,line,lines,updatedAt}] */
+    buildTaskByMsg: {}, /* msgId -> buildTask id */
+    buildTaskSeq: 0
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -417,6 +429,27 @@
     loadPlugins(false);
     /* ARCH v2 P3：HousePlugin 宿主加载 + uiSlots 渲染（plugins.js 未实现时安全跳过） */
     try { loadHousePluginsAndSlots(); } catch (e5) { warn('加载 HousePlugin 失败：' + errText(e5)); }
+
+    /* ARCH v2 P4：应用锁初值 / 工作台布局 / 本地加密加载与错误提示 */
+    try {
+      if (global.Bridge && typeof global.Bridge.isAppLockEnabled === 'function') {
+        state.prefs.appLock = !!global.Bridge.isAppLockEnabled();
+      }
+    } catch (e6) { warn('读取应用锁状态失败：' + errText(e6)); }
+    try { applyWorkbenchFromPrefs(); } catch (e7) { warn('应用工作台布局失败：' + errText(e7)); }
+    try {
+      if (global.Store && typeof global.Store.onError === 'function') {
+        global.Store.onError(function (message) { if (message) toast(String(message), true); });
+      }
+    } catch (e8) { /* ignore */ }
+    try {
+      if (global.Store && typeof global.Store.onLoad === 'function') {
+        global.Store.onLoad(function () { refreshAfterStoreLoad(); });
+      }
+      if (global.Store && typeof global.Store.isReady === 'function' && !global.Store.isReady()) {
+        Promise.resolve(global.Store.loadAsync()).then(function () { refreshAfterStoreLoad(); });
+      }
+    } catch (e9) { warn('注册本地存储加载监听失败：' + errText(e9)); }
     return App;
   }
 
@@ -690,7 +723,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.2.0' }
+      { label: '版本', value: '2.3.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -907,6 +940,12 @@
     B.onEvent('mcp-status', function (evt) { onMcpStatus(evt); });
     B.onEvent('mcp-tools', function (evt) { onMcpTools(evt); });
     B.onEvent('mcp-progress', function (evt) { onMcpProgress(evt); });
+    /* ARCH v2 P4：F7 前台状态 / F8 分享进入 */
+    B.onEvent('app-state', function (evt) {
+      if (!evt) return;
+      state.appForeground = evt.foreground !== false;
+    });
+    B.onEvent('shared', function (evt) { onSharedEvent(evt); });
   }
 
   function bindPluginFileFallback() {
@@ -1076,7 +1115,18 @@
       onMemorySave: safe(function (scope, key, value) { return saveMemoryItem(scope, key, value); }, 'onMemorySave'),
       onMemoryDelete: safe(function (scope, key) { return deleteMemoryItem(scope, key); }, 'onMemoryDelete'),
       onSummaryDelete: safe(function (chatId) { return deleteSessionSummary(chatId); }, 'onSummaryDelete'),
-      onCloseMemory: safe(function () { return true; }, 'onCloseMemory')
+      onCloseMemory: safe(function () { return true; }, 'onCloseMemory'),
+      /* ARCH v2 P4：工作台 / 图片 / 通知 / 应用锁 / 构建任务 / MCP 统计 */
+      onToggleWorkbench: safe(function (enabled) { return toggleWorkbench(enabled); }, 'onToggleWorkbench'),
+      onTerminalResized: safe(function (height) { return persistTerminalHeight(height); }, 'onTerminalResized'),
+      onPickImage: safe(function (source) { return pickImageSource(source); }, 'onPickImage'),
+      onRemoveImage: safe(function (index) { return removePendingImageAt(index); }, 'onRemoveImage'),
+      onSendWithImages: safe(function (text, images) { return sendWithImages(text, images); }, 'onSendWithImages'),
+      onToggleAppLock: safe(function (enabled) { return toggleAppLock(enabled); }, 'onToggleAppLock'),
+      onRefreshSecurity: safe(function () { return refreshSecurityInfo(); }, 'onRefreshSecurity'),
+      onGetSecurity: safe(function () { return refreshSecurityInfo(); }, 'onGetSecurity'),
+      onOpenBuildPanel: safe(function () { return openBuildPanel(); }, 'onOpenBuildPanel'),
+      onRefreshMcpStats: safe(function () { return refreshMcpStatsUI(); }, 'onRefreshMcpStats')
     };
   }
 
@@ -1156,30 +1206,55 @@
    * ------------------------------------------------------------------ */
 
   function handleSend(text) {
-    if (state.loginBusy) return;
-    if (state.busy) { toast('正在生成回复，请先停止'); return; }
+    /* ARCH v2 P4 F6：普通发送也会带上待发送图片队列（UI 有图时通常会走 onSendWithImages） */
+    var images = takePendingImages();
+    return handleSendInternal(text, images);
+  }
+
+  /** 发送（可带图片 dataUrl 数组）；返回是否已开始请求 */
+  function handleSendInternal(text, images) {
+    if (state.loginBusy) return false;
+    if (state.busy) { toast('正在生成回复，请先停止'); return false; }
     var raw = String(text === null || text === undefined ? '' : text);
     var trimmed = raw.replace(/^\s+|\s+$/g, '');
-    if (!trimmed) return;
-    if (trimmed.charAt(0) === '/') { handleCommand(trimmed); return; }
-    if (trimmed.length > MAX_INPUT) { toast('消息太长，最多 ' + MAX_INPUT + ' 字'); return; }
-    var t = Date.now();
-    if (trimmed === state.lastSentText && t - state.lastSentAt < 800) return;
-    state.lastSentText = trimmed;
-    state.lastSentAt = t;
+    var imageList = normalizeImageDataUrls(images);
+    if (!trimmed && !imageList.length) return false;
+    if (trimmed.charAt(0) === '/' && !imageList.length) { handleCommand(trimmed); return false; }
+    if (trimmed.length > MAX_INPUT) { toast('消息太长，最多 ' + MAX_INPUT + ' 字'); return false; }
+    if (!imageList.length) {
+      var t = Date.now();
+      if (trimmed === state.lastSentText && t - state.lastSentAt < 800) return false;
+      state.lastSentText = trimmed;
+      state.lastSentAt = t;
+    } else {
+      state.lastSentText = trimmed;
+      state.lastSentAt = Date.now();
+    }
 
     var chat = ensureActiveChat();
-    if (!chat) return;
-    var userMsg = Store.appendMessage(chat.id, { role: 'user', content: trimmed });
-    if (!userMsg) return;
+    if (!chat) return false;
+    var meta = imageMetaFrom(images);
+    var payload = { role: 'user', content: trimmed };
+    if (imageList.length) {
+      payload.images = imageList;
+      payload.imageMeta = meta.length === imageList.length ? meta : imageList.map(function (url, idx) {
+        return meta[idx] || { width: 0, height: 0, name: '图片 ' + (idx + 1) };
+      });
+    }
+    var userMsg = Store.appendMessage(chat.id, payload);
+    if (!userMsg) return false;
     state.toolRounds = 0;
     resetBuffer();
     ui('appendMessage', userMsg);
     ui('setComposer', { value: '', busy: true });
     ui('scrollBottom', true);
     refreshChatList();
-    maybeAutoTitle(chat, trimmed);
+    if (imageList.length && !modelSupportsVision(chat.model || state.prefs.model)) {
+      toast('当前模型可能不支持图片识别，仍将发送', true);
+    }
+    maybeAutoTitle(chat, trimmed || '图片消息');
     startAssistantRound(chat.id);
+    return true;
   }
 
   function startAssistantRound(chatId) {
@@ -1197,6 +1272,8 @@
     ui('setComposer', { busy: true });
     setHeader(chat, '正在输入…');
     ui('scrollBottom', true);
+    /* ARCH v2 P4 F7：生成期间启动前台服务 */
+    startForegroundService();
 
     var tools = getToolSchemas();
     var baseMessages = requestHistory(chatId, aMsg.id);
@@ -1303,6 +1380,7 @@
       Store.touchChat(chatId);
       if (state.toolRounds >= MAX_TOOL_ROUNDS) {
         appendNote(chatId, '已达到最大工具调用轮数（' + MAX_TOOL_ROUNDS + '），停止继续调用工具。');
+        endGeneration(chatId, content);
         finishBusy();
         refreshChatList();
         return;
@@ -1317,6 +1395,7 @@
       Store.updateMessage(chatId, aId, { content: '（未收到回复）' });
       ui('updateMessage', aId, { content: '（未收到回复）' });
     }
+    endGeneration(chatId, content || reasoning);
     Store.touchChat(chatId);
     if (typeof Store.incrementUnread === 'function') {
       var viewing = String(Store.getActiveChatId()) === String(chatId) && state.nav && state.nav.screen === 'chat';
@@ -1354,6 +1433,7 @@
       ui('updateMessage', aId, patch);
       Store.touchChat(chatId);
     }
+    endGeneration(chatId, '生成失败');
     if (status === 401 && state.apiKey) {
       toast('API Key 无效，请更新设置', true);
       setTimeout(function () { openSettings(); }, 450);
@@ -1405,6 +1485,7 @@
       ui('updateMessage', aId, patch);
       Store.touchChat(chatId);
       toast('已停止生成', true);
+      endGeneration(chatId, content === '（已停止生成）' ? '已停止生成' : content);
     }
     finishBusy();
     refreshChatList();
@@ -1741,9 +1822,14 @@
       }
 
       /* P2：构建类工具 / MCP 工具先建 running 卡片，供 mcp-progress 映射 */
+      var runningMsg = null;
       if (isMcpProgressTool(name)) {
-        var running = createRunningToolMessage(chat, name, args, toolCallId);
-        if (running) progressEntry = findRunningEntry(running.id);
+        runningMsg = createRunningToolMessage(chat, name, args, toolCallId);
+        if (runningMsg) progressEntry = findRunningEntry(runningMsg.id);
+      }
+      /* P4：构建类工具聚合到构建任务面板 */
+      if (isBuildToolName(name)) {
+        try { beginBuildTask(name, requestId, runningMsg ? runningMsg.id : '', args); } catch (e0) { warn('创建构建任务失败：' + errText(e0)); }
       }
 
       offs.push(B.onEvent('tool-result', function (evt) {
@@ -3059,6 +3145,9 @@
     ui('renderSettings', state.prefs, state.modelCatalog, getPresets());
     ui('showScreen', 'settings');
     navTo('settings');
+    /* ARCH v2 P4：打开设置页刷新 MCP 统计 + 应用锁/加密状态 */
+    try { refreshMcpStatsUI(); } catch (e1) { warn('刷新 MCP 统计失败：' + errText(e1)); }
+    try { refreshSecurityInfo(); } catch (e2) { warn('刷新安全信息失败：' + errText(e2)); }
   }
 
   function saveSettings(patch) {
@@ -4264,6 +4353,11 @@
       progress: { percent: percent, line: line }
     };
     var updated = updateRunningToolMessage(entry, patch);
+    /* P4：同步构建任务状态 */
+    try {
+      var task = findBuildTaskForMsg(entry.msgId);
+      if (task) finalizeBuildTask(task, !!ok, stateText, line);
+    } catch (e) { warn('更新构建任务失败：' + errText(e)); }
     delete state.mcpProgressByMsg[entry.msgId];
     cleanupRunningToolMsg(entry);
     return updated;
@@ -4306,6 +4400,11 @@
     try { Store.updateMessage(entry.chatId, entry.msgId, patch); } catch (e2) { /* ignore */ }
     ui('setToolProgress', entry.msgId, { percent: percent, line: line });
     if (line) ui('appendToolLog', entry.msgId, line);
+    /* P4：同步构建任务面板进度 */
+    try {
+      var task = findBuildTaskForMsg(entry.msgId) || findBuildTaskForTool(toolName, serverId);
+      if (task) updateBuildTaskProgress(task, percent, line);
+    } catch (e) { warn('更新构建任务进度失败：' + errText(e)); }
   }
 
   /* ---------------- MCP 配置 CRUD / 连接 ---------------- */
@@ -5078,6 +5177,462 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2 P4：F6 图片 / F7 通知 / F8 分享进入 / F9 应用锁与加密（逻辑侧）
+   * ------------------------------------------------------------------ */
+
+  function modelSupportsVision(model) {
+    return VISION_MODEL_RE.test(String(model === null || model === undefined ? '' : model));
+  }
+
+  function normalizeImageDataUrls(images) {
+    var out = [];
+    if (!Array.isArray(images)) return out;
+    for (var i = 0; i < images.length && out.length < MAX_PENDING_IMAGES; i++) {
+      var item = images[i];
+      var dataUrl = typeof item === 'string' ? item : (item && item.dataUrl ? String(item.dataUrl) : '');
+      if (!dataUrl || !/^data:image\//i.test(dataUrl)) continue;
+      if (out.indexOf(dataUrl) !== -1) continue;
+      out.push(dataUrl);
+    }
+    return out;
+  }
+
+  function imageMetaFrom(images) {
+    var out = [];
+    if (!Array.isArray(images)) return out;
+    for (var i = 0; i < images.length && out.length < MAX_PENDING_IMAGES; i++) {
+      var item = images[i];
+      if (item && typeof item === 'object') {
+        out.push({
+          width: Number(item.width) || 0,
+          height: Number(item.height) || 0,
+          name: item.name === null || item.name === undefined ? '' : String(item.name)
+        });
+      } else {
+        out.push({ width: 0, height: 0, name: '图片 ' + (i + 1) });
+      }
+    }
+    return out;
+  }
+
+  function pendingImagePayload() {
+    var out = [];
+    for (var i = 0; i < state.pendingImages.length; i++) {
+      var item = state.pendingImages[i];
+      out.push({ dataUrl: item.dataUrl, width: item.width || 0, height: item.height || 0, name: item.name || '' });
+    }
+    return out;
+  }
+
+  function syncPendingImagesUI() {
+    var U = getUI();
+    var payload = pendingImagePayload();
+    if (U && typeof U.setPendingImages === 'function') {
+      try { U.setPendingImages(payload); return; } catch (e) { warn('UI.setPendingImages 异常：' + errText(e)); }
+    }
+    if (U && typeof U.renderPendingImages === 'function') {
+      try { U.renderPendingImages(payload); return; } catch (e2) { /* ignore */ }
+    }
+    ui('renderPendingImages', payload);
+  }
+
+  /** 取走待发送图片（发送后清空队列与 chip） */
+  function takePendingImages() {
+    var list = state.pendingImages.slice();
+    state.pendingImages = [];
+    syncPendingImagesUI();
+    return list;
+  }
+
+  function addPendingImage(image) {
+    if (!image || typeof image !== 'object') return false;
+    var dataUrl = String(image.dataUrl || '');
+    if (!/^data:image\//i.test(dataUrl)) { toast('不支持的图片格式', true); return false; }
+    if (state.pendingImages.length >= MAX_PENDING_IMAGES) {
+      toast('最多添加 ' + MAX_PENDING_IMAGES + ' 张图片', true);
+      return false;
+    }
+    for (var i = 0; i < state.pendingImages.length; i++) {
+      if (state.pendingImages[i].dataUrl === dataUrl) { toast('该图片已在待发送队列'); return false; }
+    }
+    if (dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
+      toast('图片较大（约 ' + Math.round(dataUrl.length / 1024) + 'KB），前端压缩不可用，可能发送失败', true);
+    }
+    var item = {
+      dataUrl: dataUrl,
+      width: Number(image.width) || 0,
+      height: Number(image.height) || 0,
+      name: image.name === null || image.name === undefined ? '' : String(image.name)
+    };
+    state.pendingImages.push(item);
+    var U = getUI();
+    if (U && typeof U.addPendingImage === 'function') {
+      try { U.addPendingImage({ dataUrl: item.dataUrl, width: item.width, height: item.height, name: item.name }); } catch (e) { warn('UI.addPendingImage 异常：' + errText(e)); syncPendingImagesUI(); }
+    } else {
+      syncPendingImagesUI();
+    }
+    return true;
+  }
+
+  function removePendingImageAt(index) {
+    var idx = parseInt(index, 10);
+    if (isNaN(idx) || idx < 0 || idx >= state.pendingImages.length) return false;
+    state.pendingImages.splice(idx, 1);
+    syncPendingImagesUI();
+    return true;
+  }
+
+  function clearPendingImagesUI() {
+    state.pendingImages = [];
+    var U = getUI();
+    if (U && typeof U.clearPendingImages === 'function') {
+      try { U.clearPendingImages(); return; } catch (e) { /* ignore */ }
+    }
+    syncPendingImagesUI();
+  }
+
+  /** handlers.onPickImage(source)：Bridge.pickImage → image-picked 事件 → 待发送图片队列 */
+  function pickImageSource(source) {
+    var src = String(source === null || source === undefined ? '' : source).toLowerCase() === 'camera' ? 'camera' : 'gallery';
+    var B = global.Bridge;
+    if (!B || typeof B.pickImage !== 'function') { toast('当前环境不支持选择图片', true); return false; }
+    if (state.pendingImages.length >= MAX_PENDING_IMAGES) { toast('最多添加 ' + MAX_PENDING_IMAGES + ' 张图片', true); return false; }
+    toast(src === 'camera' ? '正在打开相机…' : '正在打开相册…');
+    var work = null;
+    try {
+      if (typeof B.pickImageAsync === 'function') work = B.pickImageAsync(src, 120000);
+      else work = null;
+    } catch (e) { warn('pickImage 失败：' + errText(e)); work = null; }
+    if (work && typeof work.then === 'function') {
+      work.then(function (res) {
+        if (!res || res.ok === false) {
+          toast('图片获取失败：' + ((res && res.error) || '未知错误'), true);
+          return;
+        }
+        addPendingImage(res);
+        if (getUI() && typeof getUI().focusComposer === 'function') { try { getUI().focusComposer(); } catch (e) { /* ignore */ } }
+      });
+      return true;
+    }
+    /* 兼容只发事件、无 Promise 的环境：直接调用原生，事件仍由 pickImageAsync 场景处理 */
+    try { return B.pickImage(src) !== false; } catch (e2) { toast('图片获取失败：' + errText(e2), true); return false; }
+  }
+
+  /** handlers.onSendWithImages(text, images)：UI 传来的 dataUrl 数组优先 */
+  function sendWithImages(text, images) {
+    var payload = Array.isArray(images) && images.length ? images : state.pendingImages;
+    if (Array.isArray(images) && images.length) {
+      state.pendingImages = [];
+      syncPendingImagesUI();
+    }
+    return handleSendInternal(text, payload);
+  }
+
+  /* ---------------- F7 前台服务 + 完成通知 ---------------- */
+
+  function startForegroundService() {
+    if (state.foregroundActive) return;
+    state.foregroundActive = true;
+    try {
+      if (global.Bridge && typeof global.Bridge.setForeground === 'function') {
+        global.Bridge.setForeground(true, '正在生成回复…');
+      }
+    } catch (e) { warn('setForeground(true) 失败：' + errText(e)); }
+  }
+
+  function buildReplySummary(content) {
+    var text = String(content === null || content === undefined ? '' : content)
+      .replace(/[#*`>|]/g, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    if (!text) return '回复已完成';
+    return text.length > 80 ? (text.slice(0, 80) + '…') : text;
+  }
+
+  /** done/error/stop 后收尾：关闭前台服务；若 App 在后台则发完成通知 */
+  function endGeneration(chatId, content) {
+    if (!state.foregroundActive) return;
+    state.foregroundActive = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.setForeground === 'function') global.Bridge.setForeground(false, '');
+    } catch (e) { warn('setForeground(false) 失败：' + errText(e)); }
+    if (state.appForeground === false) {
+      var summary = buildReplySummary(content);
+      try {
+        if (global.Bridge && typeof global.Bridge.notify === 'function') global.Bridge.notify('回复完成', summary);
+      } catch (e2) { warn('notify 失败：' + errText(e2)); }
+    }
+  }
+
+  /* ---------------- F8 分享进入 ---------------- */
+
+  function onSharedEvent(evt) {
+    if (!evt) return null;
+    var text = evt.text === null || evt.text === undefined ? '' : String(evt.text);
+    var image = evt.imageDataUrl === null || evt.imageDataUrl === undefined ? '' : String(evt.imageDataUrl);
+    if (!text && !image) return null;
+    if (state.busy) { try { stopGeneration(); } catch (e) { /* ignore */ } }
+    closeDrawer();
+    /* 新建会话（当前模型/默认预设） */
+    var title = '';
+    try { title = defaultAgentTitle(state.prefs.model); } catch (e1) { title = '新的对话'; }
+    var chat = Store.createChat({ model: state.prefs.model, title: title });
+    if (!chat) return null;
+    Store.setActiveChat(chat.id);
+    navTo('chat');
+    enterChat(chat);
+    clearPendingImagesUI();
+    if (text) ui('setComposer', { value: text });
+    if (image) addPendingImage({ dataUrl: image, width: 0, height: 0, name: '分享图片' });
+    refreshChatList();
+    toast('已接收分享内容', true);
+    return chat;
+  }
+
+  /* ---------------- 工作台 / 终端高度 ---------------- */
+
+  function toggleWorkbench(enabled) {
+    var current = !!(state.prefs && state.prefs.workbench);
+    var next = enabled === undefined || enabled === null ? !current : !!enabled;
+    state.prefs.workbench = next;
+    try { Store.setPrefs({ workbench: next }); } catch (e) { warn('保存工作台开关失败：' + errText(e)); }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ workbench: next }); } catch (e2) { /* ignore */ }
+    var U = getUI();
+    if (U && typeof U.setWorkbenchEnabled === 'function') {
+      try { U.setWorkbenchEnabled(next); } catch (e3) { warn('UI.setWorkbenchEnabled 异常：' + errText(e3)); }
+    } else if (U && typeof U.toggleWorkbench === 'function') {
+      try { U.toggleWorkbench(next); } catch (e4) { /* ignore */ }
+    }
+    if (next) { try { loadWorkspaceDir(''); } catch (e5) { /* ignore */ } }
+    toast(next ? '已开启工作台' : '已关闭工作台');
+    return next;
+  }
+
+  function persistTerminalHeight(height) {
+    var h = Math.round(clampNum(height, 120, 800));
+    state.prefs.terminalHeight = h;
+    try { Store.setPrefs({ terminalHeight: h }); } catch (e) { warn('保存终端高度失败：' + errText(e)); }
+    return h;
+  }
+
+  /** boot / 解密完成后把工作台与终端高度应用到 UI（UI 自身 localStorage 优先） */
+  function applyWorkbenchFromPrefs() {
+    var U = getUI();
+    if (!U) return;
+    var uiState = null;
+    if (typeof U.getWorkbenchState === 'function') {
+      try { uiState = U.getWorkbenchState(); } catch (e) { uiState = null; }
+    }
+    var enabled = uiState && typeof uiState.enabled === 'boolean' ? !!uiState.enabled : !!(state.prefs && state.prefs.workbench);
+    var height = (uiState && Number(uiState.terminalHeight)) || Number(state.prefs && state.prefs.terminalHeight) || 260;
+    if (!uiState) {
+      /* UI 无本地记录时用 prefs 兜底 */
+      if (typeof U.setWorkbenchEnabled === 'function') { try { U.setWorkbenchEnabled(enabled); } catch (e1) { /* ignore */ } }
+      if (typeof U.setTerminalHeight === 'function') { try { U.setTerminalHeight(height); } catch (e2) { /* ignore */ } }
+    }
+  }
+
+  /* ---------------- F9 应用锁 / 加密状态 ---------------- */
+
+  function readAppLockEnabled() {
+    try {
+      if (global.Bridge && typeof global.Bridge.isAppLockEnabled === 'function') return !!global.Bridge.isAppLockEnabled();
+    } catch (e) { warn('读取应用锁失败：' + errText(e)); }
+    return !!(state.prefs && state.prefs.appLock);
+  }
+
+  function toggleAppLock(enabled) {
+    var next = enabled === undefined || enabled === null ? !readAppLockEnabled() : !!enabled;
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.setAppLock === 'function') ok = global.Bridge.setAppLock(next) !== false;
+    } catch (e) { warn('设置应用锁失败：' + errText(e)); }
+    state.prefs.appLock = next;
+    try { Store.setPrefs({ appLock: next }); } catch (e2) { /* ignore */ }
+    refreshSecurityInfo();
+    toast(ok ? (next ? '应用锁已开启（下次启动需验证）' : '应用锁已关闭') : '应用锁设置失败', !ok);
+    return ok;
+  }
+
+  /** handlers.onRefreshSecurity：读应用锁 + 本地加密状态 → UI.setSecurityInfo({appLock,encrypted}) */
+  function refreshSecurityInfo() {
+    var enc = { ready: true, encrypted: false, plaintext: false, secretAvailable: false, error: '' };
+    try {
+      if (global.Store && typeof global.Store.getEncryptionState === 'function') enc = global.Store.getEncryptionState() || enc;
+    } catch (e) { warn('读取加密状态失败：' + errText(e)); }
+    var appLock = readAppLockEnabled();
+    state.prefs.appLock = appLock;
+    var info = {
+      appLock: appLock,
+      encrypted: !!(enc.encrypted || enc.secretAvailable),
+      message: enc.error ? String(enc.error) : ''
+    };
+    var U = getUI();
+    if (U && typeof U.setSecurityInfo === 'function') {
+      try { U.setSecurityInfo(info); } catch (e2) { warn('UI.setSecurityInfo 异常：' + errText(e2)); }
+    }
+    return { appLock: info.appLock, encrypted: info.encrypted, state: enc };
+  }
+
+  /* ---------------- P4 构建任务跟踪 ---------------- */
+
+  function trimBuildTasks() {
+    if (state.buildTasks.length <= MAX_BUILD_TASKS) return;
+    var kept = [];
+    for (var i = 0; i < state.buildTasks.length && kept.length < MAX_BUILD_TASKS; i++) {
+      var task = state.buildTasks[i];
+      if (kept.length < MAX_BUILD_TASKS) kept.push(task);
+    }
+    state.buildTasks = kept;
+  }
+
+  function beginBuildTask(toolName, requestId, msgId, args) {
+    var parsed = parseMcpToolName(toolName);
+    var serverId = parsed.serverId || state.mcpToolMap[parsed.base] || '';
+    state.buildTaskSeq++;
+    var id = 'build_' + state.buildTaskSeq + '_' + String(requestId || '').slice(-6);
+    var now = Date.now();
+    var task = {
+      id: id,
+      toolName: String(toolName || ''),
+      serverId: String(serverId || ''),
+      percent: 0,
+      status: 'running',
+      line: '开始执行…',
+      lines: ['开始执行…'],
+      updatedAt: now
+    };
+    state.buildTasks.unshift(task);
+    if (msgId) state.buildTaskByMsg[String(msgId)] = id;
+    trimBuildTasks();
+    renderBuildTasks();
+    return task;
+  }
+
+  function findBuildTaskById(id) {
+    var key = String(id || '');
+    for (var i = 0; i < state.buildTasks.length; i++) {
+      if (String(state.buildTasks[i].id) === key) return state.buildTasks[i];
+    }
+    return null;
+  }
+
+  function findBuildTaskForMsg(msgId) {
+    var id = state.buildTaskByMsg[String(msgId || '')];
+    if (!id) return null;
+    return findBuildTaskById(id);
+  }
+
+  function findBuildTaskForTool(toolName, serverId) {
+    var base = mcpBaseName(toolName);
+    for (var i = 0; i < state.buildTasks.length; i++) {
+      var task = state.buildTasks[i];
+      if (task.status !== 'running') continue;
+      if (mcpBaseName(task.toolName) !== base) continue;
+      if (serverId && task.serverId && String(task.serverId) !== String(serverId)) continue;
+      return task;
+    }
+    return null;
+  }
+
+  function updateBuildTaskProgress(task, percent, line) {
+    if (!task) return null;
+    var pct = Number(percent);
+    if (isFinite(pct)) task.percent = Math.max(0, Math.min(100, Math.round(pct)));
+    if (line !== undefined && line !== null && String(line) !== '') {
+      var text = String(line);
+      task.line = text;
+      if (!Array.isArray(task.lines)) task.lines = [];
+      task.lines.push(text);
+      if (task.lines.length > 200) task.lines = task.lines.slice(task.lines.length - 200);
+    }
+    task.updatedAt = Date.now();
+    var U = getUI();
+    if (U && typeof U.updateBuildTask === 'function') {
+      try {
+        U.updateBuildTask(task.id, { percent: task.percent, line: task.line, lines: task.lines, status: 'running', updatedAt: task.updatedAt });
+      } catch (e) { warn('UI.updateBuildTask 异常：' + errText(e)); }
+    }
+    return task;
+  }
+
+  function finalizeBuildTask(task, ok, stateText, line) {
+    if (!task) return null;
+    task.status = ok ? 'success' : 'error';
+    if (ok) task.percent = 100;
+    if (line !== undefined && line !== null && String(line) !== '') task.line = String(line);
+    else if (!task.line) task.line = ok ? '完成' : '失败';
+    task.updatedAt = Date.now();
+    var U = getUI();
+    if (U && typeof U.updateBuildTask === 'function') {
+      try {
+        U.updateBuildTask(task.id, {
+          percent: task.percent,
+          line: task.line,
+          lines: task.lines,
+          status: task.status,
+          updatedAt: task.updatedAt
+        });
+      } catch (e) { warn('UI.updateBuildTask 异常：' + errText(e)); }
+    }
+    renderBuildTasks();
+    return task;
+  }
+
+  function renderBuildTasks() {
+    ui('renderBuildTasks', state.buildTasks);
+  }
+
+  function openBuildPanel() {
+    renderBuildTasks();
+    var U = getUI();
+    if (U && typeof U.openBuildPanel === 'function') {
+      try { U.openBuildPanel(); } catch (e) { warn('UI.openBuildPanel 异常：' + errText(e)); }
+    }
+    return state.buildTasks;
+  }
+
+  function clearBuildTasks() {
+    state.buildTasks = [];
+    state.buildTaskByMsg = {};
+    renderBuildTasks();
+    return true;
+  }
+
+  /* ---------------- 启动后刷新 / MCP 统计 ---------------- */
+
+  /** 本地加密数据异步解密完成 / 存储错误后刷新界面数据 */
+  function refreshAfterStoreLoad() {
+    try {
+      state.prefs = mergePrefs(Store.getPrefs(), readNativePrefs());
+      state.prefs.appLock = readAppLockEnabled();
+    } catch (e) { warn('刷新 prefs 失败：' + errText(e)); }
+    try { loadCustomModels(); } catch (e1) { /* ignore */ }
+    try { loadPresets(); } catch (e2) { /* ignore */ }
+    try { state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels); } catch (e3) { /* ignore */ }
+    try { applyWorkbenchFromPrefs(); } catch (e4) { /* ignore */ }
+    try { applyModelLabel(); } catch (e5) { /* ignore */ }
+    try { refreshChatList(); } catch (e6) { /* ignore */ }
+    var chat = Store.getActiveChat();
+    if (chat && state.nav && state.nav.screen === 'chat') {
+      try {
+        ui('renderMessages', chat);
+        ui('setChatAvatar', chat);
+        setHeader(chat, '');
+        ui('scrollBottom', true);
+      } catch (e7) { /* ignore */ }
+    }
+    if (state.nav && state.nav.screen === 'settings') {
+      try { ui('renderSettings', state.prefs, state.modelCatalog, getPresets()); } catch (e8) { /* ignore */ }
+    }
+  }
+
+  /** 打开设置页时刷新 MCP 服务器统计到 UI（不进入 MCP 管理页） */
+  function refreshMcpStatsUI() {
+    try { loadMcpServers(true); } catch (e) { warn('刷新 MCP 列表失败：' + errText(e)); }
+    try { ui('renderMcpServers', state.mcpServers, buildMcpStatusMap()); } catch (e2) { /* ignore */ }
+    return state.mcpServers;
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -5221,6 +5776,37 @@
   App.estimateContextChars = function (messages) { return estimateContextChars(messages); };
   App.buildSessionSummaryPiece = function (older) { return buildSessionSummaryPiece(older); };
   App.getContextCompressed = function () { return JSON.parse(JSON.stringify(state.contextCompressed || {})); };
+
+  /* ARCH v2 P4 对外接口 */
+  App.toggleWorkbench = safe(function (enabled) { return toggleWorkbench(enabled); }, 'App.toggleWorkbench');
+  App.getWorkbenchState = function () {
+    var U = getUI();
+    if (U && typeof U.getWorkbenchState === 'function') {
+      try { return U.getWorkbenchState(); } catch (e) { /* ignore */ }
+    }
+    return { enabled: !!(state.prefs && state.prefs.workbench), terminalHeight: Number(state.prefs && state.prefs.terminalHeight) || 260, active: false };
+  };
+  App.setTerminalHeight = safe(function (height) { return persistTerminalHeight(height); }, 'App.setTerminalHeight');
+  App.pickImage = safe(function (source) { return pickImageSource(source); }, 'App.pickImage');
+  App.addPendingImage = safe(function (image) { return addPendingImage(image); }, 'App.addPendingImage');
+  App.removePendingImage = safe(function (index) { return removePendingImageAt(index); }, 'App.removePendingImage');
+  App.clearPendingImages = function () { clearPendingImagesUI(); return true; };
+  App.getPendingImages = function () { return pendingImagePayload(); };
+  App.sendWithImages = safe(function (text, images) { return sendWithImages(text, images); }, 'App.sendWithImages');
+  App.getAppLock = function () { return readAppLockEnabled(); };
+  App.toggleAppLock = safe(function (enabled) { return toggleAppLock(enabled); }, 'App.toggleAppLock');
+  App.refreshSecurityInfo = safe(function () { return refreshSecurityInfo(); }, 'App.refreshSecurityInfo');
+  App.getEncryptionState = function () {
+    try { if (global.Store && typeof global.Store.getEncryptionState === 'function') return global.Store.getEncryptionState(); } catch (e) { /* ignore */ }
+    return { ready: true, encrypted: false, plaintext: false, secretAvailable: false, error: '' };
+  };
+  App.getForegroundState = function () { return { active: !!state.foregroundActive, appForeground: state.appForeground !== false }; };
+  App.getBuildTasks = function () { return state.buildTasks.slice(); };
+  App.openBuildPanel = safe(function () { return openBuildPanel(); }, 'App.openBuildPanel');
+  App.clearBuildTasks = safe(function () { return clearBuildTasks(); }, 'App.clearBuildTasks');
+  App.onSharedEvent = safe(function (evt) { return onSharedEvent(evt); }, 'App.onSharedEvent');
+  App.refreshMcpStats = safe(function () { return refreshMcpStatsUI(); }, 'App.refreshMcpStats');
+  App.refreshAfterStoreLoad = safe(function () { refreshAfterStoreLoad(); return true; }, 'App.refreshAfterStoreLoad');
   App.getFilePreview = function () { return state.filePreview; };
   App.confirmTool = safe(function (allow) {
     if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }

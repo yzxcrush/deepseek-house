@@ -73,6 +73,21 @@
       };
     }
 
+    /* ARCH v2 P4 F6：带图片的用户消息 → OpenAI 多模态 content 数组
+       [{type:'text',text:...},{type:'image_url',image_url:{url:dataUrl}}]（无文本时也可只有图片） */
+    if (msg.role === 'user' && Array.isArray(msg.images) && msg.images.length) {
+      var parts = [];
+      var textPart = msg.content === null || msg.content === undefined ? '' : String(msg.content);
+      if (textPart) parts.push({ type: 'text', text: textPart });
+      for (var imgIdx = 0; imgIdx < msg.images.length && imgIdx < 4; imgIdx++) {
+        var dataUrl = msg.images[imgIdx];
+        if (typeof dataUrl !== 'string' || !/^data:image\//i.test(dataUrl)) continue;
+        parts.push({ type: 'image_url', image_url: { url: dataUrl } });
+      }
+      if (!parts.length) return null;
+      return { role: 'user', content: parts };
+    }
+
     var out = {
       role: msg.role === 'user' ? 'user' : 'assistant',
       content: msg.content === null || msg.content === undefined ? '' : String(msg.content)

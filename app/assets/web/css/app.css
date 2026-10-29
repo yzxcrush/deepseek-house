@@ -5282,3 +5282,453 @@ body { background-color: #181818; }
   position: static;
   padding: 26px 20px 34px;
 }
+
+/* ==========================================================================
+   ARCH v2 P4：工作台三栏 / 构建任务面板 / 图片消息 / 应用锁
+   配色沿用 Telegram 深色 #181818 / 卡片 #1f1f1f / 强调 #517AF6 / 次要 #8b8b8b
+   ========================================================================== */
+
+/* ---------- 工作台开关（聊天顶栏） ---------- */
+#workbench-toggle.is-on {
+  color: var(--accent-2);
+  background-color: rgba(81, 122, 246, 0.16);
+}
+
+/* ---------- 工作台三栏布局（仅宽屏/横屏且开启时） ---------- */
+.workbench-files {
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid #2a2a2a;
+  background-color: var(--bg);
+}
+
+.screen--chat.is-workbench {
+  display: grid;
+  grid-template-columns: minmax(200px, 30%) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto auto;
+  grid-template-areas:
+    "head head"
+    "files main"
+    "files terminal"
+    "files images"
+    "files composer"
+    "files emoji";
+}
+
+.screen--chat.is-workbench > .topbar { grid-area: head; }
+.screen--chat.is-workbench > .workbench-files { grid-area: files; display: flex; }
+.screen--chat.is-workbench > .chat-main { grid-area: main; min-height: 0; }
+.screen--chat.is-workbench > .terminal-panel { grid-area: terminal; height: auto; min-height: 0; max-height: none; }
+.screen--chat.is-workbench > .composer-images { grid-area: images; }
+.screen--chat.is-workbench > .composer { grid-area: composer; }
+.screen--chat.is-workbench > .emoji-panel { grid-area: emoji; }
+.screen--chat.is-workbench .terminal-panel:not([hidden]) { min-height: 120px; }
+
+.workbench-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px 8px 12px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.workbench-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.workbench-title {
+  display: block;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.workbench-path {
+  display: block;
+  overflow: hidden;
+  margin-top: 1px;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workbench-icon {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  color: #d9d9d9;
+}
+
+.workbench-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.workbench-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 4px 6px 12px;
+  overscroll-behavior: contain;
+}
+
+/* ---------- 终端拖拽高度 ---------- */
+.terminal-resize {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  height: 10px;
+  margin-top: -5px;
+  touch-action: none;
+  cursor: ns-resize;
+}
+
+.terminal-resize::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 38px;
+  height: 3px;
+  margin-left: -19px;
+  border-radius: 2px;
+  background-color: rgba(255, 255, 255, 0.16);
+}
+
+.terminal-resize:active::after {
+  background-color: var(--accent-2);
+}
+
+.screen--chat.is-resizing-terminal {
+  cursor: ns-resize;
+}
+
+/* ---------- 待发送图片 chips ---------- */
+.composer-images {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 10px 2px;
+  background-color: var(--header);
+  scrollbar-width: none;
+}
+
+.composer-images[hidden] {
+  display: none;
+}
+
+.composer-image-chip {
+  position: relative;
+  flex: none;
+  width: 62px;
+  height: 62px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background-color: #232323;
+}
+
+.composer-image-chip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.composer-image-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.62);
+  color: #fff;
+}
+
+.composer-image-remove svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ---------- 附件操作表 ---------- */
+.attachment-sheet-panel {
+  padding-bottom: calc(10px + var(--safe-bottom));
+}
+
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 12px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 10px;
+  border-radius: 12px;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.attachment-item:active {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.attachment-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background-color: rgba(81, 122, 246, 0.16);
+  color: var(--accent-2);
+}
+
+.attachment-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.attachment-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attachment-text b {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.attachment-text small {
+  color: #8b8b8b;
+  font-size: 12px;
+}
+
+/* ---------- 气泡图片网格 + 全屏预览 ---------- */
+.msg-images {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  max-width: 260px;
+  margin-bottom: 5px;
+  overflow: hidden;
+  border-radius: 10px;
+}
+
+.msg-images--single {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 240px;
+}
+
+.msg-image-btn {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background-color: #232323;
+}
+
+.msg-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+
+.msg-images--single .msg-image {
+  aspect-ratio: auto;
+  max-height: 260px;
+  object-fit: contain;
+}
+
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(20px + var(--safe-top)) 12px calc(20px + var(--safe-bottom));
+  background-color: rgba(0, 0, 0, 0.94);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
+}
+
+.image-viewer.is-open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 160ms ease;
+}
+
+.image-viewer-img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.image-viewer-close {
+  position: absolute;
+  top: calc(12px + var(--safe-top));
+  right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.image-viewer-close svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ---------- 构建任务面板 ---------- */
+.plugin-panel-build {
+  flex: none;
+  margin-right: 2px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  background-color: rgba(81, 122, 246, 0.16);
+  color: #9db6ff;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.plugin-panel-build:active {
+  background-color: rgba(81, 122, 246, 0.28);
+}
+
+.build-panel-sheet {
+  max-height: 72vh;
+}
+
+.build-task-scroll {
+  padding: 0 12px calc(12px + var(--safe-bottom));
+}
+
+.build-task {
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 14px;
+  background-color: #1f1f1f;
+}
+
+.build-task + .build-task {
+  margin-top: 8px;
+}
+
+.build-task-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.build-task-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.build-task-server {
+  flex: none;
+  max-width: 30%;
+  overflow: hidden;
+  color: #8b8b8b;
+  font-size: 10.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.build-task-badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.build-task-badge--running { background-color: rgba(81, 122, 246, 0.18); color: #9db6ff; }
+.build-task-badge--success { background-color: rgba(79, 208, 91, 0.15); color: #8fe897; }
+.build-task-badge--error { background-color: rgba(224, 93, 93, 0.16); color: #f08c8c; }
+
+.build-task .tool-progress {
+  margin-top: 7px;
+}
+
+.build-task-meta {
+  margin-top: 6px;
+  color: #8b8b8b;
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+
+.build-task .tool-log-details {
+  margin-top: 6px;
+}
+
+.build-empty {
+  position: static;
+  padding: 24px 20px 32px;
+}
+
+/* ---------- 设置页：应用锁 / 本地加密 ---------- */
+#set-encryption-status {
+  max-width: 62%;
+  overflow: hidden;
+  text-align: right;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#set-encryption-status.is-on {
+  color: #8fe897;
+}
+
+#set-encryption-status.is-warn {
+  color: #f0b256;
+}
