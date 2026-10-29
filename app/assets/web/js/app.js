@@ -4,11 +4,24 @@
  * 标题自动生成、推理展示、插件工具调用循环（最多 3 轮）、斜杠命令、
  * 设置保存、插件页、导出、返回键分层、复制。
  *
+ * v2.0 追加：
+ *   F1 智能体预设（Store.presets + 新建会话选择器 + 请求 systemPrompt 解析）
+ *   F2 归档（handlers.onArchiveChat）
+ *   F3 JSON 备份导出 / 导入（Bridge.saveTextFile / Bridge.importTextFile + file-imported 事件）
+ *   F4 会话分支（Store.forkChat + handlers.onForkMessage）
+ *   F5 web_search 工具结果 → assistant 消息 citations（最多 5 条，仅 https）
+ *
  * 约束：只通过 window.UI 改 DOM；不操作 index.html 中的节点。
  * 依赖：window.Util / Bridge / Store / Markdown / Api / DSPlugins / UI
  */
 (function (global) {
   'use strict';
+
+  /* v2.0 F3：备份文件格式 */
+  var BACKUP_APP_ID = 'DeepSeekHouse';
+  var BACKUP_VERSION = 1;
+  /* v2.0 F5：引用来源上限 */
+  var MAX_CITATIONS = 5;
 
   /* 追加需求 v1.1 B1：内置回退模型目录（无 key 或 GET /models 失败时展示，顺序固定） */
   var MODEL_FALLBACK = {
@@ -84,7 +97,9 @@
     lastToastAt: 0,
     backDepth: 0,
     nav: { screen: 'login', drawerOpen: false },
-    pluginsBound: false
+    pluginsBound: false,
+    presets: [], /* v2.0 F1：智能体预设（Store.presets 快照） */
+    pendingAgentChatId: null /* v2.0 F1：新建会话时先创建、等待智能体选择的占位会话 */
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -173,6 +188,29 @@
     var d = new Date();
     function p(n) { return n < 10 ? '0' + n : String(n); }
     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+  }
+
+  /** v2.0 F3：备份文件名用 YYYYMMDD */
+  function backupDateStamp() {
+    var d = new Date();
+    function p(n) { return n < 10 ? '0' + n : String(n); }
+    return String(d.getFullYear()) + p(d.getMonth() + 1) + p(d.getDate());
+  }
+
+  /** v2.0 F3：备份内的 exportedAt 展示（容错解析 ISO / 数字时间戳） */
+  function formatBackupTime(value) {
+    var ts = NaN;
+    if (typeof value === 'number') ts = value;
+    else if (typeof value === 'string') ts = Date.parse(value);
+    if (!isFinite(ts) || isNaN(ts)) return '';
+    try {
+      var d = new Date(ts);
+      function p(n) { return n < 10 ? '0' + n : String(n); }
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+        ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    } catch (e) {
+      return '';
+    }
   }
 
   function safeFileName(name) {
@@ -274,6 +312,7 @@
     state.apiKey = nativePrefs.apiKey ? String(nativePrefs.apiKey) : '';
     state.prefs = mergePrefs(Store.getPrefs(), nativePrefs);
     loadCustomModels();
+    loadPresets();
     state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels);
 
     bindBridgeEvents();
@@ -574,7 +613,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '1.1.2' }
+      { label: '版本', value: '1.2.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -667,6 +706,7 @@
     state.nav.screen = screen;
     state.nav.drawerOpen = false;
     if (screen === 'settings' || screen === 'plugins') setBackDepth(state.nav.from === 'chat' ? 2 : 1);
+    else if (screen === 'agents') setBackDepth(state.nav.from === 'chat' ? 3 : 2);
     else if (screen === 'chat') setBackDepth(1);
     else setBackDepth(0);
   }
@@ -699,6 +739,7 @@
       return;
     }
     /* 设置 / 插件页 → 回到来源页（对话页或某个标签页） */
+    if (screen === 'agents') { closeAgents(); return; }
     closeDrawer();
     var back = state.nav.from || 'chats';
     if (back === 'share') { showShare(); return; }
@@ -728,6 +769,8 @@
       else if (evt && (evt.error || evt.ok === false)) toast('导出失败', true);
     });
     B.onEvent('back', function () { onBack(); });
+    /* v2.0 F3：备份文件导入事件（{name, content}；取消时 content 为空 / error:'cancelled'，静默） */
+    B.onEvent('file-imported', function (evt) { onFileImported(evt); });
   }
 
   function bindPluginFileFallback() {
@@ -750,6 +793,29 @@
       onSend: safe(function (text) { handleSend(text); }, 'onSend'),
       onStop: safe(function () { stopGeneration(); }, 'onStop'),
       onNewChat: safe(function () { newChat(); }, 'onNewChat'),
+      /* v2.0 F1：智能体预设 */
+      onPickAgent: safe(function (id) { return onPickAgent(id); }, 'onPickAgent'),
+      onOpenAgents: safe(function () { return openAgents(); }, 'onOpenAgents'),
+      onManageAgents: safe(function () { return openAgents(); }, 'onManageAgents'),
+      /* 智能体预设管理页返回：恢复打开前的界面（对话页 / 设置页 / 会话列表） */
+      onCloseAgents: safe(function () { return closeAgents(); }, 'onCloseAgents'),
+      onSaveAgent: safe(function (agent) { return saveAgent(agent); }, 'onSaveAgent'),
+      onDeleteAgent: safe(function (id) { return deleteAgent(id); }, 'onDeleteAgent'),
+      onResetAgents: safe(function () { return resetAgents(); }, 'onResetAgents'),
+      /* v2.0 F2：归档 */
+      onArchiveChat: safe(function (id, archived) { return archiveChat(id, archived); }, 'onArchiveChat'),
+      onToggleArchive: safe(function (id, archived) { return archiveChat(id, archived); }, 'onToggleArchive'),
+      onChatTab: safe(function (tab) {
+        state.chatTab = tab === 'archived' ? 'archived' : (tab === 'unread' ? 'unread' : 'all');
+        return true;
+      }, 'onChatTab'),
+      /* v2.0 F4：从消息新建分支 */
+      onForkMessage: safe(function (msgId) { return forkMessage(msgId); }, 'onForkMessage'),
+      /* v2.0 F3：备份 / 恢复 */
+      onExportBackup: safe(function () { return exportBackup(); }, 'onExportBackup'),
+      onImportBackup: safe(function () { return importBackup(); }, 'onImportBackup'),
+      onBackupExport: safe(function () { return exportBackup(); }, 'onBackupExport'),
+      onBackupImport: safe(function () { return importBackup(); }, 'onBackupImport'),
       onSelectChat: safe(function (id) { selectChat(id); }, 'onSelectChat'),
       onDeleteChat: safe(function (id) { deleteChat(id, true); }, 'onDeleteChat'),
       onRenameChat: safe(function (id, title) { renameChat(id, title); }, 'onRenameChat'),
@@ -944,11 +1010,16 @@
 
     var messages = requestHistory(chatId, aMsg.id);
     var tools = getToolSchemas();
+    /* v2.0 F1：system prompt 取值 chat.systemPrompt → preset.systemPrompt → prefs.systemPrompt */
+    var sendPrefs = {};
+    var prefKeys = Object.keys(state.prefs || {});
+    for (var pk = 0; pk < prefKeys.length; pk++) sendPrefs[prefKeys[pk]] = state.prefs[prefKeys[pk]];
+    sendPrefs.systemPrompt = resolveSystemPrompt(chat);
     var requestId = Api.send({
       chat: chat,
       messages: messages,
       tools: tools,
-      prefs: state.prefs,
+      prefs: sendPrefs,
       onChunk: onChunk,
       onDone: onDone,
       onError: onError
@@ -1195,6 +1266,73 @@
     }
   }
 
+  /* ------------------------------------------------------------------ *
+   * v2.0 F5：web_search 结果 → citations
+   * ------------------------------------------------------------------ */
+
+  /** 解析工具返回的 {query,results:[{title,url,snippet}]}；失败/无 https 结果返回 null */
+  function extractSearchCitations(resultText) {
+    var text = String(resultText === null || resultText === undefined ? '' : resultText).replace(/^\s+|\s+$/g, '');
+    if (!text || text.charAt(0) !== '{') return null;
+    var parsed = null;
+    try { parsed = JSON.parse(text); } catch (e) { return null; }
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.results)) return null;
+    var out = [];
+    var seen = Object.create(null);
+    for (var i = 0; i < parsed.results.length && out.length < MAX_CITATIONS; i++) {
+      var item = parsed.results[i];
+      if (!item || typeof item !== 'object') continue;
+      var url = String(item.url === null || item.url === undefined ? '' : item.url).replace(/^\s+|\s+$/g, '');
+      if (!/^https:\/\//i.test(url)) continue; /* 仅 https */
+      if (seen[url]) continue;
+      seen[url] = true;
+      var title = String(item.title === null || item.title === undefined ? url : item.title).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+      var snippet = String(item.snippet === null || item.snippet === undefined
+        ? (item.content === undefined ? '' : item.content)
+        : item.snippet).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+      out.push({
+        title: (title || url).slice(0, 200),
+        url: url.slice(0, 2048),
+        snippet: snippet.slice(0, 400)
+      });
+    }
+    return out.length ? out : null;
+  }
+
+  /** 把 web_search 结果写入当前 assistant 消息 citations（去重、最多 5 条） */
+  function captureCitations(toolName, resultText) {
+    if (String(toolName || '') !== 'web_search') return false;
+    var list = extractSearchCitations(resultText);
+    if (!list || !list.length) return false;
+    var assistantId = state.assistantMsgId;
+    if (!assistantId) return false;
+    var chatId = state.requestChatId;
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    if (!chat) return false;
+    var target = null;
+    for (var i = 0; i < chat.messages.length; i++) {
+      if (chat.messages[i].id === assistantId) { target = chat.messages[i]; break; }
+    }
+    if (!target) return false;
+    var merged = Array.isArray(target.citations) ? target.citations.slice() : [];
+    var seen = Object.create(null);
+    for (var m = 0; m < merged.length; m++) seen[merged[m].url] = true;
+    for (var k = 0; k < list.length && merged.length < MAX_CITATIONS; k++) {
+      if (seen[list[k].url]) continue;
+      seen[list[k].url] = true;
+      merged.push(list[k]);
+    }
+    if (!merged.length) return false;
+    try {
+      Store.updateMessage(chat.id, assistantId, { citations: merged });
+    } catch (e) {
+      warn('写入引用失败：' + errText(e));
+      return false;
+    }
+    ui('updateMessage', assistantId, { citations: merged });
+    return true;
+  }
+
   function execOneTool(chat, toolCall, ctx, index) {
     return new Promise(function (resolve) {
       var name = toolCall && (toolCall.name || 'unknown') || 'unknown';
@@ -1225,6 +1363,8 @@
           ui('appendMessage', toolMsg);
           ui('scrollBottom');
         }
+        /* v2.0 F5：web_search 结果 JSON → 当前 assistant 消息 citations */
+        captureCitations(name, content);
         resolve(toolMsg);
       }).catch(function (e2) {
         var content = '工具执行失败：' + errText(e2);
@@ -1294,7 +1434,7 @@
         id: chat.id,
         title: chat.title,
         messages: chat.messages,
-        systemPrompt: state.prefs.systemPrompt
+        systemPrompt: resolveSystemPrompt(chat)
       } : null,
       addNote: function (text) { if (chat) appendNote(chat.id, text); },
       appendMessage: function (msg) {
@@ -1363,22 +1503,524 @@
     refreshChatList();
   }
 
+  /* ------------------------------------------------------------------ *
+   * v2.0 F1：智能体预设
+   * ------------------------------------------------------------------ */
+
+  function getPresets() {
+    try {
+      if (global.Store && typeof global.Store.getPresets === 'function') {
+        var list = global.Store.getPresets();
+        if (Array.isArray(list)) {
+          state.presets = list;
+          return list;
+        }
+      }
+    } catch (e) {
+      warn('读取预设失败：' + errText(e));
+    }
+    return Array.isArray(state.presets) ? state.presets.slice() : [];
+  }
+
+  function loadPresets() {
+    state.presets = getPresets();
+    return state.presets;
+  }
+
+  function findPreset(id) {
+    if (id === null || id === undefined || id === '') return null;
+    var key = String(id);
+    var list = Array.isArray(state.presets) && state.presets.length ? state.presets : getPresets();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === key) return list[i];
+    }
+    return null;
+  }
+
+  /** 放弃「新建会话」时创建的空白占位会话（如从选择器直接进入预设管理） */
+  function discardPendingAgentChat() {
+    var id = state.pendingAgentChatId;
+    state.pendingAgentChatId = null;
+    if (!id) return false;
+    var chat = Store.getChat(id);
+    if (!chat || chat.messages.length) return false;
+    try { Store.deleteChat(id); } catch (e) {
+      warn('清理占位会话失败：' + errText(e));
+      return false;
+    }
+    return true;
+  }
+
+  /** 打开「智能体预设」管理页（设置页入口 / 选择器「管理预设」） */
+  function openAgents() {
+    discardPendingAgentChat();
+    if (state.nav.screen !== 'agents') {
+      state.nav.agentsFrom = state.nav.screen && state.nav.screen !== 'agents'
+        ? state.nav.screen
+        : (state.nav.from || 'chats');
+      state.nav.from = state.nav.agentsFrom;
+    }
+    closeDrawer();
+    state.nav.screen = 'agents';
+    refreshAgents();
+    var U = getUI();
+    if (U && typeof U.renderAgents === 'function' && typeof U.showScreen === 'function') {
+      ui('showScreen', 'agents');
+      setBackDepth(state.nav.from === 'chat' ? 3 : 2);
+      return true;
+    }
+    // 兜底：UI 尚未实现管理页时，用输入框创建一个自定义预设
+    toast('当前版本暂不支持预设管理页', true);
+    promptAsync('新建智能体预设（输入名称）', '', '例如 代码审查员').then(function (name) {
+      var presetName = String(name === null || name === undefined ? '' : name).replace(/^\s+|\s+$/g, '');
+      if (!presetName) return;
+      return promptAsync('预设提示词（System Prompt）', '', '例如 你是一名严格的代码审查员…').then(function (prompt) {
+        var text = String(prompt === null || prompt === undefined ? '' : prompt);
+        if (!text.replace(/\s+/g, '')) { toast('提示词不能为空'); return; }
+        saveAgent({ name: presetName, description: '', systemPrompt: text });
+      });
+    });
+    return false;
+  }
+
+  /** 关闭「智能体预设」管理页，恢复到打开前的界面（对话页 / 设置页 / 会话列表） */
+  function closeAgents() {
+    var from = state.nav.agentsFrom || state.nav.from || 'chats';
+    if (from === 'chat') {
+      var chat = Store.getActiveChat();
+      if (!chat) { showChatsScreen(); return true; }
+      state.nav.from = 'chats';
+      state.nav.screen = 'chat';
+      navTo('chat');
+      ui('showScreen', 'chat');
+      ui('setUser', { name: 'DeepSeek 用户' });
+      ui('setModel', state.prefs.model);
+      applyModelLabel();
+      ui('setChatAvatar', chat);
+      setHeader(chat, '');
+      ui('renderMessages', chat);
+      ui('setStreaming', state.busy);
+      ui('setComposer', { value: '', busy: !!state.busy });
+      ui('scrollBottom', true);
+      refreshChatList();
+      setBackDepth(1);
+      return true;
+    }
+    if (from === 'settings') { openSettings(); return true; }
+    if (from === 'profile') { showProfile(); return true; }
+    if (from === 'share') { showShare(); return true; }
+    showChatsScreen();
+    return true;
+  }
+
+  function refreshAgents() {
+    ui('renderAgents', getPresets());
+  }
+
+  /** 保存预设（新增或更新）：handlers.onSaveAgent(agent) */
+  function saveAgent(agent) {
+    if (!agent || typeof agent !== 'object') { toast('预设数据无效'); return null; }
+    var saved = null;
+    try {
+      if (global.Store && typeof global.Store.savePreset === 'function') saved = global.Store.savePreset(agent);
+    } catch (e) {
+      warn('保存预设失败：' + errText(e));
+    }
+    if (!saved) { toast('保存失败：预设名称不能为空'); return null; }
+    loadPresets();
+    refreshAgents();
+    toast('预设已保存', true);
+    return saved;
+  }
+
+  /** 删除预设：handlers.onDeleteAgent(id)（内置预设受保护） */
+  function deleteAgent(id) {
+    if (id === null || id === undefined || id === '') return false;
+    var preset = findPreset(id);
+    if (!preset) { toast('预设不存在'); return false; }
+    if (preset.builtin) { toast('内置预设不可删除'); return false; }
+    var ok = false;
+    try {
+      if (global.Store && typeof global.Store.deletePreset === 'function') ok = global.Store.deletePreset(id);
+    } catch (e) {
+      warn('删除预设失败：' + errText(e));
+    }
+    loadPresets();
+    refreshAgents();
+    toast(ok ? '预设已删除' : '删除失败');
+    return !!ok;
+  }
+
+  /** 恢复内置默认预设（4 个），自定义预设保留 */
+  function resetAgents() {
+    try {
+      if (global.Store && typeof global.Store.resetPresets === 'function') global.Store.resetPresets();
+    } catch (e) {
+      warn('恢复默认预设失败：' + errText(e));
+    }
+    loadPresets();
+    refreshAgents();
+    toast('已恢复默认预设', true);
+    return true;
+  }
+
+  /** 供 UI.openAgentPicker 渲染的预设条目（UI 自行追加「默认会话」与「管理预设」入口） */
+  function agentPickerItems() {
+    return getPresets().map(function (preset) {
+      return {
+        id: preset.id,
+        name: preset.name,
+        description: preset.description || '',
+        systemPrompt: preset.systemPrompt || '',
+        model: preset.model || '',
+        builtin: !!preset.builtin
+      };
+    });
+  }
+
+  /** 解析请求使用的 system prompt：chat.systemPrompt → preset.systemPrompt → prefs.systemPrompt */
+  function resolveSystemPrompt(chat) {
+    chat = chat || Store.getActiveChat();
+    if (chat) {
+      var chatPrompt = chat.systemPrompt === null || chat.systemPrompt === undefined ? '' : String(chat.systemPrompt);
+      if (chatPrompt.replace(/\s+/g, '')) return chatPrompt;
+      if (chat.presetId) {
+        var preset = findPreset(chat.presetId);
+        var presetPrompt = preset && preset.systemPrompt ? String(preset.systemPrompt) : '';
+        if (presetPrompt.replace(/\s+/g, '')) return presetPrompt;
+      }
+    }
+    return state.prefs.systemPrompt || '';
+  }
+
+  /**
+   * 新会话流程（v2.0 F1）：先创建/进入默认会话，UI 提供选择器时再以底部弹层
+   * 覆盖在当前页上（选中预设 → 替换为预设会话；选「默认会话」/关闭 → 保留默认会话）。
+   * UI 未实现 openAgentPicker 时行为与旧版一致（直接新建）。
+   */
   function newChat() {
     if (state.busy) stopGeneration();
     state.nav.from = 'chats';
-    var active = Store.getActiveChat();
-    if (active && active.messages.length === 0 && (!active.title || active.title === '新的对话')) {
-      closeDrawer();
-      ui('showScreen', 'chat');
-      navTo('chat');
-      toast('已经是新会话');
-      return;
+    var chat = ensureFreshDefaultChat();
+    closeDrawer();
+    navTo('chat');
+    enterChat(chat);
+
+    var U = getUI();
+    if (!U || typeof U.openAgentPicker !== 'function') return chat;
+    state.pendingAgentChatId = chat.id;
+    var opened = false;
+    try {
+      opened = U.openAgentPicker(agentPickerItems(), '', function (id) {
+        onPickAgent(id);
+      });
+    } catch (e) {
+      warn('UI.openAgentPicker 失败：' + errText(e));
+      opened = false;
     }
-    var chat = Store.createChat({ model: state.prefs.model, title: defaultAgentTitle(state.prefs.model) });
+    if (opened === false) state.pendingAgentChatId = null;
+    return chat;
+  }
+
+  /** 保证有一个空白的默认会话并返回（当前会话已是空白默认会话时直接复用） */
+  function ensureFreshDefaultChat() {
+    var active = Store.getActiveChat();
+    if (active && active.messages.length === 0 && isDefaultAgentTitle(active.title)) return active;
+    return Store.createChat({ model: state.prefs.model, title: defaultAgentTitle(state.prefs.model) });
+  }
+
+  /**
+   * handlers.onPickAgent(id)：id 为空 = 默认会话（使用 prefs.systemPrompt）；
+   * 否则用对应预设创建 chat（title=预设名，model=预设模型或当前模型，复制 systemPrompt，存 presetId）。
+   */
+  function onPickAgent(idOrAgent) {
+    var preset = null;
+    if (idOrAgent && typeof idOrAgent === 'object') {
+      preset = idOrAgent.id ? findPreset(idOrAgent.id) : null;
+      if (!preset) preset = idOrAgent; /* UI 直接回传预设对象时兜底 */
+    } else if (idOrAgent !== null && idOrAgent !== undefined && String(idOrAgent) !== '') {
+      preset = findPreset(String(idOrAgent));
+      if (!preset) toast('预设不存在，已使用默认会话');
+    }
+    var U = getUI();
+    if (U && typeof U.closeAgentPicker === 'function') {
+      try { U.closeAgentPicker(); } catch (e) { /* ignore */ }
+    }
+    var placeholderId = state.pendingAgentChatId;
+    state.pendingAgentChatId = null;
+
+    if (!preset) {
+      /* 默认会话：保留 newChat() 已创建的占位会话 */
+      var placeholder = placeholderId ? Store.getChat(placeholderId) : null;
+      if (placeholder) {
+        Store.setActiveChat(placeholder.id);
+        state.nav.from = 'chats';
+        if (state.nav.screen !== 'chat') { navTo('chat'); enterChat(placeholder); }
+        return placeholder;
+      }
+      return createChatForAgent(null);
+    }
+
+    /* 预设会话：丢弃空的占位会话，避免列表里多出一个空对话 */
+    if (placeholderId) {
+      var ph = Store.getChat(placeholderId);
+      if (ph && ph.messages.length === 0) {
+        try { Store.deleteChat(placeholderId); } catch (e2) { warn('清理占位会话失败：' + errText(e2)); }
+      }
+    }
+    return createChatForAgent(preset);
+  }
+
+  /** 用预设（或 null = 默认）创建并进入新会话 */
+  function createChatForAgent(preset) {
+    state.nav.from = 'chats';
+    if (!preset) {
+      var active = Store.getActiveChat();
+      if (active && active.messages.length === 0 && isDefaultAgentTitle(active.title)) {
+        closeDrawer();
+        navTo('chat');
+        enterChat(active);
+        toast('已经是新会话');
+        return active;
+      }
+    }
+    var model = preset && preset.model ? String(preset.model) : state.prefs.model;
+    var title = preset && preset.name ? String(preset.name) : defaultAgentTitle(model);
+    var chat = Store.createChat({
+      model: model,
+      title: title,
+      presetId: preset ? preset.id : '',
+      systemPrompt: preset ? String(preset.systemPrompt || '') : ''
+    });
     Store.setActiveChat(chat.id);
     closeDrawer();
     navTo('chat');
     enterChat(chat);
+    return chat;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * v2.0 F2：归档
+   * ------------------------------------------------------------------ */
+
+  /** handlers.onArchiveChat(id, archived)：archived 省略时切换状态 */
+  function archiveChat(id, archived) {
+    var chat = Store.getChat(id) || Store.getActiveChat();
+    if (!chat) { toast('会话不存在'); return false; }
+    var next = archived === undefined || archived === null ? !chat.archived : !!archived;
+    try {
+      Store.updateChat(chat.id, { archived: next });
+    } catch (e) {
+      warn('归档失败：' + errText(e));
+      return false;
+    }
+    refreshChatList();
+    toast(next ? '已归档' : '已取消归档');
+    return true;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * v2.0 F4：从消息处新建分支
+   * ------------------------------------------------------------------ */
+
+  /** handlers.onForkMessage(msgId)：复制当前会话到该消息（含）为新分支并进入 */
+  function forkMessage(msgId) {
+    var chat = Store.getActiveChat();
+    if (!chat) { toast('没有可分支的会话'); return null; }
+    if (state.busy) stopGeneration();
+    var forked = null;
+    try {
+      if (global.Store && typeof global.Store.forkChat === 'function') forked = global.Store.forkChat(chat.id, msgId);
+    } catch (e) {
+      warn('创建分支失败：' + errText(e));
+    }
+    if (!forked) { toast('找不到要分支的消息'); return null; }
+    Store.setActiveChat(forked.id);
+    closeDrawer();
+    navTo('chat');
+    enterChat(forked);
+    toast('已创建分支会话', true);
+    return forked;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * v2.0 F3：备份 / 恢复
+   * ------------------------------------------------------------------ */
+
+  /** 组装备份对象：{app,version,exportedAt,prefs(不含 apiKey),chats,customModels,presets,plugins:{enabled}} */
+  function buildBackupObject() {
+    var data = {};
+    try {
+      data = Store.exportBackupData ? Store.exportBackupData() : {};
+    } catch (e) {
+      warn('读取备份数据失败：' + errText(e));
+      data = {};
+    }
+    var prefs = {};
+    var source = data.prefs || state.prefs || {};
+    var keys = Object.keys(source);
+    for (var i = 0; i < keys.length; i++) prefs[keys[i]] = source[keys[i]];
+    delete prefs.apiKey; /* 安全：API Key 不进入备份 */
+    var enabled = data.plugins && data.plugins.enabled ? data.plugins.enabled : {};
+    return {
+      app: BACKUP_APP_ID,
+      version: BACKUP_VERSION,
+      exportedAt: new Date().toISOString(),
+      prefs: prefs,
+      chats: Array.isArray(data.chats) ? data.chats : [],
+      customModels: Array.isArray(data.customModels) ? data.customModels : [],
+      presets: Array.isArray(data.presets) ? data.presets : [],
+      plugins: { enabled: enabled }
+    };
+  }
+
+  /** App.exportBackup()：导出 JSON 备份到用户选择的文件 */
+  function exportBackup() {
+    var payload = buildBackupObject();
+    var json = '';
+    try {
+      json = JSON.stringify(payload, null, 2);
+    } catch (e) {
+      warn('序列化备份失败：' + errText(e));
+      toast('导出备份失败：数据序列化错误', true);
+      return false;
+    }
+    var name = 'DeepSeekHouse-backup-' + backupDateStamp() + '.json';
+    var B = global.Bridge;
+    if (!B || typeof B.saveTextFile !== 'function') { toast('当前环境不支持导出文件', true); return false; }
+    var ok = false;
+    try {
+      ok = B.saveTextFile(name, json);
+    } catch (e2) {
+      warn('保存备份失败：' + errText(e2));
+    }
+    if (ok === false) { toast('导出备份失败', true); return false; }
+    toast('正在导出备份（' + payload.chats.length + ' 个会话）…', true);
+    return true;
+  }
+
+  /** App.importBackup()：选择 JSON 文件；结果通过 file-imported 事件回填 */
+  function importBackup() {
+    var B = global.Bridge;
+    if (!B || typeof B.importTextFile !== 'function') { toast('当前环境不支持导入文件', true); return false; }
+    toast('请选择备份文件…', true);
+    try {
+      var work = B.importTextFile();
+      if (work && typeof work.catch === 'function') work.catch(function (e) { warn('导入文件失败：' + errText(e)); });
+    } catch (e2) {
+      warn('importTextFile 失败：' + errText(e2));
+      toast('无法打开文件选择器', true);
+      return false;
+    }
+    return true;
+  }
+
+  /** file-imported 事件：取消静默；非法文件给出提示 */
+  function onFileImported(evt) {
+    if (!evt || typeof evt !== 'object') return false;
+    if (evt.cancelled || evt.error === 'cancelled') return false; /* 用户取消：静默 */
+    var content = evt.content;
+    if (content === null || content === undefined || String(content).replace(/\s+/g, '') === '') return false;
+    var name = evt.name ? String(evt.name) : '';
+    var text = String(content);
+    var parsed = null;
+    if (text.replace(/^\s+|\s+$/g, '').charAt(0) === '{') {
+      try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      /* 兼容：通过同一原生入口误选的插件文件 → 交给插件安装 */
+      if (/\.js$/i.test(name) || text.indexOf('DSPlugins.register') !== -1) {
+        installPlugin(text);
+        return true;
+      }
+      toast('导入失败：不是有效的备份 JSON', true);
+      return false;
+    }
+    if (String(parsed.app || '') !== BACKUP_APP_ID) {
+      toast('导入失败：不是 DeepSeek House 备份文件', true);
+      return false;
+    }
+    if (!Array.isArray(parsed.chats)) {
+      toast('导入失败：备份缺少会话数据（chats）', true);
+      return false;
+    }
+    var when = formatBackupTime(parsed.exportedAt);
+    var detail = '将用备份中的 ' + parsed.chats.length + ' 个会话覆盖当前全部会话、设置、模型与预设' +
+      (when ? '（备份时间 ' + when + '）' : '') + '，且不可恢复。确定继续吗？';
+    confirmAsync('导入备份', detail).then(function (ok) {
+      if (ok) applyBackup(parsed);
+    });
+    return true;
+  }
+
+  /** 应用备份：整体替换 Store → 同步原生 prefs / 插件启用态 → 刷新 UI */
+  function applyBackup(data) {
+    if (state.busy) stopGeneration();
+    try {
+      if (global.Store && typeof global.Store.replaceData === 'function') global.Store.replaceData(data);
+    } catch (e) {
+      warn('写入备份数据失败：' + errText(e));
+      toast('导入失败：数据写入异常', true);
+      return false;
+    }
+    /* 原生 prefs（不含 apiKey，保留本机 Key） */
+    try {
+      var nativePatch = {};
+      var prefs = data && data.prefs && typeof data.prefs === 'object' ? data.prefs : {};
+      var keys = ['baseUrl', 'temperature', 'maxTokens', 'stream', 'theme', 'systemPrompt', 'model'];
+      for (var i = 0; i < keys.length; i++) {
+        if (prefs[keys[i]] !== undefined && prefs[keys[i]] !== null) nativePatch[keys[i]] = prefs[keys[i]];
+      }
+      if (Object.keys(nativePatch).length && global.Bridge && typeof global.Bridge.setPrefs === 'function') {
+        global.Bridge.setPrefs(nativePatch);
+      }
+    } catch (e2) { warn('同步原生设置失败：' + errText(e2)); }
+
+    state.prefs = mergePrefs(Store.getPrefs(), readNativePrefs());
+    loadCustomModels();
+    loadPresets();
+    state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels);
+    var importedPluginStates = data && data.plugins && data.plugins.enabled
+      ? data.plugins.enabled
+      : (data && data.pluginStates ? data.pluginStates : null);
+    applyImportedPluginStates(importedPluginStates);
+
+    var chat = Store.getActiveChat();
+    if (state.nav.screen === 'settings') ui('renderSettings', state.prefs, currentModelCatalog(), getPresets());
+    else if (state.nav.screen === 'agents') refreshAgents();
+    else if (state.nav.screen === 'profile') showProfile();
+    else if (state.nav.screen === 'share') showShare();
+    refreshChatList();
+    if (state.nav.screen === 'chat') {
+      if (chat) {
+        ui('renderMessages', chat);
+        ui('setChatAvatar', chat);
+        setHeader(chat, '');
+        ui('scrollBottom', true);
+      } else {
+        showChatsScreen();
+      }
+    }
+    applyModelLabel();
+    loadPlugins(false);
+    toast('备份已导入', true);
+    return true;
+  }
+
+  /** 导入插件启用状态：Store + DSPlugins + 原生三层同步 */
+  function applyImportedPluginStates(enabled) {
+    if (!enabled || typeof enabled !== 'object') { refreshPlugins(); return; }
+    var ids = Object.keys(enabled);
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      var on = !!enabled[id];
+      try { if (global.Store && Store.setPluginEnabled) Store.setPluginEnabled(id, on); } catch (e) { /* ignore */ }
+      try {
+        if (global.DSPlugins && typeof global.DSPlugins.setEnabled === 'function') global.DSPlugins.setEnabled(id, on);
+      } catch (e2) { warn('同步插件状态失败：' + errText(e2)); }
+      try { if (global.Bridge && typeof global.Bridge.pluginSetEnabled === 'function') global.Bridge.pluginSetEnabled(id, on); } catch (e3) { /* ignore */ }
+    }
+    refreshPlugins();
   }
 
   function selectChat(id) {
@@ -1844,9 +2486,11 @@
 
   function openSettings() {
     closeDrawer();
-    state.nav.from = state.nav.screen;
+    /* 从「智能体预设」管理页返回时保留最初的来源，避免返回层级丢失 */
+    if (state.nav.screen !== 'agents') state.nav.from = state.nav.screen;
+    if (!state.nav.from) state.nav.from = 'chats';
     state.modelCatalog = currentModelCatalog();
-    ui('renderSettings', state.prefs, state.modelCatalog);
+    ui('renderSettings', state.prefs, state.modelCatalog, getPresets());
     ui('showScreen', 'settings');
     navTo('settings');
   }
@@ -1886,7 +2530,7 @@
       applyModelLabel();
     }
     state.modelCatalog = currentModelCatalog();
-    ui('renderSettings', state.prefs, state.modelCatalog);
+    ui('renderSettings', state.prefs, state.modelCatalog, getPresets());
     setHeader(active, '');
     return true;
   }
@@ -2340,6 +2984,27 @@
   App.inferModelTag = function (id) { return inferModelTag(id); };
   App.openDrawer = function () { state.nav.drawerOpen = true; };
   App.closeDrawer = function () { closeDrawer(); };
+
+  /* v2.0 F1–F5 对外接口（UI 回调 / QA 可直接调用） */
+  App.getPresets = function () { return getPresets(); };
+  App.getPreset = function (id) { return findPreset(id); };
+  App.loadPresets = safe(function () { return loadPresets(); }, 'App.loadPresets');
+  App.openAgents = safe(function () { return openAgents(); }, 'App.openAgents');
+  App.saveAgent = safe(function (agent) { return saveAgent(agent); }, 'App.saveAgent');
+  App.deleteAgent = safe(function (id) { return deleteAgent(id); }, 'App.deleteAgent');
+  App.resetAgents = safe(function () { return resetAgents(); }, 'App.resetAgents');
+  App.pickAgent = safe(function (id) { return onPickAgent(id); }, 'App.pickAgent');
+  App.createChatForAgent = safe(function (preset) { return createChatForAgent(preset || null); }, 'App.createChatForAgent');
+  App.resolveSystemPrompt = function (chat) { return resolveSystemPrompt(chat); };
+  App.archiveChat = safe(function (id, archived) { return archiveChat(id, archived); }, 'App.archiveChat');
+  App.forkMessage = safe(function (msgId) { return forkMessage(msgId); }, 'App.forkMessage');
+  App.exportBackup = safe(function () { return exportBackup(); }, 'App.exportBackup');
+  App.importBackup = safe(function () { return importBackup(); }, 'App.importBackup');
+  App.buildBackupObject = function () { return buildBackupObject(); };
+  App.applyBackup = safe(function (data) { return applyBackup(data); }, 'App.applyBackup');
+  App.onFileImported = safe(function (evt) { return onFileImported(evt); }, 'App.onFileImported');
+  App.extractSearchCitations = function (text) { return extractSearchCitations(text); };
+  App.captureCitations = safe(function (name, text) { return captureCitations(name, text); }, 'App.captureCitations');
 
   global.App = App;
 

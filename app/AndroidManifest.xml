@@ -1,14 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.deepseekhouse.app"
-    android:versionCode="13"
-    android:versionName="1.1.2">
+    android:versionCode="14"
+    android:versionName="1.2.0">
 
     <uses-sdk
         android:minSdkVersion="24"
         android:targetSdkVersion="34" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- F7 后台继续生成 + 完成通知 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- F6 相机：只调用系统相机 App（ACTION_IMAGE_CAPTURE），不需要 CAMERA 权限 -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="false"
@@ -30,6 +42,33 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- F8 从其他 App 分享文本进入 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- F8 从其他 App 分享图片进入 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
+
+        <!-- F7 生成期间的前台服务（target 34 需要 dataSync 类型 + 对应权限） -->
+        <service
+            android:name=".GenerationService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- F6 相机临时文件：androidx 不可用，自建最小 ContentProvider 替代 FileProvider -->
+        <provider
+            android:name=".CameraFileProvider"
+            android:authorities="com.deepseekhouse.app.camerafiles"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

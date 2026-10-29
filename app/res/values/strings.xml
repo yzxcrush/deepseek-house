@@ -6,4 +6,21 @@
     <string name="share_chat">分享聊天记录</string>
     <string name="err_no_browser">未找到可用的浏览器</string>
     <string name="err_no_file_manager">未找到可用的文件选择器</string>
+
+    <!-- F6 图片输入 -->
+    <string name="err_no_camera">未找到可用的相机应用</string>
+
+    <!-- F7 后台继续生成 / 通知 -->
+    <string name="notify_channel_generating">生成中</string>
+    <string name="notify_channel_generating_desc">回复生成期间的常驻通知</string>
+    <string name="notify_channel_messages">消息</string>
+    <string name="notify_channel_messages_desc">回复完成等消息通知</string>
+    <string name="notify_generating_title">正在生成回复…</string>
+    <string name="notify_generating_text">DeepSeek House 正在后台生成回复</string>
+
+    <!-- F9 应用锁 -->
+    <string name="app_lock_title">解锁 DeepSeek House</string>
+    <string name="app_lock_subtitle">请使用锁屏密码 / 图案 / 指纹验证身份</string>
+    <string name="app_lock_unavailable">设备未设置锁屏密码，无法验证应用锁</string>
+    <string name="app_lock_verify_failed">身份验证未通过，已退出</string>
 </resources>

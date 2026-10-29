@@ -24,6 +24,8 @@ public final class Prefs {
     public static final String KEY_THEME = "theme";
     public static final String KEY_SYSTEM_PROMPT = "systemPrompt";
     public static final String KEY_BACK_DEPTH = "backDepth";
+    /** F9 应用锁开关（只存原生 SharedPreferences，JS 通过 isAppLockEnabled() 查询）。 */
+    public static final String KEY_APP_LOCK = "appLock";
 
     public static final String DEFAULT_BASE_URL = "https://api.deepseek.com";
     public static final String DEFAULT_MODEL = "deepseek-chat";
@@ -86,6 +88,23 @@ public final class Prefs {
 
     public int getBackDepth() {
         return sp.getInt(KEY_BACK_DEPTH, 0);
+    }
+
+    /** F9：应用锁是否开启（开启后启动时需系统身份验证）。 */
+    public boolean isAppLockEnabled() {
+        try {
+            return sp.getBoolean(KEY_APP_LOCK, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public void setAppLockEnabled(boolean enabled) {
+        try {
+            sp.edit().putBoolean(KEY_APP_LOCK, enabled).apply();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
     }
 
     // ---------------------------------------------------------------- 写

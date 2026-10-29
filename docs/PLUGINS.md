@@ -117,7 +117,7 @@ DSPlugins.register({
   author: "你的名字",            // 可选
   description: "一句话描述",      // 可选
   builtin: false,               // 外部插件不要传；内置插件为 true
-  settings: {},                 // 可选：插件设置项 schema（简化 JSON）
+  settings: {},                 // 可选：插件设置项 schema（简化 JSON，示例见 §10.1）
   commands: [ /* 见 3.1 */ ],
   tools:    [ /* 见 3.2 */ ],
   hooks:    { /* 见 3.3 */ }
@@ -126,6 +126,9 @@ DSPlugins.register({
 
 `register()` 返回注册后的插件对象；如果 id 与内置插件冲突，外部插件会被忽略并输出
 `console.warn("[DSPlugins] ...")` 警告。
+
+`settings` 为可选的插件设置项 schema，运行时通过 `ctx.settings.get/set` 读写，实际存储位置为
+`state.plugins.settings[插件id]`（localStorage `dsh.v1`）；完整示例见 §10.1 的 `websearch`。
 
 ### 3.1 命令（`commands`）
 
@@ -410,8 +413,10 @@ try {
   调用 `Bridge.*`（如 Toast、剪贴板、打开链接、写插件文件等），也可以发起网络请求；
 - 管理器做的是「隔离错误」而不是「沙箱」：单个插件报错不会影响其它插件，但无法阻止恶意代码；
 - 网络能力通过 `ctx.http.fetch` 强制 HTTPS（本地回环地址除外）。请勿在插件里绕过该封装；
-- **不要**把 API Key、Token 或其它敏感信息硬编码进插件，也不要写入 `localStorage`；
-  插件的 `ctx.settings` 存在 `localStorage`（`dsh.v1` → `plugins.settings`），不适合存密钥；
+- **不要**把 API Key、Token 或其它敏感信息硬编码进插件，也不要随意写入 `localStorage`；
+  插件的 `ctx.settings` 存在 `localStorage`（`dsh.v1` → `plugins.settings`），一般不适合存密钥；
+  唯一例外是内置 `websearch` 插件的 Serper Key（SPEC v2.0 F5 要求存插件设置）：它只作为
+  `X-API-KEY` 请求头发往用户配置的端点，命令回显会脱敏，且不写日志。更推荐使用**无需 Key 的自建 SearXNG**；
 - 插件应避免 `document` 级全局修改（App 的 UI 由 web-shell 管理，直接改 DOM 可能被重渲染覆盖，
   也可能破坏界面）；需要反馈请用 `ctx.toast(...)` / `ctx.addNote(...)`；
 - 内置插件不可删除但可以禁用；外部插件删除后其启用状态一并清理；
@@ -429,8 +434,119 @@ try {
 | `prompts` | 提示词模板库 | `/prompt <模板> <内容>` | `use_prompt_template` | 写作/翻译/总结/代码解释/润色/邮件/计划，纯本地 |
 | `random` | 随机数与骰子 | `/roll [NdM]`、`/random [min] [max]` | `roll_dice`、`random_number` | 骰子与随机整数 |
 | `units` | 单位换算 | `/convert <值> <原单位> <目标单位>` | `convert_units` | 长度/质量/温度/体积/时间/数据 |
+| `websearch` | 联网搜索 | `/websearch …` | `web_search` | SearXNG（GET `?q=&format=json`）/ Serper（POST `X-API-KEY`）可配置；返回 JSON 结果，仅 https、最多 5 条，供聊天引用来源（详见 §10.1） |
 
 内置插件源码见 `app/assets/web/js/plugins_builtin.js`，可作为编写插件的参考实现。
+
+### 10.1 `websearch` 联网搜索插件（SearXNG / Serper 兼容）
+
+`websearch` 把「联网搜索」封装成模型工具 `web_search`，并附带 `/websearch` 命令用于配置与自测。
+插件为 `builtin: true`：可在插件页禁用（禁用后工具不再暴露给模型），但不可删除。
+
+**工具**
+
+| 项目 | 说明 |
+|---|---|
+| 工具名 | `web_search` |
+| 参数 | `query: string`（必填）、`max_results?: number`（1–8，默认 5） |
+| 返回 | **JSON 字符串**：`{"query":"…","results":[{"title":"…","url":"https://…","snippet":"…"}]}` |
+| 结果条数 | 最多 5 条；只保留 `https://` URL（`http://` 与 `javascript:` 等一律过滤） |
+| 截断 | `title` ≤ 120 字、`snippet` ≤ 200 字（超出以 `…` 结尾） |
+| 失败 | 返回中文错误串（未配置 / HTTP 非 2xx / 非 JSON / 上游 `error` / 缺少 `results` 等），不抛异常 |
+
+**设置项**（存 Store 插件设置：`state.plugins.settings.websearch`，localStorage `dsh.v1`）
+
+| key | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `endpoint` | `string` | 空（必填） | 搜索服务地址；必须 `https://`（`http://localhost`、`127.0.0.1`、`::1` 仅用于自建调试） |
+| `apiKey` | `string` | 空 | 仅 Serper 需要，作为 `X-API-KEY` 请求头；SearXNG 可留空 |
+| `type` | `"searxng"` \| `"serper"` | `"searxng"` | 服务类型 |
+
+**配置方式**
+
+1. 对话里用命令（当前版本可用；配置写入上面的插件设置）：
+   - `/websearch status` 查看当前配置（API Key 脱敏显示）；
+   - `/websearch type searxng` 或 `/websearch type serper`；
+   - `/websearch endpoint https://searx.example.com/search`（省略协议时自动补 `https://`）；
+   - `/websearch key <Serper API Key>`（清空：`/websearch key clear`）；
+   - `/websearch test` 用「DeepSeek House」测试一次；
+   - `/websearch <搜索词>` 直接搜一次并返回纯文本结果。
+2. 插件页「联网搜索」的设置面板（若当前版本提供）：读写的是同一份 `state.plugins.settings.websearch`。
+   未配置时 `web_search` 会返回中文引导：`请先到「插件 → 联网搜索 → 设置」填写 SearXNG 搜索地址…`。
+
+**SearXNG 模式（默认，推荐自建，无需 API Key）**
+
+- `endpoint` 填实例的搜索地址，例如：
+  - 自建示例：`https://searx.example.com/search`（把 `searx.example.com` 换成你的域名/实例域名）；
+  - 本机调试：`http://127.0.0.1:8088/search`（`http://` 仅允许 localhost 回环地址）。
+- 插件实际请求格式：
+
+  ```
+  GET {endpoint}?q=<encodeURIComponent(query)>&format=json
+  # 例：GET https://searx.example.com/search?q=deepseek%20v4&format=json
+  ```
+
+  若 `endpoint` 自带查询参数（如 `.../search?engines=google`），插件会自动改用 `&` 拼接。
+- SearXNG 实例必须在 `settings.yml` 中开启 JSON 输出，否则可能返回 HTML/403：
+
+  ```yaml
+  search:
+    formats:
+      - html
+      - json
+  ```
+
+- 响应解析 `results[{title,url,content}]`，统一映射为 `{title,url,snippet}`（`content` → `snippet`）。
+- 网络请求经原生桥发出（不受浏览器 CORS 限制），但 HTTPS 证书必须有效；自签证书请自行配置可信证书，
+  或仅在 localhost 上调试。
+
+**Serper 模式**
+
+- `endpoint` 填 Serper 搜索接口地址：`https://google.serper.dev/search`；
+  `apiKey` 填 [serper.dev](https://serper.dev) 申请的 Key；
+- 请求格式：
+
+  ```
+  POST {endpoint}
+  X-API-KEY: <apiKey>
+  Content-Type: application/json
+
+  {"q":"<query>","num":<max_results>}
+  ```
+
+- 响应解析 `organic[{title,link,snippet}]`，统一映射为 `{title,url,snippet}`；
+- Key 只用于该请求头，命令回显会脱敏（如 `sk-a••••3456`）；不要把它发到聊天内容或分享截图里。
+
+**聊天引用（citations）**
+
+`app.js` 在工具结果回填时解析 `web_search` 返回的 JSON，把 `results` 写入对应 assistant 消息的
+`citations` 字段（固定结构 `[{title,url,snippet}]`），由 UI 在气泡下方渲染引用卡片。因此
+返回结构是稳定契约，升级插件时不要随意改字段名；工具失败时返回中文错误串（非 JSON），
+`app.js` 视为无引用数据即可。
+
+**自测（无需 Android）**
+
+```js
+// 在 Node 中用 vm 加载 plugins_builtin.js，并用 stub 捕获 register 定义
+const def = /* 捕获到的 websearch 定义 */;
+const tool = def.tools.find((t) => t.name === "web_search");
+const ctx = {
+  settings: {
+    get(key, fallback) {
+      return { endpoint: "https://searx.example.com/search" }[key] ?? fallback;
+    }
+  },
+  http: {
+    fetch: async () => ({
+      status: 200,
+      body: '{"results":[{"title":"T","url":"https://e.com","content":"S"}]}'
+    })
+  }
+};
+console.log(await tool.run(ctx, { query: "deepseek" }));
+// {"query":"deepseek","results":[{"title":"T","url":"https://e.com","snippet":"S"}]}
+```
+
 
 ---
 
@@ -439,6 +555,8 @@ try {
 - [`docs/examples/example-plugin.js`](examples/example-plugin.js) —— 「随机名言」：
   完整的元数据注释、`/quote` 命令、`random_quote` 工具，可直接在 App 中安装，也可作为自己的模板。
 - 内置插件（§10）覆盖了计算、网络、模板、随机、换算等常见模式，推荐对照阅读。
+- `websearch`（§10.1）演示了 `ctx.settings` + `ctx.http.fetch` 组合调用外部服务、以及向模型返回 JSON
+  字符串的工具写法，需要「可配置端点 + 结构化返回值」时可参考。
 
 ---
 

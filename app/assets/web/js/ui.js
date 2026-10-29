@@ -23,6 +23,8 @@
     chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>',
     checkDouble: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 12.4 5.4 16 12 8.6"></path><path d="M8.8 12.4 12.4 16 22 5.6"></path></svg>',
     pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1.2 6.2L17 12.5H7l3.2-3.3L9 3Z"></path><path d="M12 12.5V21"></path></svg>',
+    archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.4 5.6A1.6 1.6 0 0 1 5 4h14a1.6 1.6 0 0 1 1.6 1.6V8H3.4V5.6Z"></path><path d="M4.6 8v10.4A1.6 1.6 0 0 0 6.2 20h11.6a1.6 1.6 0 0 0 1.6-1.6V8"></path><path d="M10 12h4"></path></svg>',
+    link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.5 13.5a4.2 4.2 0 0 0 6 0l2.7-2.7a4.2 4.2 0 0 0-6-6l-1.5 1.5"></path><path d="M13.5 10.5a4.2 4.2 0 0 0-6 0l-2.7 2.7a4.2 4.2 0 0 0 6 6l1.5-1.5"></path></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>',
     puzzle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
@@ -73,6 +75,8 @@
     chatTab: 'all',
     chats: [],
     activeChatId: null,
+    /* 智能体预设（SPEC v2.0 F1） */
+    agents: [],
 
     /* 模型 */
     model: 'deepseek-chat',
@@ -92,6 +96,16 @@
       customOpen: false,
       opts: {},
       refreshTimer: 0
+    },
+
+    /* 智能体选择器（SPEC v2.0 F1） */
+    agentPicker: {
+      open: false,
+      agents: [],
+      currentId: '',
+      onPick: null,
+      resolved: false,
+      opts: {}
     },
 
     /* 各页数据 */
@@ -623,6 +637,397 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 智能体预设（SPEC v2.0 F1）
+   * - openAgentPicker：底部弹层（默认会话 + 预设列表 + 管理预设按钮）
+   * - renderAgents：设置页「智能体预设」管理列表
+   * - 新建 / 编辑：连续两次 UI.prompt 收集「名称」「系统提示词」
+   * ------------------------------------------------------------------ */
+  var AGENT_DEFAULT_DESC = '使用全局系统提示词与当前模型';
+  var AGENT_DESC_MAX = 40;
+
+  function normalizeAgents(agents) {
+    var list = [];
+    (Array.isArray(agents) ? agents : []).forEach(function (item) {
+      if (!item || typeof item !== 'object') return;
+      var id = item.id == null ? '' : String(item.id);
+      if (!id) return;
+      list.push({
+        id: id,
+        name: item.name ? String(item.name) : id,
+        description: item.description ? String(item.description) : '',
+        systemPrompt: item.systemPrompt == null ? '' : String(item.systemPrompt),
+        model: item.model == null ? '' : String(item.model),
+        builtin: !!item.builtin
+      });
+    });
+    return list;
+  }
+
+  function normalizeAgentDesc(text) {
+    var s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    return s.length > AGENT_DESC_MAX ? s.slice(0, AGENT_DESC_MAX - 1) + '…' : s;
+  }
+
+  function findAgent(id) {
+    var value = id == null ? '' : String(id);
+    for (var i = 0; i < state.agents.length; i++) {
+      if (String(state.agents[i].id) === value) return state.agents[i];
+    }
+    return null;
+  }
+
+  function agentDefaultLabel() {
+    var opts = state.agentPicker.opts || {};
+    return opts.defaultLabel ? String(opts.defaultLabel) : '默认会话';
+  }
+
+  function makeAgentAvatar() {
+    var img = document.createElement('img');
+    img.className = 'agent-avatar';
+    img.src = 'img/agent-avatar.jpg';
+    img.alt = '';
+    img.setAttribute('aria-hidden', 'true');
+    return img;
+  }
+
+  function buildAgentPickerRow(agent, isDefault) {
+    var picker = state.agentPicker;
+    var id = isDefault ? '' : String(agent.id);
+    var current = String(id) === String(picker.currentId || '');
+    var row = el('div', 'model-row agent-row' + (current ? ' is-current' : ''));
+    row.setAttribute('data-action', 'pick-agent');
+    row.setAttribute('data-id', id);
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', current ? 'true' : 'false');
+    row.setAttribute('tabindex', '0');
+
+    row.appendChild(makeAgentAvatar());
+
+    var main = el('div', 'agent-row-main');
+    var name = isDefault ? agentDefaultLabel() : (agent.name || agent.id);
+    main.appendChild(makeText('div', 'agent-row-name', name));
+    var desc = isDefault
+      ? ((picker.opts && picker.opts.defaultDesc) ? String(picker.opts.defaultDesc) : AGENT_DEFAULT_DESC)
+      : (agent.description || normalizeAgentDesc(agent.systemPrompt) || '自定义智能体');
+    main.appendChild(makeText('div', 'agent-row-desc', desc));
+    row.appendChild(main);
+
+    if (isDefault) row.appendChild(makeText('span', 'agent-tag', '默认'));
+    else if (agent.builtin) row.appendChild(makeText('span', 'agent-tag', '内置'));
+
+    if (current) {
+      var check = el('span', 'agent-row-check');
+      check.innerHTML = ICON.check;
+      row.appendChild(check);
+    }
+    return row;
+  }
+
+  function renderAgentPickerList() {
+    var listEl = r('agent-picker-list');
+    if (!listEl) return;
+    var picker = state.agentPicker;
+    listEl.textContent = '';
+    listEl.appendChild(buildAgentPickerRow({ id: '', name: agentDefaultLabel() }, true));
+    if (!picker.agents.length) {
+      listEl.appendChild(makeText('div', 'picker-empty', '还没有智能体预设，点下方「管理预设」新建'));
+      return;
+    }
+    var wrapper = el('div', 'picker-group');
+    wrapper.appendChild(makeText('div', 'picker-group-title', '预设智能体'));
+    picker.agents.forEach(function (agent) {
+      wrapper.appendChild(buildAgentPickerRow(agent, false));
+    });
+    listEl.appendChild(wrapper);
+  }
+
+  function openAgentPickerPanel(agents, currentId, onPick, opts) {
+    var picker = state.agentPicker;
+    if (state.modelPicker.open) closeModelPickerPanel(false);
+    picker.agents = normalizeAgents(agents);
+    picker.currentId = currentId == null ? '' : String(currentId);
+    picker.onPick = typeof onPick === 'function' ? onPick : null;
+    picker.opts = opts && typeof opts === 'object' ? opts : {};
+    picker.resolved = false;
+    picker.open = true;
+
+    renderAgentPickerList();
+
+    var panel = r('agent-picker');
+    if (panel) {
+      var sheet = panel.querySelector('.model-picker-sheet');
+      if (sheet) sheet.style.transform = '';
+      panel.classList.add('is-open');
+      panel.setAttribute('aria-hidden', 'false');
+    }
+    var listEl = r('agent-picker-list');
+    if (listEl) listEl.scrollTop = 0;
+    syncDepth();
+  }
+
+  function closeAgentPickerPanel(notify) {
+    var picker = state.agentPicker;
+    if (!picker.open) return;
+    picker.open = false;
+    var panel = r('agent-picker');
+    if (panel) {
+      panel.classList.remove('is-open');
+      panel.setAttribute('aria-hidden', 'true');
+      var sheet = panel.querySelector('.model-picker-sheet');
+      if (sheet) sheet.style.transform = '';
+    }
+    var callback = picker.onPick;
+    var notifyCallback = notify && !picker.resolved && typeof callback === 'function' ? callback : null;
+    picker.onPick = null;
+    picker.resolved = false;
+    picker.agents = [];
+    syncDepth();
+    if (notifyCallback) {
+      try { notifyCallback(null); } catch (err) { console.warn('[UI] 智能体选择器 onPick(null) 回调异常:', err); }
+    }
+  }
+
+  function pickAgent(id) {
+    var value = id == null ? '' : String(id);
+    var picker = state.agentPicker;
+    if (!picker.open) return;
+    var callback = picker.onPick;
+    picker.resolved = true;
+    closeAgentPickerPanel(false);
+    if (typeof callback === 'function') {
+      try { callback(value); } catch (err) { console.warn('[UI] 智能体选择回调异常:', err); }
+    } else {
+      invoke('onPickAgent', value);
+    }
+  }
+
+  function manageAgentsFromPicker() {
+    var opts = state.agentPicker.opts || {};
+    var manage = typeof opts.manage === 'function' ? opts.manage : null;
+    closeAgentPickerPanel(false);
+    if (manage) {
+      try { manage(); } catch (err) { console.warn('[UI] 管理预设回调异常:', err); }
+      return;
+    }
+    if (invoke('onManageAgents')) return;
+    openAgentsPage();
+  }
+
+  function renderAgentsList() {
+    var list = r('agents-list');
+    if (list) {
+      list.textContent = '';
+      state.agents.forEach(function (agent) {
+        var item = el('div', 'agent-item');
+        item.setAttribute('data-agent-id', String(agent.id));
+        item.appendChild(makeAgentAvatar());
+
+        var body = el('div', 'agent-item-body');
+        var nameRow = el('div', 'agent-item-name');
+        nameRow.appendChild(makeText('span', '', agent.name || agent.id));
+        if (agent.builtin) nameRow.appendChild(makeText('span', 'agent-tag', '内置'));
+        body.appendChild(nameRow);
+        body.appendChild(makeText('div', 'agent-item-desc',
+          agent.description || normalizeAgentDesc(agent.systemPrompt) || '未填写简介'));
+        item.appendChild(body);
+
+        var actions = el('div', 'agent-item-actions');
+        var edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'agent-mini-btn';
+        edit.setAttribute('data-action', 'edit-agent');
+        edit.setAttribute('data-id', String(agent.id));
+        edit.textContent = '编辑';
+        actions.appendChild(edit);
+
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'agent-mini-btn agent-mini-btn--danger';
+        remove.setAttribute('data-action', 'delete-agent');
+        remove.setAttribute('data-id', String(agent.id));
+        remove.textContent = '删除';
+        actions.appendChild(remove);
+
+        item.appendChild(actions);
+        list.appendChild(item);
+      });
+    }
+
+    var empty = r('agents-empty');
+    if (empty) empty.hidden = state.agents.length > 0;
+
+    var count = r('agents-count');
+    if (count) {
+      var builtin = state.agents.filter(function (agent) { return !!agent.builtin; }).length;
+      count.textContent = state.agents.length
+        ? state.agents.length + ' 个预设' + (builtin ? ' · 内置 ' + builtin + ' 个' : '')
+        : '内置与自定义预设';
+    }
+    var settingsLabel = r('set-agents-label');
+    if (settingsLabel) settingsLabel.textContent = state.agents.length ? state.agents.length + ' 个' : '管理';
+  }
+
+  function renderAgents(agents) {
+    state.agents = normalizeAgents(agents);
+    renderAgentsList();
+  }
+
+  function openAgentsPage() {
+    closeDrawer();
+    if (invoke('onOpenAgents')) return;
+    /* app.js 未接管时：直接用缓存数据打开管理页，保证 UI 可独立浏览 */
+    showScreenImpl('agents');
+    renderAgentsList();
+  }
+
+  function genAgentId() {
+    return 'agent-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  }
+
+  function upsertAgentLocal(agent) {
+    var id = agent.id ? String(agent.id) : genAgentId();
+    var entry = {
+      id: id,
+      name: String(agent.name || ''),
+      description: agent.description || normalizeAgentDesc(agent.systemPrompt),
+      systemPrompt: agent.systemPrompt == null ? '' : String(agent.systemPrompt),
+      model: agent.model == null ? '' : String(agent.model),
+      builtin: !!agent.builtin
+    };
+    var replaced = false;
+    state.agents = state.agents.map(function (item) {
+      if (String(item.id) !== id) return item;
+      replaced = true;
+      return {
+        id: id,
+        name: entry.name,
+        description: entry.description,
+        systemPrompt: entry.systemPrompt,
+        model: entry.model,
+        builtin: item.builtin || entry.builtin
+      };
+    });
+    if (!replaced) state.agents.push(entry);
+    return entry;
+  }
+
+  function saveAgent(agent) {
+    agent = agent || {};
+    var payload = {
+      id: agent.id ? String(agent.id) : '',
+      name: String(agent.name || '').trim(),
+      description: agent.description == null ? '' : String(agent.description),
+      systemPrompt: agent.systemPrompt == null ? '' : String(agent.systemPrompt),
+      model: agent.model == null ? '' : String(agent.model)
+    };
+    if (!payload.name) { UI.toast('名称不能为空'); return; }
+    if (!payload.description) payload.description = normalizeAgentDesc(payload.systemPrompt);
+    var handled = invoke('onSaveAgent', payload);
+    if (!handled) {
+      /* app.js 未接管时本地乐观更新，保证管理页可用 */
+      upsertAgentLocal(payload);
+      renderAgentsList();
+      UI.toast(payload.id ? '预设已更新' : '预设已创建');
+    }
+    /* app.js 接管时会持久化并调用 UI.renderAgents 刷新列表（含新 id） */
+    return payload;
+  }
+
+  function newAgentFlow() {
+    UI.prompt('智能体名称', '', '例如：程序员').then(function (name) {
+      if (name == null) return;
+      var title = String(name).trim();
+      if (!title) { UI.toast('名称不能为空'); return; }
+      UI.prompt('系统提示词', '', '例如：你是一名资深工程师，回答尽量给出可运行代码…').then(function (systemPrompt) {
+        if (systemPrompt == null) return;
+        var prompt = String(systemPrompt);
+        saveAgent({ id: '', name: title, description: normalizeAgentDesc(prompt), systemPrompt: prompt });
+      });
+    });
+  }
+
+  function editAgentFlow(id) {
+    var agent = findAgent(id);
+    if (!agent) return;
+    UI.prompt('智能体名称', agent.name, '例如：程序员').then(function (name) {
+      if (name == null) return;
+      var title = String(name).trim();
+      if (!title) { UI.toast('名称不能为空'); return; }
+      UI.prompt('系统提示词', agent.systemPrompt, '该预设的系统提示词').then(function (systemPrompt) {
+        if (systemPrompt == null) return;
+        var prompt = String(systemPrompt);
+        var oldDesc = agent.description ? String(agent.description) : '';
+        var autoDesc = !oldDesc || oldDesc === normalizeAgentDesc(agent.systemPrompt);
+        saveAgent({
+          id: agent.id,
+          name: title,
+          description: autoDesc ? normalizeAgentDesc(prompt) : oldDesc,
+          systemPrompt: prompt,
+          model: agent.model,
+          builtin: agent.builtin
+        });
+      });
+    });
+  }
+
+  function deleteAgentFlow(id) {
+    var agent = findAgent(id);
+    if (!agent) return;
+    var name = agent.name ? '「' + agent.name + '」' : '该预设';
+    confirmDialog('删除预设', '确定删除' + name + '吗？删除后新建会话时将不再显示。').then(function (ok) {
+      if (!ok) return;
+      var handled = invoke('onDeleteAgent', agent.id);
+      if (!handled) {
+        state.agents = state.agents.filter(function (item) {
+          return String(item.id) !== String(agent.id);
+        });
+        renderAgentsList();
+        UI.toast('预设已删除');
+      }
+      /* app.js 接管时会持久化并刷新列表（内置预设会提示不可删除） */
+    });
+  }
+
+  function bindAgentPickerEvents() {
+    var panel = r('agent-picker');
+    if (!panel) return;
+    panel.addEventListener('click', function (event) {
+      if (event.target === panel) closeAgentPickerPanel(true);
+    });
+    var sheet = panel.querySelector('.model-picker-sheet');
+    var handle = r('agent-picker-handle');
+    if (!sheet || !handle) return;
+    var startY = 0;
+    var delta = 0;
+    var dragging = false;
+    handle.addEventListener('pointerdown', function (event) {
+      dragging = true;
+      startY = event.clientY;
+      delta = 0;
+      sheet.style.transition = 'none';
+      try {
+        if (handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
+      } catch (err) { /* 静默 */ }
+    });
+    handle.addEventListener('pointermove', function (event) {
+      if (!dragging) return;
+      delta = Math.max(0, event.clientY - startY);
+      sheet.style.transform = 'translateY(' + delta + 'px)';
+    });
+    function endDrag() {
+      if (!dragging) return;
+      dragging = false;
+      sheet.style.transition = '';
+      sheet.style.transform = '';
+      if (delta > 90) closeAgentPickerPanel(true);
+      delta = 0;
+    }
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+  }
+
+  /* ------------------------------------------------------------------ *
    * 剪贴板 / 外链（只作为回调缺失时的兜底，全部 try/catch）
    * ------------------------------------------------------------------ */
   function normalizeClipText(value) {
@@ -719,9 +1124,10 @@
     var base;
     if (state.screen === 'chats') base = 0;
     else if (state.screen === 'chat') base = 1;
-    else if (state.screen === 'settings' || state.screen === 'plugins') base = 2;
+    else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
+      state.agentPicker.open ||
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
@@ -834,7 +1240,8 @@
     profile: 'screen-profile',
     chat: 'screen-chat',
     settings: 'screen-settings',
-    plugins: 'screen-plugins'
+    plugins: 'screen-plugins',
+    agents: 'screen-agents'
   };
 
   function syncBottomNav(name) {
@@ -871,6 +1278,7 @@
     if (name !== 'chat') closeDrawer();
     closeAllModals();
     closeModelPickerPanel(true);
+    closeAgentPickerPanel(true);
     if (name !== 'chat') closeEmojiPanel();
     syncDepth();
   }
@@ -896,6 +1304,7 @@
 
   function closeDrawer() {
     var hasOverlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
+      state.agentPicker.open ||
       isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) || isModalOpen(r('install-modal'));
     if (!hasOverlay) return;
     if (state.drawerOpen) {
@@ -922,6 +1331,7 @@
     if (isModalOpen(r('rename-modal'))) resolveRename(null);
     if (isModalOpen(r('install-modal'))) closeModal(r('install-modal'));
     if (state.modelPicker.open) closeModelPickerPanel(true);
+    if (state.agentPicker.open) closeAgentPickerPanel(true);
   }
 
   function focusSearch() {
@@ -998,17 +1408,42 @@
     }
   }
 
-  function switchChatTab(tab) {
-    var next = tab === 'unread' ? 'unread' : 'all';
-    if (state.chatTab === next) return;
-    state.chatTab = next;
+  /* 文件夹标签：全部 / 归档（SPEC v2.0 F2） */
+  function syncFolderTabActive() {
     var tabs = document.querySelectorAll('#chat-tabs [data-tab]');
     Array.prototype.forEach.call(tabs, function (node) {
-      var active = node.getAttribute('data-tab') === next;
+      var active = node.getAttribute('data-tab') === state.chatTab;
       node.classList.toggle('is-active', active);
       node.setAttribute('aria-selected', active ? 'true' : 'false');
     });
-    renderChatListImpl(state.chats, state.activeChatId);
+  }
+
+  function updateFolderTabs(archivedCount, allCount) {
+    syncFolderTabActive();
+    var allCountEl = r('chat-tab-count-all');
+    if (allCountEl) {
+      allCountEl.hidden = !(allCount > 0);
+      allCountEl.textContent = String(allCount > 99 ? '99+' : allCount);
+    }
+    var archivedEl = r('chat-tab-count-archived');
+    if (archivedEl) {
+      archivedEl.hidden = !(archivedCount > 0);
+      archivedEl.textContent = String(archivedCount > 99 ? '99+' : archivedCount);
+    }
+  }
+
+  function switchChatTab(tab) {
+    var next = tab === 'archived' ? 'archived' : (tab === 'unread' ? 'unread' : 'all');
+    if (state.chatTab === next) return;
+    state.chatTab = next;
+    syncFolderTabActive();
+    invoke('onChatTab', next);
+    /* 搜索在当前标签内过滤：app.js 接管 onSearch 时让它重新给列表，UI 再按标签过滤 */
+    if (typeof state.cb.onSearch === 'function' && String(state.searchQuery || '').trim()) {
+      invoke('onSearch', state.searchQuery);
+    } else {
+      renderChatListImpl(state.chats, state.activeChatId);
+    }
     var homeList = r('chats-list');
     if (homeList) homeList.scrollTop = 0;
   }
@@ -1205,11 +1640,24 @@
     }
 
     var unreadTotal = 0;
-    items.forEach(function (chat) { unreadTotal += Math.max(0, parseInt(chat.unread, 10) || 0); });
+    var archivedCount = 0;
+    state.chats.forEach(function (chat) {
+      unreadTotal += Math.max(0, parseInt(chat.unread, 10) || 0);
+      if (chat && chat.archived) archivedCount++;
+    });
     setNavBadge(unreadTotal);
-    var visible = state.chatTab === 'unread'
-      ? items.filter(function (chat) { return (parseInt(chat.unread, 10) || 0) > 0; })
-      : items;
+    /* 搜索时 app.js 传入的是过滤后的列表，标签计数沿用上次全量结果，避免数字跳动 */
+    if (!(query && typeof state.cb.onSearch === 'function')) {
+      updateFolderTabs(archivedCount, state.chats.length - archivedCount);
+    }
+    var visible;
+    if (state.chatTab === 'archived') {
+      visible = items.filter(function (chat) { return !!chat.archived; });
+    } else if (state.chatTab === 'unread') {
+      visible = items.filter(function (chat) { return (parseInt(chat.unread, 10) || 0) > 0; });
+    } else {
+      visible = items.filter(function (chat) { return !chat.archived; });
+    }
 
     [homeList, drawerList].forEach(function (list) {
       if (!list) return;
@@ -1217,29 +1665,36 @@
       visible.forEach(function (chat) { list.appendChild(buildChatItem(chat)); });
     });
 
-    /* 标签页未读计数（Telegram 文件夹式） */
-    var unreadTab = document.querySelector('#chat-tabs [data-tab="unread"]');
-    if (unreadTab) {
-      unreadTab.textContent = unreadTotal > 0 ? '未读 ' + (unreadTotal > 99 ? '99+' : unreadTotal) : '未读';
-      unreadTab.classList.toggle('has-unread', unreadTotal > 0);
-    }
-
     var homeEmpty = r('chats-empty');
     if (homeEmpty) {
       homeEmpty.hidden = visible.length > 0;
       if (!visible.length) {
         var title = homeEmpty.querySelector('.chatlist-empty-title');
         var sub = homeEmpty.querySelector('.chatlist-empty-sub');
-        var unreadMode = state.chatTab === 'unread';
-        if (title) title.textContent = query ? '没有找到会话' : (unreadMode ? '没有未读消息' : '还没有聊天');
-        if (sub) sub.textContent = query ? '换个关键词试试' : (unreadMode ? '所有消息都读过了' : '点右下角按钮，开始一段新对话');
+        var tab = state.chatTab;
+        var archivedMode = tab === 'archived';
+        var unreadMode = tab === 'unread';
+        if (title) {
+          title.textContent = query
+            ? '没有找到会话'
+            : (archivedMode ? '暂无归档会话' : (unreadMode ? '没有未读消息' : '还没有聊天'));
+        }
+        if (sub) {
+          sub.textContent = query
+            ? '换个关键词试试'
+            : (archivedMode ? '长按会话，选择「归档」即可移入此处' : (unreadMode ? '所有消息都读过了' : '点右下角按钮，开始一段新对话'));
+        }
+        var emptyBtn = homeEmpty.querySelector('.chatlist-empty-btn');
+        if (emptyBtn) emptyBtn.hidden = archivedMode;
       }
     }
 
     var empty = r('chat-list-empty');
     if (empty) {
       empty.hidden = visible.length > 0;
-      empty.textContent = visible.length ? '' : (query ? '没有找到匹配的会话' : '暂无会话');
+      empty.textContent = visible.length
+        ? ''
+        : (query ? '没有找到匹配的会话' : (state.chatTab === 'archived' ? '暂无归档会话' : '暂无会话'));
     }
   }
 
@@ -1356,12 +1811,17 @@
 
       var content = el('div', 'msg-content md');
 
+      /* SPEC v2.0 F5：引用来源卡（Telegram 链接预览风格） */
+      var citations = el('div', 'msg-citations');
+      citations.hidden = true;
+
       var error = el('div', 'msg-error');
       error.hidden = true;
 
       bubble.appendChild(details);
       bubble.appendChild(chips);
       bubble.appendChild(content);
+      bubble.appendChild(citations);
       bubble.appendChild(error);
 
       refs.reasoning = details;
@@ -1370,6 +1830,7 @@
       refs.userToggled = false;
       refs.tools = chips;
       refs.content = content;
+      refs.citations = citations;
       refs.error = error;
 
       summary.addEventListener('click', function () {
@@ -1424,6 +1885,72 @@
         chip.title = name + ' ' + args;
       }
       container.appendChild(chip);
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 引用来源（SPEC v2.0 F5）
+   * msg.citations = [{title,url,snippet,domain?}]
+   * 渲染为 Telegram 链接预览卡；点击走 Bridge.openUrl（openExternal 兜底）。
+   * ------------------------------------------------------------------ */
+  function citationDomain(url) {
+    var value = String(url == null ? '' : url);
+    var match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(value);
+    var host = match ? match[1] : value.replace(/^\/\//, '').split(/[/?#]/)[0];
+    host = String(host || '').replace(/^www\./i, '');
+    return host || '链接';
+  }
+
+  function normalizeCitations(citations) {
+    var list = [];
+    (Array.isArray(citations) ? citations : []).forEach(function (item) {
+      if (!item) return;
+      if (typeof item === 'string') {
+        if (/^https?:\/\//i.test(item)) {
+          list.push({ title: citationDomain(item), url: item, snippet: '', domain: citationDomain(item) });
+        }
+        return;
+      }
+      if (typeof item !== 'object') return;
+      var url = item.url ? String(item.url) : '';
+      if (!url) return;
+      var snippet = item.snippet != null ? String(item.snippet)
+        : (item.content != null ? String(item.content) : (item.description != null ? String(item.description) : ''));
+      list.push({
+        title: item.title ? String(item.title) : citationDomain(url),
+        url: url,
+        snippet: snippet,
+        domain: item.domain ? String(item.domain) : citationDomain(url)
+      });
+    });
+    return list;
+  }
+
+  function renderCitations(container, citations) {
+    var list = normalizeCitations(citations);
+    container.textContent = '';
+    if (!list.length) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    list.forEach(function (item) {
+      var card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'citation-card';
+      card.setAttribute('data-action', 'open-citation');
+      card.setAttribute('data-url', item.url);
+      card.setAttribute('aria-label', '打开来源 ' + item.title);
+
+      var accent = el('span', 'citation-accent');
+      var main = el('div', 'citation-main');
+      main.appendChild(makeText('div', 'citation-title', item.title));
+      main.appendChild(makeText('div', 'citation-domain', item.domain));
+      if (item.snippet) main.appendChild(makeText('div', 'citation-snippet', item.snippet));
+
+      card.appendChild(accent);
+      card.appendChild(main);
+      container.appendChild(card);
     });
   }
 
@@ -1518,6 +2045,21 @@
         refs.error.hidden = true;
         refs.error.textContent = '';
         refs.lastErr = '';
+      }
+    }
+
+    /* 引用来源（SPEC v2.0 F5）：流式/增量更新时按 JSON 变化重渲染 */
+    if (refs.citations) {
+      var citationList = Array.isArray(msg.citations) ? msg.citations : [];
+      var citationKey = '';
+      try {
+        citationKey = JSON.stringify(citationList);
+      } catch (errCit) {
+        citationKey = citationList.length ? 'len:' + citationList.length : '';
+      }
+      if (refs.lastCitations !== citationKey) {
+        renderCitations(refs.citations, citationList);
+        refs.lastCitations = citationKey;
       }
     }
 
@@ -2103,6 +2645,23 @@
           }
         });
       }
+      /* SPEC v2.0 F2：归档 / 取消归档 */
+      items.push({
+        label: chat.archived ? '取消归档' : '归档',
+        icon: ICON.archive,
+        run: function () {
+          var nextArchived = !chat.archived;
+          var handled = invoke('onArchiveChat', chat.id, nextArchived);
+          if (!handled) {
+            state.chats.forEach(function (item) {
+              if (String(item.id) === String(chat.id)) item.archived = nextArchived;
+            });
+            renderChatListImpl(state.chats, state.activeChatId);
+            UI.toast(nextArchived ? '已归档' : '已取消归档');
+          }
+          /* app.js 接管时由它持久化、刷新列表并 toast */
+        }
+      });
       items.push({
         label: '重命名',
         icon: ICON.edit,
@@ -2236,6 +2795,11 @@
    * 动作分发（#app 事件委托）
    * ------------------------------------------------------------------ */
   function handleHeaderBack() {
+    /* 智能体预设管理页：优先用 onCloseAgents 恢复导航，否则交给 app.js 的 onBack */
+    if (state.screen === 'agents' && typeof state.cb.onCloseAgents === 'function') {
+      invoke('onCloseAgents');
+      return;
+    }
     if (!invoke('onBack')) showScreenImpl('chat');
   }
 
@@ -2245,8 +2809,10 @@
     if (isModalOpen(r('rename-modal'))) { resolveRename(null); return true; }
     if (isModalOpen(r('confirm-modal'))) { resolveConfirm(false); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
+    if (state.agentPicker.open) { closeAgentPickerPanel(true); return true; }
     if (state.drawerOpen) { closeDrawer(); return true; }
     if (state.emojiOpen) { closeEmojiPanel(); return true; }
+    if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
   }
@@ -2285,6 +2851,18 @@
         closeDrawer();
         invoke('onOpenPlugins');
         showScreenImpl('plugins');
+        break;
+      case 'open-agents':
+        openAgentsPage();
+        break;
+      case 'new-agent':
+        newAgentFlow();
+        break;
+      case 'edit-agent':
+        editAgentFlow(node.getAttribute('data-id'));
+        break;
+      case 'delete-agent':
+        deleteAgentFlow(node.getAttribute('data-id'));
         break;
       case 'refresh-plugins':
         invoke('onPluginRefresh');
@@ -2461,6 +3039,21 @@
       case 'refresh-models':
         refreshModelPicker();
         break;
+      case 'close-agent-picker':
+        closeAgentPickerPanel(true);
+        break;
+      case 'pick-agent':
+        pickAgent(node.getAttribute('data-id'));
+        break;
+      case 'manage-agents':
+        manageAgentsFromPicker();
+        break;
+      case 'open-citation': {
+        var citationUrl = node.getAttribute('data-url') || '';
+        if (/^https?:\/\//i.test(citationUrl)) openExternal(citationUrl);
+        else if (citationUrl) UI.toast('无法打开该链接');
+        break;
+      }
       default:
         break;
     }
@@ -2599,6 +3192,13 @@
       }
       return;
     }
+    if (target.classList && target.classList.contains('agent-row')) {
+      if (key === 'Enter' || key === ' ') {
+        event.preventDefault();
+        pickAgent(target.getAttribute('data-id'));
+      }
+      return;
+    }
     if (target.classList && target.classList.contains('model-row')) {
       if (key === 'Enter' || key === ' ') {
         event.preventDefault();
@@ -2649,13 +3249,15 @@
     bindModalBackdrop(r('confirm-modal'), function () { resolveConfirm(false); });
     bindModalBackdrop(r('rename-modal'), function () { resolveRename(null); });
     bindModelPickerEvents();
+    bindAgentPickerEvents();
   }
 
   function cacheRefs() {
     var ids = [
       'app', 'screens',
-      'screen-login', 'screen-chats', 'screen-chat', 'screen-settings', 'screen-plugins',
+      'screen-login', 'screen-chats', 'screen-chat', 'screen-settings', 'screen-plugins', 'screen-agents',
       'chats-list', 'chats-empty', 'chats-title', 'chat-search-wrap', 'chat-search-input', 'chat-search-clear',
+      'chat-tabs', 'chat-tab-count-all', 'chat-tab-count-archived',
       'share-list', 'share-empty', 'profile-status', 'profile-info', 'profile-chat-count', 'profile-msg-count',
       'share-opt-time', 'share-opt-reasoning', 'share-opt-signature',
       'share-chat-count', 'share-msg-count', 'share-history', 'share-history-count',
@@ -2675,6 +3277,8 @@
       'install-modal', 'install-code', 'install-error',
       'confirm-modal', 'confirm-title', 'confirm-text', 'confirm-ok',
       'rename-modal', 'rename-input', 'rename-title',
+      'agent-picker', 'agent-picker-list', 'agent-picker-handle', 'agent-picker-title',
+      'agents-list', 'agents-empty', 'agents-count', 'set-agents-label',
       'longpress', 'toasts', 'overlay', 'drawer'
     ];
     ids.forEach(function (id) {
@@ -3005,9 +3609,13 @@
     }
   };
 
-  UI.renderSettings = function (prefs, models) {
+  UI.renderSettings = function (prefs, models, presets) {
     state.prefs = prefs || {};
     state.models = normalizeModels(models);
+    if (presets !== undefined) {
+      state.agents = normalizeAgents(presets);
+      renderAgentsList();
+    }
     var data = state.prefs;
     setVal('set-baseurl', data.baseUrl || 'https://api.deepseek.com');
     setVal('set-maxtokens', data.maxTokens == null ? 4096 : data.maxTokens);
@@ -3131,5 +3739,25 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.1.2';
+  /* SPEC v2.0 F1：智能体预设（app.js 通过这些入口驱动 UI） */
+  UI.openAgentPicker = function (agents, currentId, onPick, opts) {
+    openAgentPickerPanel(agents, currentId, onPick, opts);
+  };
+  UI.closeAgentPicker = function () {
+    closeAgentPickerPanel(false);
+  };
+  UI.renderAgents = function (agents) {
+    renderAgents(agents);
+  };
+  UI.openAgents = openAgentsPage;
+
+  /* SPEC v2.0 F2：会话文件夹标签（'all' | 'archived'） */
+  UI.setChatTab = function (tab) {
+    switchChatTab(tab);
+  };
+  UI.getChatTab = function () {
+    return state.chatTab;
+  };
+
+  UI.version = '1.2.0';
 })();

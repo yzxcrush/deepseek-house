@@ -3409,3 +3409,305 @@ body { background-color: #181818; }
 .profile-scroll {
   padding-bottom: calc(112px + var(--safe-bottom));
 }
+
+/* ==========================================================================
+   v1.2.0（SPEC v2.0 F1/F2/F5）：智能体预设 / 归档标签 / 引用来源卡
+   统一 Telegram 深色 #181818 体系：卡片 #1f1f1f，次要文字 #8b8b8b，
+   强调色 #517AF6，行高约 52–56px。
+   ========================================================================== */
+
+/* ---------- F2：会话列表「全部 / 归档」文件夹标签 ---------- */
+.folder-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  gap: 2px;
+  margin: 0 6px 2px;
+  padding: 0 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.folder-tabs::-webkit-scrollbar { display: none; }
+
+.folder-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 8px 13px 10px;
+  color: #8b8b8b;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.1;
+  white-space: nowrap;
+  background: transparent;
+  transition: color 140ms ease;
+}
+.folder-tab:active { color: #d6d6d6; }
+.folder-tab.is-active { color: var(--accent); }
+
+.folder-tab::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  bottom: 0;
+  left: 10px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background-color: var(--accent);
+  transform: scaleX(0);
+  transform-origin: center bottom;
+  transition: transform 180ms var(--ease);
+}
+.folder-tab.is-active::after { transform: scaleX(1); }
+
+.folder-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background-color: #2b2b2b;
+  color: #d6d6d6;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.folder-tab.is-active .folder-tab-count {
+  background-color: var(--accent);
+  color: #fff;
+}
+
+/* ---------- F1：智能体选择弹层（复用 .model-picker 结构/动画） ---------- */
+.agent-picker-sub {
+  flex: none;
+  padding: 0 18px 8px;
+  color: #8b8b8b;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.agent-picker-list { padding-top: 0; }
+
+.agent-row {
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 14px;
+}
+.agent-row + .agent-row { margin-top: 2px; }
+.agent-row.is-current { background-color: rgba(81, 122, 246, 0.16); }
+
+.agent-avatar {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  background-color: #232323;
+}
+
+.agent-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.agent-row-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-row-desc {
+  overflow: hidden;
+  color: #8b8b8b;
+  font-size: 12.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agent-tag {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background-color: rgba(81, 122, 246, 0.16);
+  color: #9db6ff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.agent-row-check {
+  display: inline-flex;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--accent-2);
+}
+.agent-row-check svg { width: 20px; height: 20px; }
+
+.agent-picker-manage { margin-top: 2px; }
+
+/* ---------- F1：智能体预设管理页 ---------- */
+.agent-list {
+  margin: 0 12px 4px;
+  border-radius: 16px;
+  background-color: #1f1f1f;
+  overflow: hidden;
+}
+
+.agent-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 14px;
+}
+.agent-item + .agent-item { border-top: 1px solid #2a2a2a; }
+
+.agent-item .agent-avatar {
+  width: 40px;
+  height: 40px;
+}
+
+.agent-item-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.agent-item-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.agent-item-name > span:first-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-item-desc {
+  overflow: hidden;
+  color: #8b8b8b;
+  font-size: 12.5px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.agent-item-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+.agent-mini-btn {
+  flex: none;
+  padding: 6px 11px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.07);
+  color: #d0d0d0;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background-color 120ms ease;
+}
+.agent-mini-btn:active { background-color: rgba(255, 255, 255, 0.14); }
+.agent-mini-btn--danger { color: #f08c8c; }
+.agent-mini-btn--danger:active { background-color: rgba(224, 93, 93, 0.18); }
+
+.agent-list-empty-row {
+  padding: 18px 16px;
+  color: #8b8b8b;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* ---------- F5：引用来源卡（Telegram 链接预览风） ---------- */
+.msg-citations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 7px 0 2px;
+}
+
+.citation-card {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  text-align: left;
+  overflow: hidden;
+  transition: background-color 120ms ease;
+}
+.citation-card:active { background-color: rgba(255, 255, 255, 0.1); }
+
+.citation-accent {
+  flex: none;
+  width: 3px;
+  background-color: var(--accent);
+}
+
+.citation-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px 8px 9px;
+}
+
+.citation-title {
+  overflow: hidden;
+  color: var(--accent-2);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.citation-domain {
+  overflow: hidden;
+  margin-top: 1px;
+  color: #8b8b8b;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.citation-snippet {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.msg--user .citation-card {
+  border-color: rgba(255, 255, 255, 0.1);
+  background-color: rgba(0, 0, 0, 0.18);
+}

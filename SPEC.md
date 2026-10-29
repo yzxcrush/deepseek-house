@@ -248,3 +248,146 @@ UI.closeModelPicker()
 
 ### B3. 测试要求
 - QA 增加：模型选择器渲染分组、选择后 `Bridge.setPrefs({model})` 被调用、重启后 model 保持、自定义模型添加/删除、远端目录合并、深色断言（jsdom `getComputedStyle(document.body).backgroundColor` 为深色）。
+
+---
+
+# 追加需求 v2.0（2026-10-29）：⭐⭐ 功能清单（F1–F9）
+
+版本规划：v1.2.0 = F1/F2/F3/F4/F5；v1.3.0 = F6/F7/F8；v1.4.0 = F9。
+所有新 UI 继续遵循「Telegram 深色 / #181818 / #517AF6」设计语言；新增功能必须有 QA 用例。
+
+## F1 智能体预设（Agents）
+- `Store.presets: [{id,name,systemPrompt,model?,builtin?}]`，内置 4 个（通用助手/程序员/翻译/写作），支持增删改（后端持久化到 `dsh.v1`）。
+- 新建会话流程：点 FAB/新会话 → 底部弹层「选择智能体」（预设列表 + 默认会话 + 管理预设）；选中后新建 chat：`title=预设名`，消息请求的 system prompt = `preset.systemPrompt`（若为空用 prefs.systemPrompt），`model` 用预设指定的模型或当前模型。
+- 设置页新增「智能体预设」入口 → 管理页：列表（名称/简介/编辑/删除）+「新建预设」（名称 + 提示词，用现有 UI.prompt/输入弹窗）。
+- UI API：`UI.openAgentPicker(agents, currentId, onPick)`、`UI.renderAgents(agents)`；回调：`onPickAgent(id)`、`onSaveAgent(agent)`、`onDeleteAgent(id)`。
+- 聊天页顶栏标题使用 chat.title（预设名），副标题仍显示模型。
+
+## F2 归档 / 聊天文件夹
+- 会话列表顶部标签：`全部` / `归档`（复用 Telegram 文件夹样式，含计数）。
+- 长按会话菜单新增「归档 / 取消归档」（`Store.updateChat(id,{archived:bool})`）。
+- `全部` 不显示 archived；`归档` 只显示 archived；搜索在当前标签内过滤。
+- UI 内部维护 `state.chatTab`（'all'|'archived'），渲染时过滤；回调 `onArchiveChat(id, archived)`。
+
+## F3 备份 / 导入导出（JSON）
+- 导出：`{app:'DeepSeekHouse', version, exportedAt, prefs(不含 apiKey), chats, customModels, presets, pluginStates}` → `Bridge.saveTextFile('DeepSeekHouse-backup-YYYYMMDD.json', json)`。
+- 导入：`Bridge.importTextFile()`（原生 SAF 选 .json）→ 事件 `{type:"file-imported", name, content}`；JS 校验后**整体替换**（二次确认），刷新列表/设置。
+- 入口：个人资料「更多」新增「备份与恢复」→ 弹窗两个按钮（导出备份 / 导入备份）。
+- 原生新增：`void importTextFile()`（ACTION_OPEN_DOCUMENT，text/json），事件 `file-imported`。
+
+## F4 对话分支（简化 fork）
+- 长按任意消息菜单新增「从此处新建分支」：复制该会话从开头到该条消息的副本为新会话（新 id、title 加「 · 分支」、model 沿用），设为当前并进入对话。
+- `Store.forkChat(chatId, msgId)` 返回新 chat；UI 菜单项通过回调 `onForkMessage(msgId)`。
+
+## F5 联网搜索插件 + 引用来源
+- `plugins_builtin.js` 新增内置插件 `websearch`（可禁用）：
+  - 工具 `web_search`：参数 `{query, max_results?}`；通过 `ctx.http.fetch` 调用可配置搜索端点：
+    - SearXNG 兼容：`GET {endpoint}?q=...&format=json`，解析 `results[{title,url,content}]`
+    - Serper 兼容：`POST {endpoint}` header `X-API-KEY`，body `{q}`，解析 `organic[{title,link,snippet}]`
+  - 插件设置项（endpoint/apiKey/类型）存 Store 插件设置；未配置时返回中文错误提示引导去设置。
+  - 工具返回 JSON 字符串：`{query, results:[{title,url,snippet}]}`（最多 5 条，仅 https）。
+- 聊天集成：当工具名 `web_search` 的结果被回填后，把解析出的 results 存到该 assistant 消息的 `citations` 字段（`[{title,url,snippet}]`），并在气泡下方渲染引用卡片（Telegram 链接预览风格：标题、域名、摘要，点击 `Bridge.openUrl`）。
+- UI API：`UI.renderCitations` 由消息渲染内部处理；`msg.citations` 数据结构固定。
+
+## F6 图片输入（多模态）
+- 原生新增：`void pickImage(String source)`（source='gallery'|'camera'）；读取后等比缩放到最长边 ≤1280、JPEG 80，回调事件
+  `{type:"image-picked", dataUrl:"data:image/jpeg;base64,...", width, height, name}`；失败事件 `{type:"image-error", message}`。
+- 输入栏附件按钮：点击弹出操作表（拍照 / 从相册选择 / 插件）；选图后显示缩略图 chip（可删除），发送时：
+  - 消息结构 `msg.images:[dataUrl...]`，气泡内渲染缩略图（点击全屏预览用 `<img>` 覆盖层）。
+  - API body：`messages[].content` 改为数组 `[{type:"text",text:...},{type:"image_url",image_url:{url:dataUrl}}]`（仅当有图片；无图保持字符串）。
+  - 非 vision 模型发图时 toast 提醒（仍允许发送）。
+- 存储注意：图片 base64 体积大，localStorage 限制 ~5MB → 保存前压缩到 ≤160KB/图，且会话内最多保留最近 4 张；超出提示。
+
+## F7 后台继续生成 + 完成通知
+- 原生：`void setForeground(boolean active, String text)` → 生成期间启动前台服务（通知渠道「生成中」，低优先级，停止时移除）；`void notify(String title, String text)` → 完成通知（渠道「消息」）；Manifest：`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_DATA_SYNC`（按 target 34）、`POST_NOTIFICATIONS`（运行时请求，API33+）。
+- JS：请求开始 `Bridge.setForeground(true,'正在生成回复…')`；done/error/stop 时 `setForeground(false)`；若完成时 App 不在前台（原生事件 `{type:"app-state", foreground:false}`），再 `Bridge.notify('回复完成', 摘要)`。
+- 原生需上报前台状态事件：`{type:"app-state", foreground:true|false}`（onResume/onPause）。
+
+## F8 从其他 App 分享进入
+- Manifest 增加 `ACTION_SEND`（text/plain、image/*）intent-filter。
+- `MainActivity` 处理 `onCreate/onNewIntent`：读取 EXTRA_TEXT 与图片（缩图后 dataURL），暂存；WebView 加载完成后发事件 `{type:"shared", text, imageDataUrl}`（只消费一次）。
+- JS：收到后新建会话（默认预设/当前模型）→ 若有 text 填入输入框并聚焦；若有图片加入待发送图片队列；toast「已接收分享内容」。
+
+## F9 锁屏 / 指纹解锁 + 本地加密
+- 原生：设置 `appLock`（SharedPreferences）开启后，`MainActivity.onCreate` 在加载 WebView 前用 `KeyguardManager.createConfirmDeviceCredentialIntent` 验证（PIN/图案/指纹均可）；取消则 `finish()`。桥接 `void setAppLock(boolean enabled)`、`boolean isAppLockEnabled()`（JS 设置页开关）。
+- 本地加密：原生 `String getStorageSecret()` 返回 32 字节随机密钥的 Base64（用 Android Keystore AES 包裹后存 SharedPreferences，首次生成）；
+  JS `Store` 在密钥可用时用 WebCrypto AES-GCM 加密整个状态 JSON 再写入 localStorage（key `dsh.v1.enc`），加载时解密；无 WebCrypto/无 bridge 时回退明文并标记 `dsh.v1`（向后兼容：检测到明文自动迁移加密）。加密失败不得丢数据（保留旧键）。
+- 设置页新增「应用锁（指纹/密码）」开关；开启后下次启动需验证。
+- QA：mock bridge 提供固定密钥，断言加密后 localStorage 无明文（如聊天内容字符串不出现），解密后数据一致，明文数据可迁移。
+
+---
+
+# ARCH v2 P1（2026-10-29）：本地 Agent 工作站 — 工具框架 / 安全审计 / 工作区
+技术栈：**纯 Java（手工 aapt→javac→d8→apksigner，无 Gradle/AndroidX/Kotlin）**。UI 仍为 WebView。
+本批 = 模块一（函数调用框架）+ 模块七（安全与审计）+ 模块四（工作区与文件管理）+ 手机号登录（本地 OTP MVP）。
+后续批次：P2 模块二/六（MCP Client + Termux 构建服务）、P3 模块三/五（插件市场 + 记忆）、P4 模块八（UI 深化）。
+
+## 写入归属
+- `native`：`app/src/main/java/com/deepseekhouse/app/agent/**`（新包）+ `JsBridge.java` / `MainActivity.java` / `Prefs.java` / `AndroidManifest.xml` / `res/values/**`
+- `ui`：`app/assets/web/index.html`、`css/**`、`js/ui.js`
+- `logic`：`app/assets/web/js/app.js`、`store.js`、`bridge.js`
+- `scripts/**`、构建、发布、真机验证：Lead
+
+## N1. 原生工具框架（包 com.deepseekhouse.app.agent）
+- `ToolDef`：name / description / parametersJson(JSON Schema) / risk(LOW|MID|HIGH) / needConfirm
+- `ToolRegistry`（单例）：register / unregister / schemasJson()（OpenAI tools 数组）/ find(name)
+- 内置工具（全部经过 PathPolicy + AuditDb）：
+  - `read_file {path}` LOW：读取工作区内文本（≤256KB，UTF-8，超限截断+提示）
+  - `list_dir {path?}` LOW：列目录 [{name,path,isDir,size}]（默认工作区根）
+  - `write_file {path, content}` MID：仅工作区内写（自动建父目录，≤1MB，覆盖写）
+  - `run_shell {command}` HIGH：`/system/bin/sh -c`，cwd=工作区，超时 30s，stdout+stderr 合并 ≤64KB
+  - `http_get {url}` LOW：仅 https（localhost 例外），≤1MB，返回状态与前 200KB 文本
+- `PathPolicy`：工作区根默认 `getExternalFilesDir("workspace")`；可通过 `setWorkspace` 改为 `/sdcard/house-workspace`（若已授予 All-Files-Access，否则返回需要授权的错误）；`isAllowed()` 必须 canonical path 前缀匹配 + 拒绝 `..` 穿越与 symlink 越界；写操作仅工作区内。
+- `ShellRunner`：ProcessBuilder，读取合并输出，超时 destroy。
+- `AuditDb`（SQLiteOpenHelper，filesDir/audit.db）：表 `audit(id, ts, tool, args, result, ok, confirmed)`；每次 exec（成功/失败/被拒绝）必须写一条；提供 recent(limit)。
+- `AuthManager`（手机号登录 MVP）：`requestOtp(phone)` 生成 6 位码（5 分钟有效、同一手机号 60s 限频），通过通知渠道「登录验证码」显示（同时事件带 `demoCode` 便于本机验证）；`verifyOtp` 校验（错 3 次锁 5 分钟）成功后生成随机 token 存 Prefs；`authState()`、`logout()`。预留 `interface SmsProvider { boolean send(String phone, String code); }`，后续接自建后端/阿里云短信时替换实现即可。
+- JsBridge 新方法（注入名仍 DSNative）：
+```
+String  toolSchemas()
+void    execTool(String requestId, String name, String argsJson)
+void    confirmTool(String requestId, boolean allow)
+String  workspaceInfo()      -> {"root":..,"writable":bool,"allFilesAccess":bool}
+String  listDir(String path) -> JSON array
+void    readFile(String requestId, String path)
+void    writeFile(String requestId, String path, String content)
+void    runShell(String requestId, String command)
+String  auditRecent(int limit) -> JSON array
+void    setWorkspace(String path)
+void    requestOtp(String phone)
+void    verifyOtp(String requestId, String phone, String code)
+String  authState()          -> {"loggedIn":bool,"phone":".."}
+void    logout()
+```
+- 事件（主线程 evaluateJavascript → `window.DSHost.onEvent(json)`）：
+```
+{"type":"tool-confirm","requestId":..,"tool":..,"args":{..},"risk":"high"}
+{"type":"tool-result","requestId":..,"tool":..,"ok":true,"result":"..","confirmed":true}
+{"type":"otp-sent","phone":"..","ttlSeconds":300,"demoCode":"123456"}   // demoCode 仅本地模拟模式
+{"type":"otp-verified","requestId":..,"ok":true,"message":".."}
+{"type":"auth-changed","loggedIn":true,"phone":".."}
+```
+- 风险策略：LOW 直接执行；MID 首次执行前确认（同一工具会话内确认一次即可）；HIGH **每次**确认；用户拒绝时返回 `ok:false,result:"用户拒绝执行"` 并写审计。
+
+## U1. UI（web 壳）
+- 聊天页顶栏新增「文件」按钮 → 左侧文件树抽屉（覆盖层 82% 宽，面包屑 + 目录树 + 刷新；点击文件预览/插入路径；显示 workspace 根路径）。
+- 聊天页底部新增可折叠「终端」面板（等宽输出、输入命令、执行/清空/复制；高度可展开/收起）。
+- 消息流中的工具调用卡片：工具名 + 参数摘要 + 状态（等待确认/运行中/成功/失败）+ 结果折叠（默认收起，点击展开）。
+- 高危工具确认弹窗：显示工具名/风险/参数 JSON，按钮「拒绝 / 允许执行」。
+- 登录页新增 tab：「API Key」与「手机号登录」（手机号、验证码、发送（60s 倒计时）、登录、验证码提示位）。
+- 设置页新增「工作区」行（显示当前根目录 + 更改按钮）；个人资料「更多」新增「审计日志」入口（列表：时间/工具/结果/是否确认）与「备份与恢复」（F3 已实现的导出/导入回调接线）。
+- 消息长按菜单新增「从此处新建分支」（F4 已实现回调 onForkMessage）。
+- 风格继续 Telegram 深色 #181818 / #517AF6 / 卡片 #1f1f1f / 次要文字 #8b8b8b。
+
+## L1. JS 逻辑
+- 工具循环升级：请求 `tools = 插件 tools + DSNative.toolSchemas()`（native 工具优先匹配）；收到 tool_calls 后：
+  - native 工具 → `DSNative.execTool(requestId,name,argsJson)`；等待 `tool-confirm` 事件 → `UI` 确认弹窗 → `DSNative.confirmTool`；等待 `tool-result` → 追加 `role:"tool"` 消息（带 toolName/args/result/ok）→ 继续请求，最多 5 轮。
+  - 插件工具保持现有 DSPlugins.runTool 路径。
+- 认证：登录页手机号模式 → `DSNative.requestOtp` → `DSNative.verifyOtp`；启动时 `authState()`，已绑定手机号但未登录 → 显示手机号登录页；退出登录调用 `DSNative.logout()`；API Key 模式保留。
+- 工作区/终端/审计：`workspaceInfo/listDir/readFile/runShell/auditRecent` 的 Promise 封装（bridge.js），app.js 负责调用与数据流转，UI 只渲染。
+- 备份/恢复、fork 的 UI 回调接线（F3/F4 后端已就绪）。
+- 必须保持现有 82 项测试全绿，并给新能力补测试。
+
+## 验收
+1. `node scripts/check-js.mjs` + `bash scripts/check-assets.sh` 通过；`javac` 0 error。
+2. 真机（root 安装）验证：文件树能列出工作区、终端能执行 `echo hi`、AI 触发 read_file 会走确认/结果卡片、手机号登录可用本地验证码完成、审计日志有记录。
+3. 无 AndroidX/Gradle/Kotlin 依赖；APK 体积增长 ≤300KB。

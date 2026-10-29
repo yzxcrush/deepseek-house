@@ -90,6 +90,16 @@
     }
   }
 
+  /** v2.0 F3：file-imported 事件（备份 JSON）：分发给监听者，并 resolve importTextFile() 的 Promise */
+  function dispatchFileImported(evt) {
+    emit('file-imported', evt);
+    var waiters = fileImportWaiters.slice();
+    fileImportWaiters.length = 0;
+    for (var i = 0; i < waiters.length; i++) {
+      try { waiters[i](evt); } catch (e) { /* ignore */ }
+    }
+  }
+
   /* ------------------------------------------------------------------ *
    * 原生可用性 & 底层调用
    * ------------------------------------------------------------------ */
@@ -134,6 +144,7 @@
   var mockPlugins = Object.create(null); // id -> {code, meta, enabled}
   var mockRequests = Object.create(null); // requestId -> {cancelled, timer}
   var mockFileWaiters = [];
+  var fileImportWaiters = []; // v2.0 F3：Bridge.importTextFile() 等待 file-imported 事件
 
   function mockPluginList() {
     return Object.keys(mockPlugins).map(function (id) {
@@ -286,6 +297,15 @@
     __isMock: !hasNative,
     __native: hasNative,
     __mockConfig: { chunkDelay: 14, validateDelay: 180 },
+    /** v2.0 F3：mock 模式下 Bridge.importTextFile() 返回的备份内容（QA/浏览器自测用） */
+    __mockImportPayload: null,
+    __setMockImport: function (name, content) {
+      Bridge.__mockImportPayload = { name: String(name || 'mock-backup.json'), content: String(content || '') };
+      return Bridge.__mockImportPayload;
+    },
+    __clearMockImport: function () {
+      Bridge.__mockImportPayload = null;
+    },
 
     /* ---- 底层 / 事件 ---- */
     call: function (method) {
@@ -572,6 +592,60 @@
       });
     },
 
+    /**
+     * v2.0 F3：选择备份 JSON 文件（原生 ACTION_OPEN_DOCUMENT）。立即返回 Promise，
+     * 由原生事件 {type:'file-imported', name, content, error?} 或 mock 数据 resolve。
+     * 取消时 resolve {content:'', error:'cancelled'}（调用方静默处理）。
+     */
+    importTextFile: function () {
+      return new Promise(function (resolve) {
+        var done = false;
+        function finish(evt) {
+          if (done) return;
+          done = true;
+          if (timer) clearTimeout(timer);
+          var idx = fileImportWaiters.indexOf(waiter);
+          if (idx >= 0) fileImportWaiters.splice(idx, 1);
+          resolve(evt || null);
+        }
+        var timer = setTimeout(function () { finish(null); }, 120000);
+        var waiter = function (evt) { finish(evt); };
+        fileImportWaiters.push(waiter);
+        if (!hasNative) {
+          setTimeout(function () {
+            var payload = Bridge.__mockImportPayload;
+            if (payload && (payload.content || payload.error)) {
+              dispatchFileImported({
+                type: 'file-imported',
+                name: String(payload.name || 'mock-backup.json'),
+                content: String(payload.content || ''),
+                error: payload.error || null
+              });
+            } else {
+              dispatchFileImported({
+                type: 'file-imported',
+                name: '',
+                content: '',
+                error: 'cancelled'
+              });
+            }
+          }, 120);
+          return;
+        }
+        try {
+          if (typeof DSNative.importTextFile !== 'function') {
+            warn('原生缺少 importTextFile');
+            finish(null);
+            return;
+          }
+          DSNative.importTextFile();
+        } catch (e) {
+          warn('importTextFile 失败：' + (e && e.message));
+          finish(null);
+        }
+      });
+    },
+
     saveTextFile: function (suggestedName, content) {
       if (!hasNative) {
         var name = String(suggestedName || 'deepseek-house.md');
@@ -737,6 +811,10 @@
       if (type === 'back') { dispatchBack(); return; }
       if (type === 'plugin-file') {
         dispatchPluginFile(evt);
+        return;
+      }
+      if (type === 'file-imported') {
+        dispatchFileImported(evt);
         return;
       }
       emit(type, evt);

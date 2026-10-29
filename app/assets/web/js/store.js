@@ -5,14 +5,17 @@
  * state = {
  *   version: 1,
  *   prefs: {baseUrl, model, temperature, maxTokens, stream, theme, systemPrompt}, // apiKey 不落 localStorage
- *   chats: [{id,title,createdAt,updatedAt,pinned,archived,model,messages:[]}],
+ *   chats: [{id,title,createdAt,updatedAt,pinned,archived,model,messages:[],
+ *            presetId?, systemPrompt?}],   // v2.0 F1/F4：会话绑定的智能体预设 / 会话级 system prompt
  *   activeChatId,
  *   plugins: {enabled:{<id>:true}, settings:{<id>:{...}}},
  *   customModels: ["<自定义模型 id>"],   // B1：用户自定义模型 ID（任意字符串）
+ *   presets: [{id,name,description,systemPrompt,model?,builtin?}],   // v2.0 F1：智能体预设
  *   ui: {drawerOpen:false}
  * }
  * msg = {id, role:"user"|"assistant"|"tool"|"note", content, reasoning?, toolCalls?, toolName?,
- *        toolCallId?, error?, usage?, streaming?, createdAt}
+ *        toolCallId?, error?, usage?, streaming?, citations?, createdAt}
+ * citations = [{title,url,snippet}]   // v2.0 F5：web_search 结果引用（最多 5 条，仅 https）
  *
  * 挂载：window.Store
  */
@@ -23,6 +26,44 @@
   var VERSION = 1;
 
   var DEFAULT_SYSTEM_PROMPT = '你是 DeepSeek House 助手，一个运行在安卓 WebView 中的 AI 聊天助手。请用简体中文回答（除非用户要求其他语言），回答准确、简洁、有条理，适当使用 Markdown 排版。';
+
+  /**
+   * v2.0 F1：内置智能体预设（4 个）。
+   * 首次启动/旧数据升级时写入 state.presets；用户可编辑；内置项不可删除（可 resetPresets 恢复）。
+   */
+  var DEFAULT_PRESETS = [
+    {
+      id: 'general',
+      name: '通用助手',
+      description: '日常问答、信息整理与灵感发散',
+      systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      builtin: true
+    },
+    {
+      id: 'coder',
+      name: '程序员',
+      description: '代码编写、调试与架构建议',
+      systemPrompt: '你是一名资深软件工程师，擅长需求分析、代码实现与调试。回答时优先给出可运行的代码示例，说明关键实现思路与潜在坑点；涉及多种方案时先给推荐方案，再简要对比利弊。默认使用简体中文。',
+      builtin: true
+    },
+    {
+      id: 'translator',
+      name: '翻译',
+      description: '中英互译，保留语气与格式',
+      systemPrompt: '你是一名专业中英翻译。用户给出中文时翻译成英文，给出英文时翻译成简体中文；保留原文的语气、专业术语与 Markdown 格式，只输出译文，不做额外解释（用户明确要求解释时除外）。',
+      builtin: true
+    },
+    {
+      id: 'writer',
+      name: '写作',
+      description: '文案、文章与创意写作',
+      systemPrompt: '你是一名中文写作助手，擅长文案、文章、脚本与创意构思。先理解读者与场景，再给出结构清晰、语言自然的文字；可按用户要求调整语气、篇幅与体裁。',
+      builtin: true
+    }
+  ];
+
+  var MAX_PRESETS = 100;
+  var MAX_CITATIONS = 5;
 
   var DEFAULT_PREFS = {
     baseUrl: 'https://api.deepseek.com',
@@ -132,6 +173,7 @@
       chats: [],
       activeChatId: null,
       customModels: [],
+      presets: defaultPresets(),
       plugins: { enabled: {}, settings: {} },
       ui: { drawerOpen: false }
     };
@@ -148,6 +190,47 @@
       if (!id || id.length > 120 || seen[id]) continue;
       seen[id] = true;
       out.push(id);
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 智能体预设（追加需求 v2.0 F1）
+   * ------------------------------------------------------------------ */
+
+  function defaultPresets() {
+    return clone(DEFAULT_PRESETS);
+  }
+
+  /** 单条预设归一化：name 必填，systemPrompt/description/model 可选；builtin 只能由默认目录或显式传入决定 */
+  function normalizePreset(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    var name = String(raw.name === null || raw.name === undefined ? '' : raw.name)
+      .replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    if (!name) return null;
+    var preset = {
+      id: raw.id ? String(raw.id).slice(0, 80) : ('preset-' + uid()),
+      name: name.slice(0, 40),
+      description: raw.description === null || raw.description === undefined ? '' : String(raw.description).slice(0, 160),
+      systemPrompt: raw.systemPrompt === null || raw.systemPrompt === undefined ? '' : String(raw.systemPrompt).slice(0, 16000),
+      builtin: !!raw.builtin
+    };
+    if (raw.model !== null && raw.model !== undefined) {
+      var model = String(raw.model).replace(/^\s+|\s+$/g, '');
+      if (model) preset.model = model.slice(0, 80);
+    }
+    return preset;
+  }
+
+  function normalizePresets(raw) {
+    var out = [];
+    var seen = {};
+    if (!Array.isArray(raw)) return out;
+    for (var i = 0; i < raw.length && out.length < MAX_PRESETS; i++) {
+      var preset = normalizePreset(raw[i]);
+      if (!preset || seen[preset.id]) continue;
+      seen[preset.id] = true;
+      out.push(preset);
     }
     return out;
   }
@@ -196,6 +279,19 @@
         return out;
       }).filter(function (x) { return !!x; });
     }
+    // v2.0 F5：引用来源（最多 5 条，仅 https）
+    if (Array.isArray(raw.citations) && raw.citations.length) {
+      msg.citations = raw.citations.map(function (item) {
+        if (!item || typeof item !== 'object') return null;
+        var url = String(item.url === null || item.url === undefined ? '' : item.url).replace(/^\s+|\s+$/g, '');
+        if (!/^https:\/\//i.test(url)) return null;
+        return {
+          title: String(item.title === null || item.title === undefined ? url : item.title).slice(0, 200),
+          url: url.slice(0, 2048),
+          snippet: String(item.snippet === null || item.snippet === undefined ? '' : item.snippet).slice(0, 400)
+        };
+      }).filter(function (x) { return !!x; }).slice(0, MAX_CITATIONS);
+    }
     return msg;
   }
 
@@ -215,6 +311,9 @@
     if (Array.isArray(raw.messages)) {
       chat.messages = raw.messages.map(normalizeMessage).filter(function (m) { return !!m; });
     }
+    // v2.0 F1/F4：预设绑定 + 会话级 system prompt（预设提示词复制到会话，便于用户单独修改）
+    if (raw.presetId) chat.presetId = String(raw.presetId).slice(0, 80);
+    if (raw.systemPrompt) chat.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
     return chat;
   }
 
@@ -244,6 +343,10 @@
     }
     if (raw.customModels !== undefined) {
       next.customModels = normalizeCustomModels(raw.customModels);
+    }
+    // v2.0 F1：旧数据没有 presets 字段时补默认内置预设；显式数组（含空数组，来自备份导入）按原样归一化
+    if (Array.isArray(raw.presets)) {
+      next.presets = normalizePresets(raw.presets);
     }
     var ids = next.chats.map(function (c) { return c.id; });
     if (raw.activeChatId && ids.indexOf(String(raw.activeChatId)) !== -1) {
@@ -371,13 +474,23 @@
     return state.activeChatId;
   }
 
+  function filterArchived(list, opts) {
+    if (!opts || typeof opts !== 'object') return list;
+    var result = list;
+    if (opts.includeArchived === false) result = result.filter(function (c) { return !c.archived; });
+    if (opts.archived === true) result = result.filter(function (c) { return !!c.archived; });
+    else if (opts.archived === false) result = result.filter(function (c) { return !c.archived; });
+    return result;
+  }
+
+  /**
+   * 会话列表（pinned 优先，updatedAt 降序）。
+   * opts.includeArchived === false / opts.archived === false → 排除已归档；
+   * opts.archived === true → 仅已归档（v2.0 F2 归档标签页由 UI 过滤，这里提供数据层支持）。
+   */
   function listChats(opts) {
     load();
-    var list = sortedChats(state.chats);
-    if (opts && opts.includeArchived === false) {
-      list = list.filter(function (c) { return !c.archived; });
-    }
-    return list;
+    return filterArchived(sortedChats(state.chats), opts);
   }
 
   function setUnread(id, count) {
@@ -423,6 +536,9 @@
       model: opts.model || state.prefs.model || DEFAULT_PREFS.model,
       messages: []
     };
+    // v2.0 F1：从智能体预设创建会话时，绑定 presetId 并把提示词复制到会话（用户可单独修改）
+    if (opts.presetId) chat.presetId = String(opts.presetId).slice(0, 80);
+    if (opts.systemPrompt) chat.systemPrompt = String(opts.systemPrompt).slice(0, 16000);
     state.chats.push(chat);
     state.activeChatId = chat.id;
     save();
@@ -476,15 +592,21 @@
     if (patch.pinned !== undefined) chat.pinned = !!patch.pinned;
     if (patch.unread !== undefined) chat.unread = Math.max(0, parseInt(patch.unread, 10) || 0);
     if (patch.archived !== undefined) chat.archived = !!patch.archived;
+    if (patch.presetId !== undefined) chat.presetId = patch.presetId ? String(patch.presetId).slice(0, 80) : '';
+    if (patch.systemPrompt !== undefined) chat.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
     if (patch.updatedAt !== undefined) chat.updatedAt = Number(patch.updatedAt) || now();
     save();
     return chat;
   }
 
-  function searchChats(query) {
+  /**
+   * 搜索会话（标题 / 正文 / 思考过程），返回结果始终带 archived 字段。
+   * opts 同 listChats（按当前标签页过滤由 UI 决定，这里可选过滤）。
+   */
+  function searchChats(query, opts) {
     load();
     var q = String(query === null || query === undefined ? '' : query).replace(/^\s+|\s+$/g, '').toLowerCase();
-    if (!q) return listChats();
+    if (!q) return listChats(opts);
     var result = state.chats.filter(function (chat) {
       if (String(chat.title || '').toLowerCase().indexOf(q) !== -1) return true;
       for (var i = 0; i < chat.messages.length; i++) {
@@ -494,7 +616,7 @@
       }
       return false;
     });
-    return sortedChats(result);
+    return filterArchived(sortedChats(result), opts);
   }
 
   /* ------------------------------------------------------------------ *
@@ -685,6 +807,192 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 智能体预设 CRUD（追加需求 v2.0 F1）
+   * ------------------------------------------------------------------ */
+
+  /** 全部预设（含内置）快照 */
+  function getPresets() {
+    load();
+    return clone(state.presets || []);
+  }
+
+  function getPreset(id) {
+    load();
+    var key = String(id);
+    var list = state.presets || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === key) return clone(list[i]);
+    }
+    return null;
+  }
+
+  /**
+   * 新增或更新预设：有 id 且命中 → 覆盖（builtin 标记保留）；否则新增（id 自动生成，builtin=false）。
+   * 返回保存后的预设快照；name 为空返回 null。
+   */
+  function savePreset(agent) {
+    load();
+    if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return null;
+    var preset = normalizePreset(agent);
+    if (!preset) return null;
+    if (!state.presets) state.presets = defaultPresets();
+    var list = state.presets;
+    var idx = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === preset.id) { idx = i; break; }
+    }
+    if (idx >= 0) {
+      // 内置预设可编辑但保持 builtin 标记（不可删除）
+      preset.builtin = !!list[idx].builtin || !!preset.builtin;
+      list[idx] = preset;
+    } else {
+      if (list.length >= MAX_PRESETS) return null;
+      preset.builtin = !!preset.builtin;
+      list.push(preset);
+    }
+    save();
+    return clone(preset);
+  }
+
+  /** 删除预设；内置预设受保护（返回 false），可用 resetPresets() 恢复默认目录 */
+  function deletePreset(id) {
+    load();
+    var key = String(id);
+    var list = state.presets || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id !== key) continue;
+      if (list[i].builtin) return false;
+      list.splice(i, 1);
+      save();
+      return true;
+    }
+    return false;
+  }
+
+  function setPresets(list) {
+    load();
+    state.presets = normalizePresets(list);
+    save();
+    return getPresets();
+  }
+
+  /** 恢复内置默认预设（4 个），用户自建预设保留并排在后面 */
+  function resetPresets() {
+    load();
+    var kept = (state.presets || []).filter(function (item) { return item && !item.builtin; });
+    state.presets = defaultPresets().concat(kept).slice(0, MAX_PRESETS);
+    save();
+    return getPresets();
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 会话分支 fork（追加需求 v2.0 F4）
+   * ------------------------------------------------------------------ */
+
+  /**
+   * 复制 chatId 会话中「从开头到 msgId（含）」的消息为新会话。
+   * 新消息 id、title 追加「 · 分支」、model 沿用、archived=false；返回新 chat 并设为当前会话。
+   * msgId 为空/null → 复制全部消息；msgId 找不到 / 会话无消息 → 返回 null。
+   */
+  function forkChat(chatId, msgId) {
+    load();
+    var chat = getChat(chatId);
+    if (!chat) return null;
+    var end = chat.messages.length;
+    if (msgId !== null && msgId !== undefined && String(msgId) !== '') {
+      var key = String(msgId);
+      var idx = -1;
+      for (var i = 0; i < chat.messages.length; i++) {
+        if (chat.messages[i].id === key) { idx = i; break; }
+      }
+      if (idx < 0) return null;
+      end = idx + 1;
+    }
+    if (end <= 0) return null;
+    var messages = [];
+    for (var m = 0; m < end; m++) {
+      var copy = normalizeMessage(clone(chat.messages[m]));
+      if (!copy) continue;
+      copy.id = uid();
+      delete copy.streaming;
+      messages.push(copy);
+    }
+    var baseTitle = String(chat.title || '对话').slice(0, 74);
+    var forked = {
+      id: uid(),
+      title: (baseTitle + ' · 分支').slice(0, 80),
+      createdAt: now(),
+      updatedAt: now(),
+      pinned: false,
+      unread: 0,
+      archived: false,
+      model: chat.model || state.prefs.model || DEFAULT_PREFS.model,
+      messages: messages
+    };
+    if (chat.presetId) forked.presetId = chat.presetId;
+    if (chat.systemPrompt) forked.systemPrompt = chat.systemPrompt;
+    state.chats.push(forked);
+    state.activeChatId = forked.id;
+    save();
+    return clone(forked);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 备份 / 恢复（追加需求 v2.0 F3）
+   * ------------------------------------------------------------------ */
+
+  /** 导出用的数据快照（prefs 不含 apiKey） */
+  function exportBackupData() {
+    load();
+    var prefs = {};
+    var keys = Object.keys(state.prefs || {});
+    for (var i = 0; i < keys.length; i++) prefs[keys[i]] = state.prefs[keys[i]];
+    delete prefs.apiKey;
+    var enabled = {};
+    var source = state.plugins && state.plugins.enabled ? state.plugins.enabled : {};
+    var ekeys = Object.keys(source);
+    for (var j = 0; j < ekeys.length; j++) enabled[ekeys[j]] = !!source[ekeys[j]];
+    return {
+      prefs: prefs,
+      chats: clone(state.chats || []),
+      customModels: (state.customModels || []).slice(),
+      presets: clone(state.presets || []),
+      plugins: { enabled: enabled }
+    };
+  }
+
+  /**
+   * 用备份数据整体替换 Store（导入备份）。缺省字段回退到默认值；activeChatId 指向排序后的第一个会话。
+   * data = {prefs, chats, customModels, presets, plugins:{enabled}}
+   */
+  function replaceData(data) {
+    load();
+    data = data && typeof data === 'object' ? data : {};
+    var next = freshState();
+    if (data.prefs && typeof data.prefs === 'object') next.prefs = normalizePrefs(data.prefs);
+    if (Array.isArray(data.chats)) {
+      next.chats = data.chats.map(normalizeChat).filter(function (c) { return !!c; });
+    }
+    if (data.customModels !== undefined) next.customModels = normalizeCustomModels(data.customModels);
+    if (Array.isArray(data.presets)) next.presets = normalizePresets(data.presets);
+    if (data.plugins && typeof data.plugins === 'object') {
+      var enabled = data.plugins.enabled;
+      if (enabled && typeof enabled === 'object') {
+        var ekeys = Object.keys(enabled);
+        for (var i = 0; i < ekeys.length; i++) next.plugins.enabled[ekeys[i]] = !!enabled[ekeys[i]];
+      }
+    } else if (data.pluginStates && typeof data.pluginStates === 'object') {
+      /* 兼容 SPEC v2.0 F3 中的 pluginStates 命名 */
+      var pkeys = Object.keys(data.pluginStates);
+      for (var j = 0; j < pkeys.length; j++) next.plugins.enabled[pkeys[j]] = !!data.pluginStates[pkeys[j]];
+    }
+    next.activeChatId = next.chats.length ? sortedChats(next.chats)[0].id : null;
+    state = next;
+    save();
+    return state;
+  }
+
+  /* ------------------------------------------------------------------ *
    * 插件状态
    * ------------------------------------------------------------------ */
 
@@ -750,11 +1058,13 @@
     return getUI();
   }
 
-  /** 清空会话/插件/UI（保留 prefs 设置） */
+  /** 清空会话/插件/UI（保留 prefs 设置与智能体预设） */
   function clearAll() {
     var prefs = state ? getPrefs() : defaultPrefs();
+    var presets = state && Array.isArray(state.presets) ? clone(state.presets) : defaultPresets();
     state = freshState();
     state.prefs = prefs;
+    state.presets = presets;
     save();
     return state;
   }
@@ -800,6 +1110,23 @@
     setCustomModels: setCustomModels,
     addCustomModel: addCustomModel,
     removeCustomModel: removeCustomModel,
+
+    /* v2.0 F1：智能体预设 */
+    DEFAULT_PRESETS: DEFAULT_PRESETS,
+    defaultPresets: defaultPresets,
+    getPresets: getPresets,
+    getPreset: getPreset,
+    savePreset: savePreset,
+    deletePreset: deletePreset,
+    setPresets: setPresets,
+    resetPresets: resetPresets,
+
+    /* v2.0 F4：分支 */
+    forkChat: forkChat,
+
+    /* v2.0 F3：备份 / 恢复 */
+    exportBackupData: exportBackupData,
+    replaceData: replaceData,
 
     getPluginEnabled: getPluginEnabled,
     setPluginEnabled: setPluginEnabled,

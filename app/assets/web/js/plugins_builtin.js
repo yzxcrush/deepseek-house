@@ -11,6 +11,7 @@
  *   prompts     提示词模板库（本地模板，无需网络）
  *   random      随机数与骰子
  *   units       单位换算
+ *   websearch   联网搜索（SearXNG / Serper 兼容，可配置端点与 API Key）
  */
 (function (global) {
   "use strict";
@@ -1118,6 +1119,513 @@
           } catch (e) {
             return "换算失败：" + errorText(e);
           }
+        }
+      }
+    ]
+  });
+
+  /* ================================================================== *
+   * 插件 7：联网搜索（SearXNG / Serper 兼容）
+   *
+   * 工具 web_search 通过 ctx.http.fetch 调用可配置搜索端点：
+   *   - searxng（默认）：GET  {endpoint}?q=<query>&format=json
+   *                      解析 results[{title,url,content}]
+   *   - serper         ：POST {endpoint}
+   *                      headers: X-API-KEY / Content-Type
+   *                      body: {q, num}
+   *                      解析 organic[{title,link,snippet}]
+   *
+   * 统一返回 JSON 字符串：{"query":"…","results":[{"title","url","snippet"}]}
+   * 只保留 https 结果，最多 5 条；title 最多 120 字、snippet 最多 200 字。
+   *
+   * 设置项（Store 插件设置 → state.plugins.settings.websearch）：
+   *   endpoint  搜索服务地址（必填）
+   *   apiKey    Serper API Key（Serper 必填；SearXNG 可空）
+   *   type      "searxng" | "serper"（默认 searxng）
+   * ================================================================== */
+  var SEARCH_DEFAULT_MAX = 5;
+  var SEARCH_MAX_MAX = 8;
+  var SEARCH_RESULT_LIMIT = 5;
+  var SEARCH_TITLE_MAX = 120;
+  var SEARCH_SNIPPET_MAX = 200;
+  var SEARCH_TIMEOUT_MS = 20000;
+  var SEARCH_SETTINGS_HINT = "请先到「插件 → 联网搜索 → 设置」";
+
+  function searchTrim(value) {
+    return value == null ? "" : String(value).trim();
+  }
+
+  function maskSearchSecret(value) {
+    var s = searchTrim(value);
+    if (!s) return "";
+    if (s.length <= 8) return "••••••";
+    return s.slice(0, 4) + "••••" + s.slice(-4);
+  }
+
+  function clampSearchCount(value) {
+    var n = Number(value);
+    if (!isFinite(n) || n <= 0) return SEARCH_DEFAULT_MAX;
+    n = Math.floor(n);
+    if (n < 1) n = 1;
+    if (n > SEARCH_MAX_MAX) n = SEARCH_MAX_MAX;
+    return n;
+  }
+
+  // 截断后总长度不超过 max（含省略号）
+  function truncateSearchText(value, max) {
+    var s = String(value == null ? "" : value);
+    if (s.length <= max) return s;
+    if (max <= 1) return s.slice(0, max);
+    return s.slice(0, max - 1) + "…";
+  }
+
+  // 搜索结果里的标题/摘要可能带 HTML 标签或实体，统一清洗成单行纯文本
+  function cleanSearchText(value) {
+    var s = String(value == null ? "" : value);
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
+    s = s.replace(/<style[\s\S]*?<\/style>/gi, " ");
+    s = s.replace(/<br\s*\/?>/gi, " ");
+    // 块级标签保留词间空格，行内标签（<b>/<em>/<span> 等）直接移除
+    s = s.replace(/<\/(?:p|div|li|h[1-6]|tr|section|article|header|footer|blockquote)\s*>/gi, " ");
+    s = s.replace(/<[^>]+>/g, "");
+    s = decodeHtmlEntities(s);
+    s = s.replace(/[\s\u00a0]+/g, " ").trim();
+    return s;
+  }
+
+  function isHttpsUrl(value) {
+    var raw = searchTrim(value);
+    if (!raw) return false;
+    try {
+      var parsed = new URL(raw);
+      return String(parsed.protocol || "").toLowerCase() === "https:" && !!parsed.hostname;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function readSearchConfig(ctx) {
+    function pick(key, fallback) {
+      try {
+        if (ctx && ctx.settings && typeof ctx.settings.get === "function") {
+          var value = ctx.settings.get(key, fallback);
+          if (value !== undefined && value !== null) return value;
+        }
+      } catch (e) {
+        /* ignore */
+      }
+      return fallback;
+    }
+    var type = searchTrim(pick("type", "searxng")).toLowerCase();
+    if (type !== "serper" && type !== "searxng") type = "searxng";
+    return {
+      endpoint: searchTrim(pick("endpoint", "")),
+      apiKey: searchTrim(pick("apiKey", "")),
+      type: type
+    };
+  }
+
+  function saveSearchSetting(ctx, key, value) {
+    try {
+      if (ctx && ctx.settings && typeof ctx.settings.set === "function") {
+        return ctx.settings.set(key, value) !== false;
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    return false;
+  }
+
+  // 返回空串表示已配置；否则是给用户看的中文引导
+  function searchConfigError(config) {
+    var hint = SEARCH_SETTINGS_HINT;
+    if (config.type === "serper") {
+      if (!config.endpoint && !config.apiKey) {
+        return (
+          "联网搜索尚未配置：" +
+          hint +
+          "填写 Serper 搜索地址（例如 https://google.serper.dev/search）与 Serper API Key（https://serper.dev 申请），" +
+          "或把类型改为 SearXNG 并填写 SearXNG 地址。"
+        );
+      }
+      if (!config.endpoint) {
+        return "联网搜索尚未配置：" + hint + "填写 Serper 搜索地址（例如 https://google.serper.dev/search）。";
+      }
+      if (!config.apiKey) {
+        return "联网搜索尚未配置：" + hint + "填写 Serper API Key（https://serper.dev 申请）。";
+      }
+      return "";
+    }
+    if (!config.endpoint) {
+      return (
+        "联网搜索尚未配置：" +
+        hint +
+        "填写 SearXNG 搜索地址（例如 https://searx.example.com/search），" +
+        "或把类型改为 Serper 并填写 Serper API Key。"
+      );
+    }
+    return "";
+  }
+
+  // SearXNG：{endpoint}?q=…&format=json；endpoint 已带 query 时改用 & 拼接
+  function buildSearxngUrl(endpoint, query) {
+    var base = searchTrim(endpoint);
+    var hashIndex = base.indexOf("#");
+    if (hashIndex >= 0) base = base.slice(0, hashIndex);
+    var separator = "?";
+    if (base.indexOf("?") >= 0) separator = /[?&]$/.test(base) ? "" : "&";
+    return base + separator + "q=" + encodeURIComponent(query) + "&format=json";
+  }
+
+  function normalizeEndpointInput(raw) {
+    var s = searchTrim(raw);
+    if (!s) return { error: "用法：/websearch endpoint <搜索服务地址>，例如 https://searx.example.com/search" };
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = "https://" + s;
+    var parsed;
+    try {
+      parsed = new URL(s);
+    } catch (e) {
+      return { error: "端点地址无效：" + s };
+    }
+    var proto = String(parsed.protocol || "").toLowerCase();
+    var host = String(parsed.hostname || "").toLowerCase();
+    var isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+    if (!(proto === "https:" || (proto === "http:" && isLocal))) {
+      return { error: "端点必须是 https:// 地址（自建 SearXNG 可用 http://localhost 测试）：" + s };
+    }
+    return { href: parsed.href };
+  }
+
+  function searchResponseBody(response) {
+    if (response == null) return "";
+    if (typeof response.body === "string") return response.body;
+    if (typeof response.text === "string") return response.text;
+    if (response.body !== undefined && response.body !== null) return response.body;
+    return "";
+  }
+
+  function extractSearchErrorMessage(data) {
+    if (!data || typeof data !== "object") return "";
+    var candidates = [data.error, data.message, data.detail, data.error_message];
+    for (var i = 0; i < candidates.length; i += 1) {
+      var value = candidates[i];
+      if (typeof value === "string" && value.trim()) {
+        return truncateSearchText(cleanSearchText(value), 120);
+      }
+    }
+    return "";
+  }
+
+  function pickSearchField(item, keys) {
+    if (!item || typeof item !== "object") return "";
+    for (var i = 0; i < keys.length; i += 1) {
+      var value = item[keys[i]];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  }
+
+  // 解析出 [{title,url,snippet}]；仅 https，最多 min(maxResults, 5) 条
+  function normalizeSearchResults(items, type, maxResults) {
+    var out = [];
+    if (!Array.isArray(items)) return out;
+    var limit = Math.min(clampSearchCount(maxResults), SEARCH_RESULT_LIMIT);
+    var isSerper = type === "serper";
+    for (var i = 0; i < items.length && out.length < limit; i += 1) {
+      var item = items[i];
+      if (!item || typeof item !== "object") continue;
+      var url = pickSearchField(item, isSerper ? ["link", "url"] : ["url", "link"]);
+      if (!isHttpsUrl(url)) continue;
+      var title = truncateSearchText(cleanSearchText(pickSearchField(item, ["title"])), SEARCH_TITLE_MAX);
+      if (!title) {
+        try {
+          title = new URL(url).hostname;
+        } catch (e) {
+          title = url;
+        }
+      }
+      var snippet = truncateSearchText(
+        cleanSearchText(pickSearchField(item, isSerper ? ["snippet", "content"] : ["content", "snippet"])),
+        SEARCH_SNIPPET_MAX
+      );
+      out.push({ title: title, url: url, snippet: snippet });
+    }
+    return out;
+  }
+
+  async function requestSearch(ctx, config, query, maxResults) {
+    if (!ctx || !ctx.http || typeof ctx.http.fetch !== "function") {
+      return { error: "联网搜索失败：当前环境不支持网络请求（ctx.http.fetch 不可用）。" };
+    }
+    var url;
+    var options;
+    if (config.type === "serper") {
+      url = config.endpoint;
+      options = {
+        method: "POST",
+        headers: {
+          "X-API-KEY": config.apiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        body: JSON.stringify({ q: query, num: maxResults }),
+        timeout: SEARCH_TIMEOUT_MS
+      };
+    } else {
+      url = buildSearxngUrl(config.endpoint, query);
+      options = {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        timeout: SEARCH_TIMEOUT_MS
+      };
+    }
+
+    var response;
+    try {
+      response = await ctx.http.fetch(url, options);
+    } catch (e) {
+      return { error: "联网搜索失败：" + errorText(e) };
+    }
+
+    var status = response && typeof response.status === "number" ? response.status : 0;
+    var body = searchResponseBody(response);
+
+    if (status && (status < 200 || status >= 300)) {
+      var notice = "";
+      try {
+        var errorData = typeof body === "string" ? JSON.parse(body) : body;
+        var upstreamMessage = extractSearchErrorMessage(errorData);
+        if (upstreamMessage) notice = "（" + upstreamMessage + "）";
+      } catch (e2) {
+        /* ignore */
+      }
+      return {
+        error:
+          "联网搜索失败：搜索服务返回 HTTP " +
+          status +
+          notice +
+          "，请检查「插件 → 联网搜索 → 设置」中的端点地址与 API Key 是否正确。"
+      };
+    }
+
+    var data = null;
+    if (typeof body === "string") {
+      var text = body.trim();
+      if (!text) return { error: "联网搜索失败：搜索服务返回了空响应。" };
+      try {
+        data = JSON.parse(text);
+      } catch (e3) {
+        return { error: "联网搜索失败：搜索服务返回的不是有效 JSON，请确认端点是否正确。" };
+      }
+    } else if (body && typeof body === "object") {
+      data = body;
+    } else {
+      return { error: "联网搜索失败：搜索服务返回了空响应。" };
+    }
+
+    var upstreamError = extractSearchErrorMessage(data);
+    if (upstreamError) {
+      return { error: "联网搜索失败：搜索服务返回错误（" + upstreamError + "）。" };
+    }
+
+    var items = null;
+    if (config.type === "serper") {
+      if (data && Array.isArray(data.organic)) items = data.organic;
+      else if (data && Array.isArray(data.results)) items = data.results;
+    } else if (data && Array.isArray(data.results)) {
+      items = data.results;
+    }
+    if (!items) {
+      return {
+        error:
+          config.type === "serper"
+            ? "联网搜索失败：无法解析搜索结果（Serper 响应缺少 organic 数组）。"
+            : "联网搜索失败：无法解析搜索结果（SearXNG 响应缺少 results 数组，且实例可能未开启 JSON 格式）。"
+      };
+    }
+
+    return { results: normalizeSearchResults(items, config.type, maxResults) };
+  }
+
+  function buildSearchOutput(query, results) {
+    try {
+      return JSON.stringify({ query: query, results: results });
+    } catch (e) {
+      return JSON.stringify({ query: query, results: [] });
+    }
+  }
+
+  async function runWebSearch(ctx, args) {
+    var query = "";
+    if (args && args.query !== undefined && args.query !== null) {
+      query = searchTrim(args.query);
+    }
+    if (!query) return "搜索失败：缺少 query 参数，请传入要搜索的关键词。";
+
+    var config = readSearchConfig(ctx);
+    var setupError = searchConfigError(config);
+    if (setupError) return setupError;
+
+    var maxResults = clampSearchCount(args && args.max_results);
+    try {
+      var outcome = await requestSearch(ctx, config, query, maxResults);
+      if (outcome.error) return outcome.error;
+      return buildSearchOutput(query, outcome.results);
+    } catch (e) {
+      return "联网搜索失败：" + errorText(e);
+    }
+  }
+
+  function websearchStatusText(config) {
+    var lines = ["联网搜索（websearch）设置："];
+    lines.push("• 类型：" + (config.type === "serper" ? "Serper 兼容（POST + X-API-KEY）" : "SearXNG 兼容（GET ?q=&format=json）"));
+    lines.push("• 地址：" + (config.endpoint || "未配置"));
+    if (config.type === "serper") {
+      lines.push("• API Key：" + (config.apiKey ? maskSearchSecret(config.apiKey) : "未配置（Serper 必填）"));
+    } else {
+      lines.push("• API Key：" + (config.apiKey ? maskSearchSecret(config.apiKey) + "（SearXNG 可留空）" : "未配置（SearXNG 可留空）"));
+    }
+    lines.push(
+      "配置：/websearch type searxng|serper、/websearch endpoint <地址>、/websearch key <API Key>、/websearch test"
+    );
+    return lines.join("\n");
+  }
+
+  async function searchAsText(ctx, query) {
+    var config = readSearchConfig(ctx);
+    var setupError = searchConfigError(config);
+    if (setupError) return setupError;
+    var outcome;
+    try {
+      outcome = await requestSearch(ctx, config, query, SEARCH_DEFAULT_MAX);
+    } catch (e) {
+      return "联网搜索失败：" + errorText(e);
+    }
+    if (outcome.error) return outcome.error;
+    var results = outcome.results || [];
+    if (!results.length) return "联网搜索「" + query + "」没有返回可用的 https 结果。";
+    var lines = ["联网搜索「" + query + "」（" + results.length + " 条）："];
+    for (var i = 0; i < results.length; i += 1) {
+      var result = results[i];
+      lines.push(i + 1 + ". " + result.title);
+      lines.push("   " + result.url);
+      if (result.snippet) lines.push("   " + result.snippet);
+    }
+    return lines.join("\n");
+  }
+
+  async function handleWebsearchCommand(ctx, args) {
+    var text = argText(args);
+    var match = /^(\S+)\s*([\s\S]*)$/.exec(text);
+    var sub = match ? match[1].toLowerCase() : "";
+    var rest = match ? match[2].trim() : "";
+    var config = readSearchConfig(ctx);
+
+    if (!sub || sub === "status" || sub === "help" || sub === "状态" || sub === "帮助") {
+      return websearchStatusText(config);
+    }
+
+    if (sub === "type" || sub === "类型") {
+      var nextType = rest.toLowerCase();
+      if (nextType !== "searxng" && nextType !== "serper") {
+        return "用法：/websearch type searxng|serper";
+      }
+      if (!saveSearchSetting(ctx, "type", nextType)) return "保存失败：当前环境不支持插件设置存储。";
+      return "已把联网搜索类型设置为「" + (nextType === "serper" ? "Serper" : "SearXNG") + "」。";
+    }
+
+    if (sub === "endpoint" || sub === "url" || sub === "地址") {
+      var normalized = normalizeEndpointInput(rest);
+      if (normalized.error) return normalized.error;
+      if (!saveSearchSetting(ctx, "endpoint", normalized.href)) {
+        return "保存失败：当前环境不支持插件设置存储。";
+      }
+      return "已保存搜索地址：" + normalized.href + "。可用 /websearch test 测试。";
+    }
+
+    if (sub === "key" || sub === "apikey" || sub === "api-key" || sub === "密钥") {
+      var apiKey = searchTrim(rest);
+      if (!apiKey) return "用法：/websearch key <Serper API Key>；清空请用 /websearch key clear";
+      if (apiKey.toLowerCase() === "clear" || apiKey === "清空") {
+        if (!saveSearchSetting(ctx, "apiKey", "")) return "保存失败：当前环境不支持插件设置存储。";
+        return "已清空 API Key。";
+      }
+      if (!saveSearchSetting(ctx, "apiKey", apiKey)) return "保存失败：当前环境不支持插件设置存储。";
+      return "已保存 API Key（" + maskSearchSecret(apiKey) + "），仅用于请求所配置的 Serper 端点。";
+    }
+
+    if (sub === "test" || sub === "测试") {
+      return searchAsText(ctx, "DeepSeek House");
+    }
+
+    // 非保留子命令时，把整段文本当作搜索关键词
+    return searchAsText(ctx, text);
+  }
+
+  DSPlugins.register({
+    id: "websearch",
+    name: "联网搜索",
+    version: "1.0.0",
+    author: AUTHOR,
+    description:
+      "联网搜索（SearXNG / Serper 兼容），为模型提供 web_search 工具，返回带标题/链接/摘要的 JSON 结果，用于获取实时信息并生成引用来源。",
+    builtin: true,
+    settings: {
+      type: {
+        key: "type",
+        label: "服务类型",
+        type: "string",
+        enum: ["searxng", "serper"],
+        default: "searxng",
+        description: "SearXNG 兼容（GET ?q=&format=json）或 Serper 兼容（POST，X-API-KEY）"
+      },
+      endpoint: {
+        key: "endpoint",
+        label: "搜索服务地址",
+        type: "string",
+        placeholder: "https://searx.example.com/search",
+        description:
+          "SearXNG：实例搜索地址（会追加 ?q=…&format=json）；Serper：https://google.serper.dev/search。仅允许 https（localhost 例外）"
+      },
+      apiKey: {
+        key: "apiKey",
+        label: "API Key",
+        type: "string",
+        secret: true,
+        description: "仅 Serper 需要（X-API-KEY 请求头）；SearXNG 可留空"
+      }
+    },
+    commands: [
+      {
+        name: "websearch",
+        description: "查看/配置联网搜索（类型、端点、Serper Key），或测试搜索",
+        usage: "/websearch [status|type searxng|serper|endpoint <地址>|key <API Key>|test|<搜索词>]",
+        run: async function (ctx, args) {
+          return handleWebsearchCommand(ctx, args);
+        }
+      }
+    ],
+    tools: [
+      {
+        name: "web_search",
+        description:
+          "联网搜索实时信息（新闻、资料、网页）。返回 JSON 字符串 {\"query\":\"…\",\"results\":[{\"title\":\"…\",\"url\":\"https://…\",\"snippet\":\"…\"}]}；结果最多 5 条、仅 https。需要最新信息或引用来源时调用。",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "搜索关键词（必填）"
+            },
+            max_results: {
+              type: "number",
+              description: "期望返回条数，1–8，默认 5；最终最多返回 5 条 https 结果"
+            }
+          },
+          required: ["query"]
+        },
+        run: async function (ctx, args) {
+          return runWebSearch(ctx, args);
         }
       }
     ]

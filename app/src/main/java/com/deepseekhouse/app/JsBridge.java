@@ -6,8 +6,10 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.webkit.JavascriptInterface;
@@ -17,6 +19,8 @@ import android.widget.Toast;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +32,11 @@ import java.util.regex.Pattern;
  *
  * <p>所有同步方法都返回 JSON 字符串（失败返回 {@code {"error":"..."}}），自定义异常绝不外抛；
  * 异步方法立即返回，结果通过 {@code window.DSHost.onEvent(json)} 回传（切主线程执行）。</p>
+ *
+ * <p>v2.0 追加：F3 {@link #importTextFile()}（file-imported）、F6 {@link #pickImage(String)}
+ * （image-picked / image-error）、F7 {@link #setForeground(boolean, String)} + {@link #notify(String, String)}
+ * + app-state、F8 分享进入（shared）、F9 {@link #setAppLock(boolean)} / {@link #isAppLockEnabled()} /
+ * {@link #getStorageSecret()}。</p>
  */
 public final class JsBridge {
 
@@ -46,6 +55,13 @@ public final class JsBridge {
     private volatile String pendingExportName = "";
     private volatile String pendingExportContent = "";
     private volatile boolean released;
+
+    // F8 分享进入：先暂存，页面加载完成（onPageFinished）后只投递一次
+    private final Object shareLock = new Object();
+    private volatile boolean pageReady;
+    private boolean sharePending;
+    private String sharedTextValue = "";
+    private String sharedImageValue = "";
 
     public JsBridge(MainActivity activity) {
         this.activity = activity;
@@ -303,6 +319,44 @@ public final class JsBridge {
         activity.finishApp();
     }
 
+    // ------------------------------------------------------------ F9 应用锁 / 本地加密
+
+    /**
+     * F9：应用锁开关（存 SharedPreferences）。开启后下次启动在加载 WebView 前要求系统身份验证。
+     */
+    @JavascriptInterface
+    public void setAppLock(boolean enabled) {
+        try {
+            prefs.setAppLockEnabled(enabled);
+            activity.onAppLockSettingChanged(enabled);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** F9：应用锁是否开启（设置页开关初值）。 */
+    @JavascriptInterface
+    public boolean isAppLockEnabled() {
+        try {
+            return prefs.isAppLockEnabled();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * F9：返回 32 字节随机密钥的 Base64（首次调用生成，用 Android Keystore AES 包裹后存 SP）。
+     * 任何失败返回 ""，JS 侧回退明文 localStorage。
+     */
+    @JavascriptInterface
+    public String getStorageSecret() {
+        try {
+            return KeyVault.getOrCreateSecret(activity);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     // ============================================================ §3.2 异步方法
 
     @JavascriptInterface
@@ -364,6 +418,60 @@ public final class JsBridge {
             pendingExportName = "";
             pendingExportContent = "";
             emitSaved(name, false, "无法打开保存对话框");
+        }
+    }
+
+    // ------------------------------------------------------------ F3 备份导入
+
+    /** F3：选一个文本/JSON 文件（SAF），读取后发 {@code file-imported} 事件。 */
+    @JavascriptInterface
+    public void importTextFile() {
+        try {
+            activity.startTextImport();
+        } catch (Throwable t) {
+            emitFileImported("", "", "无法打开文件选择器");
+        }
+    }
+
+    // ------------------------------------------------------------ F6 图片输入
+
+    /**
+     * F6：source='gallery' 从相册选择，'camera' 调用系统相机拍照；
+     * 结果缩放到最长边 ≤1280、JPEG 80、Base64 dataURL 后发 {@code image-picked}，
+     * 失败发 {@code image-error}。
+     */
+    @JavascriptInterface
+    public void pickImage(String source) {
+        try {
+            activity.startPickImage("camera".equalsIgnoreCase(source) ? "camera" : "gallery");
+        } catch (Throwable t) {
+            emitImageError("无法打开图片来源");
+        }
+    }
+
+    // ------------------------------------------------------------ F7 后台生成 / 通知
+
+    /** F7：生成开始/结束切换前台服务（低优先级「生成中」常驻通知）。 */
+    @JavascriptInterface
+    public void setForeground(boolean active, String text) {
+        try {
+            if (active) {
+                GenerationService.start(activity, text);
+            } else {
+                GenerationService.stop(activity);
+            }
+        } catch (Throwable ignored) {
+            // 前台服务失败不影响 SSE 流式读取（只是后台可能被系统回收）
+        }
+    }
+
+    /** F7：完成通知（渠道「消息」）；API 33+ 未授予通知权限时静默丢弃。 */
+    @JavascriptInterface
+    public void notify(String title, String text) {
+        try {
+            Notifications.showMessage(activity, title, text);
+        } catch (Throwable ignored) {
+            // 忽略
         }
     }
 
@@ -435,6 +543,207 @@ public final class JsBridge {
         thread.start();
     }
 
+    // ------------------------------------------------------------ F3 / F6 结果回调
+
+    /** F3：备份文件读取结果（Activity.onActivityResult 转发）。 */
+    void onTextImportResult(int resultCode, Intent data) {
+        Uri uri = (resultCode == Activity.RESULT_OK && data != null) ? data.getData() : null;
+        if (uri == null) {
+            emitFileImported("", "", "cancelled");
+            return;
+        }
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String name = "";
+                try {
+                    name = SafIo.displayName(activity, uri);
+                    String content = SafIo.readText(activity, uri, SafIo.MAX_IMPORT_BYTES);
+                    emitFileImported(name, content, null);
+                } catch (Throwable t) {
+                    emitFileImported(name, "", describe(t));
+                }
+            }
+        }, "dsh-saf-text-import");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    void onTextImportCancelled(String reason) {
+        emitFileImported("", "", reason == null || reason.isEmpty() ? "cancelled" : reason);
+    }
+
+    /** F6：相机在 data extras 里返回的缩略图（部分机型无 EXTRA_OUTPUT 写入时兜底）。 */
+    private static Bitmap extractThumbnail(Intent data) {
+        if (data == null) {
+            return null;
+        }
+        try {
+            Bundle extras = data.getExtras();
+            Object value = extras == null ? null : extras.get("data");
+            return value instanceof Bitmap ? (Bitmap) value : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** F6：图片选择/拍照结果（Activity.onActivityResult 转发），解码缩图在后台线程。 */
+    void onImageResult(int resultCode, Intent data, String source) {
+        final boolean camera = "camera".equals(source);
+        if (resultCode != Activity.RESULT_OK) {
+            if (camera) {
+                CameraFileProvider.cleanup(activity);
+            }
+            emitImageError("cancelled");
+            return;
+        }
+        final Uri uri = data == null ? null : data.getData();
+        final Bitmap thumbnail = camera ? extractThumbnail(data) : null;
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    ImageTools.Prepared prepared = null;
+                    String imageName;
+                    if (camera) {
+                        File file = CameraFileProvider.fileFor(activity);
+                        if (file != null && file.isFile() && file.length() > 0L) {
+                            try {
+                                prepared = ImageTools.prepareFromFile(file);
+                            } catch (Throwable ignored) {
+                                prepared = null; // 个别相机写坏文件时退回 data extras 缩略图
+                            }
+                        }
+                        if (prepared == null && thumbnail != null) {
+                            prepared = ImageTools.prepare(thumbnail);
+                        }
+                        if (prepared == null) {
+                            throw new IOException("相机未返回照片");
+                        }
+                        imageName = CameraFileProvider.displayName();
+                    } else {
+                        if (uri == null) {
+                            throw new IOException("未选择图片");
+                        }
+                        prepared = ImageTools.prepareFromUri(activity, uri);
+                        imageName = SafIo.displayName(activity, uri);
+                        if (imageName.isEmpty()) {
+                            imageName = "image.jpg";
+                        }
+                    }
+                    emitImagePicked(prepared, imageName);
+                } catch (Throwable t) {
+                    emitImageError(describe(t));
+                } finally {
+                    if (thumbnail != null && !thumbnail.isRecycled()) {
+                        thumbnail.recycle();
+                    }
+                    if (camera) {
+                        CameraFileProvider.cleanup(activity);
+                    }
+                }
+            }
+        }, "dsh-image-pick");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    /** F6：直接上报图片错误（Activity 侧启动 Intent 失败时用）。 */
+    void onImageError(String message) {
+        emitImageError(message);
+    }
+
+    // ------------------------------------------------------------ F7 / F8 生命周期与分享
+
+    /** F7：MainActivity onResume/onPause 变化时上报 {@code app-state} 事件。 */
+    void onAppState(boolean foreground) {
+        emitAppState(foreground);
+    }
+
+    /** WebView 首次加载完成：补发一次前台状态，并投递暂存的分享内容（只消费一次）。 */
+    void onPageFinished() {
+        pageReady = true;
+        emitAppState(activity.isAppForeground());
+        flushShare();
+    }
+
+    /**
+     * F8：解析 {@code ACTION_SEND}（text/plain、image/*）的 EXTRA_TEXT / EXTRA_STREAM；
+     * 图片在后台缩图，页面就绪后由 {@link #flushShare()} 一次性发 {@code shared} 事件。
+     */
+    void onShareIntent(final Intent intent) {
+        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) {
+            return;
+        }
+        String text = "";
+        try {
+            CharSequence cs = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            if (cs != null) {
+                text = cs.toString();
+            }
+        } catch (Throwable ignored) {
+            // 保持空文本
+        }
+        Uri stream = null;
+        try {
+            Object extra = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (extra instanceof Uri) {
+                stream = (Uri) extra;
+            }
+        } catch (Throwable ignored) {
+            // 保持 null
+        }
+        if (stream == null) {
+            try {
+                stream = intent.getData();
+            } catch (Throwable ignored) {
+                // 保持 null
+            }
+        }
+        final String sharedText = text == null ? "" : text;
+        final Uri sharedUri = stream;
+        if (sharedText.isEmpty() && sharedUri == null) {
+            return;
+        }
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String imageDataUrl = "";
+                if (sharedUri != null) {
+                    try {
+                        imageDataUrl = ImageTools.prepareFromUri(activity, sharedUri).dataUrl;
+                    } catch (Throwable ignored) {
+                        // 非图片 / 无权限：只投递文本
+                    }
+                }
+                synchronized (shareLock) {
+                    sharedTextValue = sharedText;
+                    sharedImageValue = imageDataUrl;
+                    sharePending = true;
+                }
+                flushShare();
+            }
+        }, "dsh-shared-intent");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void flushShare() {
+        String text;
+        String image;
+        synchronized (shareLock) {
+            if (!sharePending || !pageReady || released) {
+                return;
+            }
+            sharePending = false;
+            text = sharedTextValue == null ? "" : sharedTextValue;
+            image = sharedImageValue == null ? "" : sharedImageValue;
+            sharedTextValue = "";
+            sharedImageValue = "";
+        }
+        emitShared(text, image);
+    }
+
     // ============================================================ 事件通道
 
     private void emitEvent(final String json) {
@@ -485,6 +794,80 @@ public final class JsBridge {
             if (error != null) {
                 o.put("error", error);
             }
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** F3：{@code {"type":"file-imported","name":..,"content":..}}；取消/失败带 error。 */
+    private void emitFileImported(String name, String content, String error) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "file-imported");
+            o.put("content", content == null ? "" : content);
+            if (name != null && !name.isEmpty()) {
+                o.put("name", name);
+            }
+            if (error != null) {
+                o.put("error", error);
+            }
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** F6：{@code {"type":"image-picked","dataUrl":..,"width":..,"height":..,"name":..}} */
+    private void emitImagePicked(ImageTools.Prepared prepared, String name) {
+        if (prepared == null || prepared.dataUrl == null || prepared.dataUrl.isEmpty()) {
+            emitImageError("图片处理失败");
+            return;
+        }
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "image-picked");
+            o.put("dataUrl", prepared.dataUrl);
+            o.put("width", prepared.width);
+            o.put("height", prepared.height);
+            o.put("name", name == null ? "" : name);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** F6：{@code {"type":"image-error","message":..}} */
+    private void emitImageError(String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "image-error");
+            o.put("message", message == null || message.isEmpty() ? "图片处理失败" : message);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** F8：{@code {"type":"shared","text":..,"imageDataUrl":..}} */
+    private void emitShared(String text, String imageDataUrl) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "shared");
+            o.put("text", text == null ? "" : text);
+            o.put("imageDataUrl", imageDataUrl == null ? "" : imageDataUrl);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** F7：{@code {"type":"app-state","foreground":true|false}} */
+    private void emitAppState(boolean foreground) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "app-state");
+            o.put("foreground", foreground);
         } catch (JSONException ignored) {
             return;
         }

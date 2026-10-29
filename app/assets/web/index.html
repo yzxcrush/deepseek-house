@@ -91,6 +91,18 @@
         </button>
       </header>
 
+      <!-- SPEC v2.0 F2：聊天文件夹标签（全部 / 归档），下划线 + 计数 -->
+      <div class="folder-tabs" id="chat-tabs" role="tablist" aria-label="会话分类">
+        <button class="folder-tab is-active" type="button" data-tab="all" role="tab" aria-selected="true">
+          <span class="folder-tab-label">全部</span>
+          <span class="folder-tab-count" id="chat-tab-count-all" hidden>0</span>
+        </button>
+        <button class="folder-tab" type="button" data-tab="archived" role="tab" aria-selected="false">
+          <span class="folder-tab-label">归档</span>
+          <span class="folder-tab-count" id="chat-tab-count-archived" hidden>0</span>
+        </button>
+      </div>
+
       <div class="chat-search" id="chat-search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7"></circle>
@@ -282,7 +294,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.1.2<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.2.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -469,6 +481,20 @@
           </div>
         </div>
 
+        <!-- SPEC v2.0 F1：智能体预设管理入口 -->
+        <div class="section-label">智能体</div>
+        <div class="section">
+          <button class="form-row form-row--button" id="set-agents-row" type="button" data-action="open-agents" aria-label="智能体预设">
+            <span class="form-label">智能体预设</span>
+            <span class="form-control form-control--value">
+              <span class="form-value" id="set-agents-label">管理</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+        </div>
+
         <div class="section-label">账户</div>
         <div class="section">
           <div class="form-row">
@@ -485,7 +511,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.1.2</span></div>
+          <div class="about-row"><span>版本</span><span>1.2.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -552,6 +578,49 @@
         <div class="plugins-tip">
           <b>插件说明</b>
           <p>在输入框以 / 开头可调用插件命令；启用插件的工具会通过 function calling 暴露给模型（最多 3 轮）。外部插件只在你主动安装后才执行，请只安装可信来源的代码。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------- 智能体预设管理（SPEC v2.0 F1） ---------------------------- -->
+    <section class="screen screen--page" id="screen-agents" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title">智能体预设</div>
+          <div class="subtitle" id="agents-count"></div>
+        </div>
+        <button class="icon-btn" type="button" data-action="new-agent" aria-label="新建预设">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="page-scroll" id="agents-body">
+        <div class="section-label">我的预设</div>
+        <div class="agent-list" id="agents-list"></div>
+
+        <div class="plugins-empty" id="agents-empty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="8" r="3.4"></circle>
+            <path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"></path>
+          </svg>
+          <p>还没有智能体预设</p>
+          <small>点下方按钮新建预设，预设会出现在新建会话的「选择智能体」弹层里。</small>
+        </div>
+
+        <div class="page-actions">
+          <button class="btn btn--primary" type="button" data-action="new-agent">新建预设</button>
+        </div>
+
+        <div class="plugins-tip">
+          <b>智能体预设</b>
+          <p>预设包含名称、简介与系统提示词。新建会话时可选择预设，该会话的请求会使用预设的系统提示词与模型。内置预设也可以编辑或删除。</p>
         </div>
       </div>
     </section>
@@ -648,7 +717,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v1.1.2</span>
+      <span class="drawer-version">v1.2.0</span>
     </div>
   </aside>
 
@@ -746,6 +815,33 @@
           <input id="model-picker-custom-input" class="picker-custom-input" type="text" placeholder="例如 deepseek-v9-max" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="自定义模型 ID">
           <button class="btn btn--primary picker-custom-add" type="button" data-action="add-custom-model">添加并使用</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 智能体选择器（底部弹层，SPEC v2.0 F1） ============================ -->
+  <div class="model-picker agent-picker" id="agent-picker" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="agent-picker-title">
+    <div class="model-picker-sheet">
+      <div class="picker-handle" id="agent-picker-handle" aria-hidden="true"></div>
+      <div class="picker-head">
+        <div class="picker-title" id="agent-picker-title">选择智能体</div>
+        <button class="icon-btn" type="button" data-action="close-agent-picker" aria-label="关闭智能体选择器">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="agent-picker-sub">选择后会以此预设新建会话</div>
+      <div class="picker-scroll agent-picker-list" id="agent-picker-list" role="listbox" aria-label="智能体列表"></div>
+      <div class="picker-foot">
+        <button class="picker-custom-toggle agent-picker-manage" id="agent-picker-manage" type="button" data-action="manage-agents">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 7h-9M14 17H5"></path>
+            <circle cx="17" cy="17" r="3"></circle>
+            <circle cx="7" cy="7" r="3"></circle>
+          </svg>
+          <span>管理预设</span>
+        </button>
       </div>
     </div>
   </div>
