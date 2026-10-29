@@ -33,11 +33,12 @@ scripts/qa/
 ├── run-tests.mjs          # 主入口：注册并运行全部 suite
 ├── lib/harness.mjs        # 零依赖测试框架（suite/test/断言/超时/汇总）
 ├── lib/env.mjs            # jsdom 窗口、真实 index.html 加载、DSNative mock、stub、等待/可见性工具
-├── static-checks.mjs      # 静态契约扫描（前端 + Java/Manifest 跨端核对 + P1/P2 + python py_compile）
-├── unit-tests.mjs         # 单元测试（util/markdown/store/bridge mock/plugins + Bridge P1/P2 原生封装）
+├── static-checks.mjs      # 静态契约扫描（前端 + Java/Manifest 跨端核对 + P1/P2/P3 + python py_compile）
+├── unit-tests.mjs         # 单元测试（util/markdown/store/bridge mock/plugins + Bridge P1/P2/P3 原生封装）
 ├── integration-tests.mjs  # jsdom 集成冒烟（真实 index.html + 全部脚本 + DSNative mock）
 ├── p1-integration-tests.mjs # ARCH v2 P1 集成：工具循环/文件树/终端/审计/OTP/工作区（每条独立窗口）
-└── p2-integration-tests.mjs # ARCH v2 P2 集成：MCP 服务器管理/连接/工具发现/构建进度卡（每条独立窗口）
+├── p2-integration-tests.mjs # ARCH v2 P2 集成：MCP 服务器管理/连接/工具发现/构建进度卡（每条独立窗口）
+└── p3-integration-tests.mjs # ARCH v2 P3 集成：插件市场/HMAC/记忆注入与压缩/插件槽位（每条独立窗口）
 ```
 
 > `lib/env.mjs` 的 `createMockNative()` 同时实现了 SPEC §3 旧方法与 **ARCH v2 P1 的 14 个新方法**
@@ -47,7 +48,9 @@ scripts/qa/
 > 可通过 `app.native.__p1` 读写。**ARCH v2 P2 的 6 个 MCP 方法与 `mcpTools`** 也已加入
 > `createMockNative()`（默认 2 个示例服务器、连接后自动发 `mcp-status`/`mcp-tools`，
 > 已连接服务器的工具以 risk=MID 合并进 `toolSchemas()`；运行时状态经 `app.native.__p2` 读写）。
-> 旧用例（82 项）在两次扩展后均保持全绿。
+> **ARCH v2 P3 的插件目录 / 记忆 / HMAC 方法**同样已加入 `createMockNative()`（`opts.p3.plugins` /
+> `opts.p3.memory` + `app.native.__p3` 运行时状态、`__p3.hmacFor/sha256For` 签名助手），并支持
+> `opts.httpResponses` 驱动 `Bridge.httpFetch`（市场索引/源码下载）。旧用例（82→122 项）在三次扩展后均保持全绿。
 
 ## 3. 覆盖矩阵（对应 SPEC 章节）
 
@@ -100,6 +103,24 @@ scripts/qa/
 | P2 单元（Bridge 原生分支） | MCP 返回值归一化（`mcpServers` 状态/工具数/tools、`mcpTools`）；方法转发（save/delete/connect/disconnect/refreshTools 参数透传）；`waitMcpStatus/waitMcpTools` 事件 Promise 通道（mock 原生自动 connecting→connected + tools；断开回 disconnected） | 单元 · bridge.js P2 原生封装 2 项 |
 | P2 收尾 | P2 全流程后无未捕获脚本错误；Bridge 保持真实模式 | P2 集成 · 收尾 1 项 |
 
+### 3.4 ARCH v2 P3：插件生态 + 记忆与上下文（本次新增 17 项）
+
+| P3 章节 | 验证内容 | 测试位置 |
+|---|---|---|
+| P3 U3 插件市场渲染 | 设置页 `#set-market-row`（data-action=open-market）→ `#screen-market` 可见；`UI.renderMarket(2 items, statusMap)` → 2 张 `.market-card`；名称/版本/作者/描述/标签/状态徽章（已安装/可更新）/按钮（卸载；更新+卸载）/`#market-count` 与设置页统计/空状态隐藏 | P3 集成 · 插件市场 1 项 |
+| P3 L3 市场索引拉取 | `#market-url` + «拉取索引» → `onMarketFetch(url)` → `DSPlugins.fetchMarketIndex` → `Bridge.httpFetch`（mock 返回索引 JSON）→ 2 卡片渲染 + toast「市场索引已加载」；非 https 索引在 UI 层拒绝（toast 含 https）且不发请求，`App.fetchMarketIndex('http://…')` 返回 false | P3 集成 · 插件市场 1 项 |
+| P3 L3 市场安装/HMAC | 下载源码（第二次 httpFetch）→ sha256（JS 计算）与 `Bridge.pluginHmac` 双重校验 → `pluginWrite('<id>-<version>.js', source)` 写入（mock `pluginWriteFile`）→ 状态徽章「已安装」+ toast；卸载 → 确认弹窗 → `pluginDelete`（mock `pluginDeleteFile`）→ 状态回「未安装」 | P3 集成 · 插件市场 1 项 |
+| P3 L3 签名校验失败 | 篡改索引 hmac（格式合法但不匹配）→ 安装 → 不调用 `pluginWrite`、mock 原生无插件文件、卡片徽章「校验失败」+ `.market-error`「签名校验失败」+ toast；提供「重新安装」按钮 | P3 集成 · 插件市场 1 项 |
+| P3 U3 记忆页渲染 | 设置页 `#set-memory-row`（data-action=open-memory）→ `#screen-memory`；`Bridge.memoryAll` → 长期偏好 2 条（key/value + 删除按钮）/项目记忆 3 个 textarea 回填/会话摘要 1 条（摘要+chatId 标题回退+删除按钮）/计数统计/空状态/`onMemorySave` 回调存在 | P3 集成 · 记忆页 1 项 |
+| P3 L3 记忆写入/删除 | 添加长期偏好（UI 弹窗）→ `onMemorySave('long_term',k,v)` → `memoryKvSet` 参数透传 + 列表刷新；删除 → 确认弹窗 → `onMemoryDelete` → `memoryKvDelete`；项目记忆保存 → 3 次 `memoryKvSet('project',tech_stack/conventions/decisions)` | P3 集成 · 记忆页 1 项 |
+| P3 L3 摘要删除 | 摘要行「删除」→ 确认弹窗 → `onSummaryDelete(chatId)` → `memoryDeleteSummary(chatId)` + 列表移除 + toast | P3 集成 · 记忆页 1 项 |
+| P3 L3 上下文压缩与记忆注入 | 构造 26×1000 字符（>19200）历史发送 → `Bridge.memorySaveSummary(chatId, 摘要)`（摘要含「用户：/助手：」片段）；请求 messages 保留最近 10 条且字符数下降；Store/DOM 出现 role:'note'「已压缩 X 条历史消息」；`systemPrompt` 含基础提示词 + 长期偏好（结论先行/不用官方套话）+ 项目记忆（tech_stack 等）+「之前对话摘要：」+ 摘要内容 | P3 集成 · 记忆注入 1 项 |
+| P3 L3 未超预算 | 短会话发送：不写摘要、无压缩 note；`systemPrompt` 仍注入长期偏好/项目记忆 | P3 集成 · 记忆注入 1 项 |
+| P3 L3 插件槽位 | mock `Bridge.pluginList/pluginRead` 返回 1 个 HousePlugin（`uiSlots()` 返回 1 个 slot）→ `DSPlugins.loadHousePlugins` 沙箱执行 → `getUiSlots` → `UI.renderPluginSlots` 渲染 `#plugin-slots .plugin-slot`（标题/类型/动作按钮）；打开插件面板（`.is-open` / aria-hidden=false）；点击 slot 按钮 → `DSPlugins.runSlotAction(slotId,'ping',{chatId})` 被调用（spy）+ toast 结果 | P3 集成 · 插件面板 1 项 |
+| P3 静态契约 | `index.html` 市场/记忆/插件面板 id 与静态 data-action + 动态按钮；`ui.js` P3 API（renderMarket/openMarketPage/setMarketUrl/renderMemory/openMemoryPage/renderPluginSlots/openPluginPanel）；`plugins.js` DSPlugins 导出（loadHousePlugins/reloadHousePlugin/installHousePlugin/getUiSlots/runSlotAction/fetchMarketIndex/marketStatusMap/installMarketPlugin/removeMarketPlugin）与 HousePlugin/manifest/market 校验实现；`app.js` P3 handlers、记忆注入/压缩/handlers、`已压缩`/`之前对话摘要`/`用户偏好：`/`项目记忆：`；`JsBridge.java` 插件目录 7 方法（pluginList/pluginRead/pluginWrite/pluginDelete/pluginSetEnabled/pluginHmac/pluginOpenDir 及文件式变体）与 7 个 memory* 方法 + `@JavascriptInterface`；`plugin/PluginRepository.java`（house-plugins/sdcard/listJson/read/write/delete/setEnabled/hmac/sha256Of/openDir/文件名白名单/512KB）与 `memory/MemoryDb.java`（session_summary/memory_kv/CREATE TABLE/long_term/project/saveSummary/deleteSummary/summariesJson/kvJson/setKv/deleteKv/allJson/PRIMARY KEY） | P3 静态 4 项 |
+| P3 单元（Bridge 原生分支） | `pluginList/pluginRead/pluginHmac/pluginSha256/memoryAll/memoryKvGet/memoryGetSummaries` 归一化；`pluginWrite/delete/setEnabled/openDir` 与 `memoryKvSet/Delete`、`memorySaveSummary/DeleteSummary` 参数透传（文件式方法路由） | 单元 · bridge.js P3 原生封装 2 项 |
+| P3 收尾 | P3 全流程后无未捕获脚本错误；Bridge 保持真实模式 | P3 集成 · 收尾 1 项 |
+
 ## 4. jsdom 局限与测试 stub
 
 jsdom 没有真实布局/渲染/原生桥，集成测试用以下 stub 保证可测（见 `lib/env.mjs`）：
@@ -148,6 +169,20 @@ P1 用例**每条使用独立 jsdom 窗口**（`loadAppWindow` + `close()`），
 | `toolSchemas()` | 在 P1 5 个本地工具基础上，把**已连接** MCP 工具以 risk=MID 合并（名称去重、本地优先）；默认 2 个服务器 disconnected 故不影响旧用例 | `startChat` body.tools / `App.getToolSchemas()` |
 | 事件 | `mcp-status`/`mcp-tools`/`mcp-progress` 经 `app.native.__emit` 注入或 mock 自动产生；`mcp-progress` 固定由用例注入以精确断言进度/日志 | 进度卡/工具数/状态断言 |
 
+### 4.3 ARCH v2 P3 mock 原生（`createMockNative(opts.p3 / opts.httpResponses)`）
+
+| 方法/能力 | mock 行为 | 测试注入/断言方式 |
+|---|---|---|
+| `pluginList()` | 返回 `opts.p3.plugins`（`{fileName,source,enabled,meta}`）派生的 JSON：id/version 从 `<id>-<version>.js` 文件名或 meta 解析，含 fileName/size/sha256/source/enabled | HousePlugin 目录加载；市场已安装判定 |
+| `pluginReadFile(fileName)` | 返回对应源码（支持按 fileName 或 id 回退），缺失返回 `''` | `loadHousePlugins` 沙箱执行 |
+| `pluginWriteFile/pluginDeleteFile/pluginSetEnabledFile` | 写入/删除/启停内存插件文件并记录 `__p3.writes/deletes`；文件名白名单 `.js/.json`、≤512KB | 市场安装 → `pluginWrite`；卸载 → `pluginDelete` |
+| `pluginHmac(content)/pluginSha256(content)` | 确定性 64 hex mock 哈希；测试用 `app.native.__p3.hmacFor/sha256For` 取同值 | 市场索引的 hmac 生成与校验失败用例 |
+| `pluginOpenDir()` | 记录调用（`__p3.dirOpens`） | 目录打开入口 |
+| `memoryGetSummaries()/memorySaveSummary()/memoryDeleteSummary()` | 内存摘要表；保存/删除同步更新 `__p3.memoryWrites` | 记忆页摘要渲染/删除、压缩写摘要 |
+| `memoryKvGet(scope)/memoryKvSet()/memoryKvDelete()` | 内存 KV（long_term/project），同步更新 `__p3.kv` | 长期偏好/项目记忆 CRUD、systemPrompt 注入 |
+| `memoryAll()` | `{summaries,long_term,project}` JSON | 记忆页一次加载 |
+| `Bridge.httpFetch` 响应表 | `opts.httpResponses[url] = {status,body}`（运行时可用 `app.native.__http.responses[url]` 改写），未配置仍回 `'{}'` | 市场索引 JSON / 插件源码下载 |
+
 ## 5. 已知说明 / SPEC 解释
 
 1. **返回值不属 SPEC 契约**：`Store.deleteChat` 返回被删除会话对象（非 `true`）、`DSPlugins.installFromFile` 返回插件 public view（非 id 字符串）——SPEC 未规定返回类型，测试按真值/取 `id` 兼容，不视为缺陷。
@@ -170,7 +205,16 @@ P1 用例**每条使用独立 jsdom 窗口**（`loadAppWindow` + `close()`），
 7. **P2 QA 观察（低风险，仅报告，未改产品代码）**：
    - `app/assets/web/js/ui.js:1778-1802` `toolStatusOf()` 把**非空 content 一律视为「已有结果」**（`hasResult` 在 success 判定中优先于 `running`）。P2 构建进度卡的 running 消息 content 固定为「执行中…」（`app.js:1716`、`:3968`），导致构建/等待确认期间工具卡状态徽章显示「成功」（实测 `tool-badge--success`），与进度区「构建中…/等待确认…」矛盾。建议：把 `confirmState==='running'/'executing'` 判定提前到 `hasResult` 之前，或 `hasResult` 只认 `result` 字段/`ok===true`。属视觉状态误导，不影响进度条/日志/最终结果。
    - `app/assets/web/js/ui.js:2304-2318` `updateMcpCounts()` 只在 `renderMcpRows()`（进入 MCP 管理页）时执行：冷启动后直接打开设置页时「MCP 服务器」行仍显示「未配置」，直到进过一次 MCP 管理页才显示真实数量。建议 app 启动/进入设置页时调用 `UI.renderMcpServers` 或单独刷新统计。低优先级 UX。
-8. 测试不做 APK 打包与真实网络请求：`scripts/build.sh`、`apksigner`、真实 DeepSeek SSE、原生 Toast/剪贴板/SAF 由 Lead 与人工验收覆盖（见 §8）。
+9. **P3 测试假设（非 SPEC 契约，已按实现兼容）**：
+   - 市场安装由 `plugins.js installMarketPlugin` 负责：sha256 用 JS 本地 `sha256Hex` 计算（不是 `Bridge.pluginSha256`），HMAC 用 `Bridge.pluginHmac`；索引条目的 `sha256/hmac` 必须为 64 位小写 hex，否则索引校验阶段即被过滤/报错。
+   - mock 原生 `pluginHmac/pluginSha256` 用确定性 mock 哈希（非真实 SHA-256/HMAC），仅用于校验「比对逻辑」；真实算法由 Java `PluginRepository` 保证。
+   - `Bridge.pluginWrite/pluginDelete/pluginSetEnabled` 对 `*.js/*.json` 文件名会自动路由到 P3 文件式原生方法（`pluginWriteFile/...`）；测试两者都覆盖。
+   - 压缩阈值 = `prefs.contextBudget`（默认 24000）×80% = 19200 字符；压缩保留最近 10 条，旧消息每条前 160 字、最多 20 条写入 `session_summary`；「已压缩」提示为 `role:'note'`。
+10. **P3 QA 观察（低风险，仅报告，未改产品代码）**：
+   - 设置页三处入口统计（`#set-market-label` / `#set-memory-label` / P2 的 `#set-mcp-count`）都只在对应管理页 `render*` 时刷新：冷启动直接打开设置页时分别显示「未配置索引」「长期偏好 / 项目记忆」「未配置」，需进过一次管理页才显示真实数量（`ui.js` 的 `updateMarketLabels/updateMemoryLabels/updateMcpCounts` 调用点只在 render 流程）。建议 app 启动或进入设置页时统一刷新。低优先级 UX。
+   - 市场索引 URL 的 localhost 例外不一致：`app.js fetchMarketIndex` 对 `http://127.0.0.1` 放行（`isLocal`），但 `plugins.js fetchMarketIndex` 只接受 `https://`（直接 `marketFail`），UI 层 `#market-fetch` 也先拒绝非 https → app 的 localhost 分支实际不可达。建议统一策略（要么插件层允许 localhost，要么删除 app 分支/注释）。
+   - 未发现阻断性/功能性缺陷；P3 实现与 SPEC N3/U3/L3 契约一致（详见覆盖矩阵）。
+11. 测试不做 APK 打包与真实网络请求：`scripts/build.sh`、`apksigner`、真实 DeepSeek SSE、原生 Toast/剪贴板/SAF 由 Lead 与人工验收覆盖（见 §8）。
 
 ## 6. CI 命令（GitHub Actions 片段）
 
@@ -224,15 +268,16 @@ test('行为描述', () => {
 - **APK 安装冒烟**：安装/首次启动/登录/退出登录后保留会话。
 - **ARCH v2 P1 真机验证**（jsdom 无法覆盖）：AI 触发 `read_file/list_dir` 的确认/结果卡片；`write_file`（MID 首次确认）与 `run_shell`（HIGH 每次确认）真机弹窗与审计落库（`filesDir/audit.db`）；PathPolicy 拒绝 `..`/symlink 越界与 `/sdcard` 未授权场景；文件树列出 `/sdcard/house-workspace`、点击预览；终端执行 `echo hi`；手机号登录通知渠道「登录验证码」显示 OTP、60s 限频/错 3 次锁 5 分钟；`setWorkspace('/sdcard/house-workspace')` 在授予 MANAGE_EXTERNAL_STORAGE 后生效；Android 11+ 「所有文件访问权限」跳转。
 - **ARCH v2 P2 真机验证**（jsdom 无法覆盖）：Termux 内 `./termux-mcp/setup.sh` + `./start.sh` 启动 Python MCP Server（127.0.0.1:8787 + Token）；App 设置 → MCP 服务器 → 添加 `http://127.0.0.1:8787/mcp` + Token → 显示已连接与 5 个工具；让 AI 调 `list_workspace` / `pack_apk`，确认弹窗（MID）→ 结果卡片与进度条/日志（Termux server 是否发 `mcp-progress` 决定进度是否实时）→ 审计落库与 tool-result；断网/Token 错误时的 error 状态与重连（1s/2s/4s/8s/30s）；`python3 -m py_compile`、`curl initialize`、`tools/list` 手工验证。
+- **ARCH v2 P3 真机验证**（jsdom 无法覆盖）：插件目录（`getExternalFilesDir("house-plugins")` 与可选 `/sdcard/house-plugins`）真实读写、`.js/.json` 文件名白名单与 512KB 限制、`pluginOpenDir` 打开系统文件管理器到插件目录；用真实 `PluginRepository.hmac/sha256` 签名的本地市场索引（https 或真实部署）安装插件 → 工具出现在工具列表；HMAC/sha256 被篡改时拒绝写入；记忆页增删长期偏好/项目记忆后重启仍在（`filesDir/memory.db` 的 `session_summary`/`memory_kv` 表）；真实超长会话（>19200 字符）压缩后 `memorySaveSummary` 落库、重启后摘要仍注入 system prompt；HousePlugin `uiSlots` 面板在真机聊天页打开与动作执行。
 
 ## 9. 最近一次执行结果
 
 ```
-ALL TESTS PASSED (122)
+ALL TESTS PASSED (139)
 ```
 
-- 覆盖：静态 29 项（SPEC 基线静态 10 + 跨端核对 8 + **P1 静态 5** + **P2 静态 6**）+ 单元 43 项（基线 39 + **Bridge P1 2** + **Bridge P2 2**）+ 集成冒烟 25 项（v1.x 基线）+ **P1 集成 18 项** + **P2 集成 7 项** = 122 项 / 30 个 suite。
-- 本次 P2 新增 **15 项**：MCP 管理页列表 1、添加/保存 1、连接+工具发现 1、mcp-tools 1、构建进度成功 1、构建失败 1、P2 静态 6（含实际 `python3 -m py_compile`）、Bridge P2 单元 2、收尾 1。
-- 此前 P1 新增 25 项，基线 82 项；三次扩展均保持旧用例全绿。
-- 运行耗时约 9s；无需网络；退出码 0（仅 `py_compile` 用例需要本机 `python3`，缺失会给出明确失败信息）。
+- 覆盖：静态 33 项（SPEC 基线静态 10 + 跨端核对 8 + **P1 静态 5** + **P2 静态 6** + **P3 静态 4**）+ 单元 45 项（基线 39 + **Bridge P1 2** + **Bridge P2 2** + **Bridge P3 2**）+ 集成冒烟 25 项（v1.x 基线）+ **P1 集成 18 项** + **P2 集成 7 项** + **P3 集成 11 项** = 139 项 / 37 个 suite。
+- 本次 P3 新增 **17 项**：插件市场 4（渲染/索引拉取+非 https 拒绝/安装+HMAC 校验+卸载/HMAC 不匹配失败路径）、记忆页 3（渲染/长期&项目写入删除/摘要删除）、记忆注入与压缩 2（>19200 压缩+注入；未超预算仅注入）、插件槽位 1（HousePlugin uiSlots + runSlotAction）、P3 收尾 1、P3 静态 4、Bridge P3 单元 2。
+- 此前 P1 新增 25 项、P2 新增 15 项，基线 82 项；四次扩展均保持旧用例全绿（122→139）。
+- 运行耗时约 11s；无需网络；退出码 0（仅 `py_compile` 用例需要本机 `python3`，缺失会给出明确失败信息）。
 - 若产品代码后续变更导致失败，`npm test` 会列出每个失败项的 suite/测试名/断言信息，退出码非 0。

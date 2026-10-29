@@ -820,6 +820,23 @@
         setBackDepth(state.nav.from === 'chat' ? 2 : 1);
         return;
       }
+      /* ARCH v2 P3：市场/记忆页是 UI 内部屏幕 → 硬件返回回设置页 */
+      if (uiScreen === 'market' || uiScreen === 'memory') {
+        closeDrawer();
+        if (state.nav.screen !== 'settings') {
+          state.nav = { screen: 'settings', drawerOpen: false, from: state.nav.screen || 'chats' };
+        }
+        ui('showScreen', 'settings');
+        setBackDepth(state.nav.from === 'chat' ? 2 : 1);
+        return;
+      }
+    }
+    /* ARCH v2 P3：插件面板打开时，硬件返回先关闭面板（面板从聊天页打开，不清空返回栈） */
+    if (U && typeof U.isPluginPanelOpen === 'function' && U.isPluginPanelOpen()) {
+      try {
+        if (typeof U.closePluginPanel === 'function') U.closePluginPanel();
+      } catch (e) { /* ignore */ }
+      return;
     }
     if (screen === 'chats') {
       closeDrawer();

@@ -830,4 +830,133 @@ export function registerStaticTests() {
       ok(qaDoc.indexOf(keyword) !== -1, `docs/QA.md 覆盖矩阵缺少 P2 关键词：${keyword}`);
     }
   });
+
+  /* ================================================================== *
+   * ARCH v2 P3：插件生态（模块三）+ 记忆与上下文（模块五）
+   * ================================================================== */
+  suite('ARCH v2 P3 静态契约（市场 / 记忆 / HousePlugin / 原生包）');
+
+  test('index.html 含市场/记忆/插件面板关键 id、data-action 与样式类', () => {
+    const html = readWeb('index.html');
+    const requiredIds = [
+      // 插件市场
+      'screen-market', 'market-count', 'market-url', 'market-fetch', 'market-list', 'market-empty',
+      'set-market-row', 'set-market-label',
+      // 记忆
+      'screen-memory', 'memory-count', 'memory-longterm', 'memory-longterm-empty', 'memory-add-longterm',
+      'memory-tech-stack', 'memory-conventions', 'memory-decisions', 'memory-save-project',
+      'memory-summaries', 'memory-summaries-empty', 'memory-item-modal', 'memory-item-key', 'memory-item-value',
+      'set-memory-row', 'set-memory-label',
+      // 插件槽位面板
+      'plugin-panel', 'plugin-panel-title', 'plugin-slots', 'plugin-slots-empty',
+    ];
+    const missing = requiredIds.filter((id) => !new RegExp(`id\\s*=\\s*["']${id}["']`).test(html));
+    ok(missing.length === 0, `index.html 缺少 P3 关键 id：${missing.join(', ')}`);
+    for (const action of [
+      'open-market', 'market-refresh', 'market-fetch',
+      'open-memory', 'memory-add-longterm', 'memory-item-save', 'memory-item-cancel', 'memory-save-project',
+      'open-plugin-panel', 'close-plugin-panel',
+    ]) {
+      ok(html.indexOf(`data-action="${action}"`) !== -1, `index.html 缺少 data-action="${action}"`);
+    }
+    // 卡片/记忆/槽位动态按钮的 data-action 由 ui.js 创建
+    const uiCode0 = stripComments(readJs('ui.js'));
+    for (const action of ['market-install', 'market-remove', 'memory-delete-longterm', 'memory-delete-summary', 'slot-action']) {
+      ok(uiCode0.indexOf(`'${action}'`) !== -1, `ui.js 未处理动态 data-action="${action}"`);
+    }
+    // 卡片/记忆/槽位由 JS 动态创建，样式类必须在 CSS 定义
+    const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';
+    for (const cls of ['.market-card', '.market-badge', '.market-actions', '.market-tag', '.memory-row', '.memory-del', '.plugin-slot', '.plugin-slot-btn']) {
+      ok(css.indexOf(cls) !== -1, `app.css 缺少 P3 样式类 ${cls}`);
+    }
+  });
+
+  test('ui.js / plugins.js / app.js 导出 P3 API（市场/记忆/槽位/HMAC 校验/压缩）', () => {
+    const uiCode = stripComments(readJs('ui.js'));
+    const appCode = stripComments(readJs('app.js'));
+    const pluginCode = stripComments(readJs('plugins.js'));
+
+    // UI API（SPEC U3）
+    for (const name of ['renderMarket', 'openMarketPage', 'setMarketUrl', 'renderMemory', 'openMemoryPage', 'renderPluginSlots', 'openPluginPanel']) {
+      const exposed = definesMethod(uiCode, name) || new RegExp(`UI\\\\.${name}\\\\s*=`).test(uiCode);
+      ok(exposed, `ui.js 缺少 P3 API：UI.${name}`);
+    }
+    for (const name of ['renderMarketRows', 'buildMarketCard', 'fetchMarketIndex', 'renderMemoryLongTerm', 'renderMemorySummaries', 'renderPluginSlots', 'buildPluginSlot', 'runPluginSlotAction']) {
+      ok(definesMethod(uiCode, name), `ui.js 缺少 P3 内部实现 ${name}`);
+    }
+
+    // DSPlugins 公开 API（SPEC L3 / 任务清单）
+    for (const name of [
+      'loadHousePlugins', 'reloadHousePlugin', 'installHousePlugin', 'getUiSlots', 'runSlotAction',
+      'fetchMarketIndex', 'marketStatusMap', 'installMarketPlugin', 'removeMarketPlugin',
+    ]) {
+      ok(definesMethod(pluginCode, name), `plugins.js 缺少 P3 API：DSPlugins.${name}`);
+      ok(new RegExp(`\\b${name}\\s*:`).test(pluginCode), `DSPlugins 导出对象缺少 ${name}`);
+    }
+    for (const name of ['normalizeHousePlugin', 'hydrateHouseDef', 'normalizeSlotList', 'validateMarketIndex', 'installMarketPlugin', 'removeMarketPlugin', 'execPluginCode']) {
+      ok(definesMethod(pluginCode, name), `plugins.js 缺少 P3 实现 ${name}`);
+    }
+    ok(/new Function\(/.test(pluginCode), 'HousePlugin 沙箱未使用 new Function');
+    ok(/sha256Hex/.test(pluginCode) && /pluginHmac/.test(pluginCode), '市场安装缺少 sha256/HMAC 校验');
+    ok(/签名校验失败/.test(pluginCode), '市场安装缺少「签名校验失败」提示');
+
+    // app.js handlers / 对外接口 / 记忆注入与压缩实现
+    for (const name of [
+      'onMarketFetch', 'onMarketInstall', 'onMarketRemove', 'onOpenMemory', 'onMemorySave',
+      'onMemoryDelete', 'onSummaryDelete', 'onSlotAction', 'onOpenPluginPanel',
+    ]) {
+      ok(new RegExp(`\\b${name}\\s*:`).test(appCode), `app.js handlers 缺少 ${name}`);
+    }
+    for (const name of ['buildMemoryPrompt', 'resolveSystemPrompt', 'prepareContextMessages', 'buildSessionSummaryPiece', 'memorySummaryFor', 'loadHousePluginsAndSlots', 'refreshPluginSlots', 'runPluginSlotAction', 'fetchMarketIndex', 'installMarketItem']) {
+      ok(definesMethod(appCode, name), `app.js 缺少 P3 实现 ${name}`);
+    }
+    for (const token of ['CONTEXT_BUDGET_DEFAULT', 'CONTEXT_THRESHOLD', 'CONTEXT_KEEP_RECENT', '已压缩', '之前对话摘要', '用户偏好：', '项目记忆：', 'memorySaveSummary']) {
+      ok(appCode.indexOf(token) !== -1, `app.js 缺少上下文压缩/记忆注入元素 ${token}`);
+    }
+  });
+
+  test('JsBridge.java 实现 P3 插件目录/记忆方法；plugin/memory 原生包齐全', () => {
+    const bridge = readOrNull(JS_BRIDGE);
+    ok(bridge, 'JsBridge.java 不存在');
+    // 任务清单口径（旧 P0 方法 + P3 文件式方法）
+    const expected = [
+      'String pluginList', 'String pluginRead', 'void pluginWrite', 'void pluginDelete', 'void pluginSetEnabled',
+      'String pluginHmac', 'void pluginOpenDir',
+      'String memoryGetSummaries', 'void memorySaveSummary', 'void memoryDeleteSummary',
+      'String memoryKvGet', 'void memoryKvSet', 'void memoryKvDelete', 'String memoryAll',
+    ];
+    for (const sig of expected) {
+      ok(new RegExp(`public\\s+${sig.replace(/ /g, '\\s+')}\\s*\\(`).test(bridge), `JsBridge.java 缺少方法签名 ${sig}`);
+    }
+    // P3 文件式方法实际由 bridge.js 使用，同样必须存在
+    for (const sig of ['String pluginReadFile', 'boolean pluginWriteFile', 'boolean pluginDeleteFile', 'boolean pluginSetEnabledFile']) {
+      ok(new RegExp(`public\\s+${sig.replace(/ /g, '\\s+')}\\s*\\(`).test(bridge), `JsBridge.java 缺少文件式插件方法 ${sig}`);
+    }
+    for (const name of ['pluginHmac', 'pluginOpenDir', 'memoryGetSummaries', 'memorySaveSummary', 'memoryDeleteSummary', 'memoryKvGet', 'memoryKvSet', 'memoryKvDelete', 'memoryAll']) {
+      const idx = bridge.search(new RegExp(`public\\s+(?:String|void|boolean)\\s+${name}\\s*\\(`));
+      ok(idx >= 0, `JsBridge.${name} 不存在`);
+      ok(bridge.slice(Math.max(0, idx - 240), idx).indexOf('@JavascriptInterface') !== -1, `JsBridge.${name} 缺少 @JavascriptInterface`);
+    }
+    const repoFile = path.join(JAVA_DIR, 'plugin', 'PluginRepository.java');
+    const memFile = path.join(JAVA_DIR, 'memory', 'MemoryDb.java');
+    const repo = readOrNull(repoFile);
+    const mem = readOrNull(memFile);
+    ok(repo, '缺少 app/src/main/java/com/deepseekhouse/app/plugin/PluginRepository.java');
+    ok(mem, '缺少 app/src/main/java/com/deepseekhouse/app/memory/MemoryDb.java');
+    for (const token of ['house-plugins', 'sdcard', 'listJson', 'String read(', 'boolean write(', 'boolean delete(', 'boolean setEnabled(', 'hmac(', 'sha256Of(', 'openDir(', 'isValidFileName', '512 * 1024', 'source']) {
+      ok(repo.indexOf(token) !== -1, `PluginRepository 缺少关键实现 ${token}`);
+    }
+    for (const token of ['session_summary', 'memory_kv', 'CREATE TABLE', 'long_term', 'project', 'saveSummary(', 'deleteSummary(', 'summariesJson(', 'kvJson(', 'setKv(', 'deleteKv(', 'allJson(', 'PRIMARY KEY']) {
+      ok(mem.indexOf(token) !== -1, `MemoryDb 缺少关键实现/表名 ${token}`);
+    }
+    ok(/SQLiteOpenHelper/.test(mem), 'MemoryDb 未继承 SQLiteOpenHelper');
+  });
+
+  test('QA 覆盖矩阵已包含 ARCH v2 P3 用例说明（docs/QA.md）', () => {
+    const qaDoc = readOrNull(path.join(ROOT, 'docs', 'QA.md')) || '';
+    ok(qaDoc, 'docs/QA.md 不存在');
+    for (const keyword of ['ARCH v2 P3', 'P3 集成', 'p3-integration-tests.mjs', 'HMAC', 'memorySaveSummary', '已压缩', 'uiSlots', '插件市场']) {
+      ok(qaDoc.indexOf(keyword) !== -1, `docs/QA.md 覆盖矩阵缺少 P3 关键词：${keyword}`);
+    }
+  });
 }

@@ -52,6 +52,15 @@ try {
   process.exitCode = 1;
 }
 
+// ARCH v2 P3 集成用例（插件市场 / HMAC / 记忆注入与压缩 / 插件槽位）
+try {
+  const p3 = await import('./p3-integration-tests.mjs');
+  p3.registerP3IntegrationTests();
+} catch (err) {
+  console.error('\n⚠ 无法加载 P3 集成测试模块 p3-integration-tests.mjs：', err && err.message);
+  process.exitCode = 1;
+}
+
 const results = await runAll({ filter, defaultTimeout: 30000 });
 const code = printSummary(results);
 const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);

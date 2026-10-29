@@ -539,6 +539,128 @@ export function createMockNative(opts = {}) {
     }, p2.connectDelay);
   }
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P3：mock 原生插件目录 / 记忆 / 市场签名
+   *
+   * 契约与 JsBridge.java 一致（同步返回 JSON 字符串 / boolean / void）：
+   *   pluginList()/pluginReadFile()/pluginWriteFile()/pluginDeleteFile()/
+   *   pluginSetEnabledFile()/pluginHmac()/pluginSha256()/pluginOpenDir()
+   *   memoryGetSummaries()/memorySaveSummary()/memoryDeleteSummary()/
+   *   memoryKvGet()/memoryKvSet()/memoryKvDelete()/memoryAll()
+   * opts.p3 可覆盖：
+   *   { plugins:[{fileName,source,enabled,meta}],
+   *     memory:{summaries:[{chatId,summary,updatedAt}], long_term:{}, project:{}} }
+   * 另支持 opts.httpResponses = { url: {status, body} } 驱动 Bridge.httpFetch
+   * （插件市场索引/源码下载），默认仍回 '{}'（保持旧用例行为）。
+   * 运行时状态（插件文件/记忆/sha/hmac 助手）经 app.native.__p3 读写。
+   * ------------------------------------------------------------------ */
+  const p3cfg = opts.p3 && typeof opts.p3 === 'object' ? opts.p3 : {};
+  const httpResponses = opts.httpResponses && typeof opts.httpResponses === 'object' ? opts.httpResponses : {};
+  const httpDefaultBody = typeof opts.httpDefaultBody === 'string' ? opts.httpDefaultBody : '{}';
+  const p3mem = p3cfg.memory && typeof p3cfg.memory === 'object' ? p3cfg.memory : {};
+
+  /** 确定性 mock 哈希（64 hex）：测试用 __p3.sha256For / __p3.hmacFor 得到同样值。 */
+  function p3MockHash64(content, salt) {
+    const text = String(content === null || content === undefined ? '' : content);
+    let out = '';
+    for (let block = 0; block < 8; block += 1) {
+      let h = (0x811c9dc5 ^ Math.imul(block + 1, 0x9e3779b9)) >>> 0;
+      const seed = salt + '|' + block + '|' + text;
+      for (let i = 0; i < seed.length; i += 1) {
+        h ^= seed.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      out += h.toString(16).padStart(8, '0');
+    }
+    return out;
+  }
+
+  function p3HmacHex(content) {
+    return p3MockHash64(content, 'dsh-hmac-v1');
+  }
+  function p3Sha256Hex(content) {
+    return p3MockHash64(content, 'dsh-sha256-v1');
+  }
+
+  function p3Clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  const p3 = {
+    plugins: Array.isArray(p3cfg.plugins)
+      ? p3cfg.plugins.map((item) => ({
+        fileName: String((item && item.fileName) || ''),
+        source: String((item && (item.source || item.code)) || ''),
+        enabled: !item || item.enabled !== false,
+        meta: Object.assign({}, (item && item.meta) || {}),
+      }))
+      : [],
+    summaries: Array.isArray(p3mem.summaries) ? p3Clone(p3mem.summaries) : [],
+    kv: {
+      long_term: Object.assign({}, (p3mem.long_term && p3mem.long_term) || {}),
+      project: Object.assign({}, (p3mem.project && p3mem.project) || {}),
+    },
+    writes: [],
+    deletes: [],
+    reads: [],
+    hmacCalls: [],
+    memoryWrites: [],
+    dirOpens: 0,
+  };
+
+  function p3FindPlugin(key) {
+    const name = String(key === null || key === undefined ? '' : key);
+    let found = p3.plugins.find((item) => item.fileName === name) || null;
+    if (found) return found;
+    /* 兼容按 id 读取（旧签名）：fileName 形如 <id>-<version>.js */
+    return p3.plugins.find((item) => {
+      const base = item.fileName.replace(/\.(js|json)$/i, '');
+      const metaId = item.meta && item.meta.id ? String(item.meta.id) : '';
+      return base === name || (metaId && metaId === name);
+    }) || null;
+  }
+
+  function p3PluginMeta(plugin) {
+    const fileName = plugin.fileName;
+    const base = fileName.replace(/\.(js|json)$/i, '');
+    const m = /^(.+)-(\d[0-9A-Za-z.+_-]*)\.(js|json)$/i.exec(fileName);
+    const id = (plugin.meta && plugin.meta.id) ? String(plugin.meta.id) : (m ? m[1] : base);
+    const version = (plugin.meta && plugin.meta.version) ? String(plugin.meta.version) : (m ? m[2] : '1.0.0');
+    return {
+      id,
+      name: (plugin.meta && plugin.meta.name) ? String(plugin.meta.name) : id,
+      version,
+      author: (plugin.meta && plugin.meta.author) ? String(plugin.meta.author) : '',
+      description: (plugin.meta && plugin.meta.description) ? String(plugin.meta.description) : '',
+    };
+  }
+
+  function p3PluginListJson() {
+    return p3.plugins.map((plugin) => {
+      const meta = p3PluginMeta(plugin);
+      return {
+        id: meta.id,
+        name: meta.name,
+        version: meta.version,
+        author: meta.author,
+        description: meta.description,
+        fileName: plugin.fileName,
+        size: plugin.source.length,
+        sha256: p3Sha256Hex(plugin.source),
+        source: 'app',
+        enabled: plugin.enabled !== false,
+      };
+    });
+  }
+
+  function p3MemoryAllJson() {
+    return {
+      summaries: p3Clone(p3.summaries),
+      long_term: p3Clone(p3.kv.long_term),
+      project: p3Clone(p3.kv.project),
+    };
+  }
+
   function record(method, args) {
     calls.push({ method, args, at: Date.now() });
   }
@@ -657,8 +779,19 @@ export function createMockNative(opts = {}) {
     httpFetch(requestId, reqJson) {
       record('httpFetch', [requestId, reqJson]);
       pending.http.push({ requestId, reqJson });
+      let url = '';
+      try {
+        const parsed = typeof reqJson === 'string' ? JSON.parse(reqJson) : (reqJson || {});
+        url = String((parsed && parsed.url) || '');
+      } catch {
+        url = '';
+      }
+      const configured = Object.prototype.hasOwnProperty.call(httpResponses, url) ? httpResponses[url] : null;
+      const status = configured && configured.status != null ? Number(configured.status) : 200;
+      const body = configured && configured.body != null ? String(configured.body) : httpDefaultBody;
+      const error = configured && configured.error != null ? String(configured.error) : null;
       setTimeout(() => {
-        emit({ type: 'http', requestId, status: 200, body: '{}', error: null });
+        emit({ type: 'http', requestId, status: Number.isFinite(status) ? status : 200, body, error });
       }, 5);
     },
     importPluginFile() {
@@ -884,12 +1017,129 @@ export function createMockNative(opts = {}) {
       return JSON.stringify(p2ToolsFor(server.id));
     },
 
+    /* ---------------- ARCH v2 P3：原生插件目录（PluginRepository 契约） ---------------- */
+    pluginList() {
+      record('pluginList', []);
+      return JSON.stringify(p3PluginListJson());
+    },
+    pluginReadFile(fileName) {
+      record('pluginReadFile', [fileName]);
+      const plugin = p3FindPlugin(fileName);
+      p3.reads.push(String(fileName == null ? '' : fileName));
+      return plugin ? plugin.source : '';
+    },
+    pluginWriteFile(fileName, content) {
+      record('pluginWriteFile', [fileName, content]);
+      const name = String(fileName == null ? '' : fileName);
+      const text = String(content == null ? '' : content);
+      if (!/^[A-Za-z0-9_.-]{1,128}\.(js|json)$/i.test(name)) return false;
+      if (text.length > 512 * 1024) return false;
+      p3.writes.push({ fileName: name, content: text });
+      const existing = p3FindPlugin(name);
+      if (existing) {
+        existing.fileName = name;
+        existing.source = text;
+        existing.enabled = true;
+      } else {
+        p3.plugins.push({ fileName: name, source: text, enabled: true, meta: {} });
+      }
+      return true;
+    },
+    pluginDeleteFile(fileName) {
+      record('pluginDeleteFile', [fileName]);
+      const target = p3FindPlugin(fileName);
+      if (!target) return false;
+      p3.deletes.push(target.fileName);
+      p3.plugins = p3.plugins.filter((item) => item !== target);
+      return true;
+    },
+    pluginSetEnabledFile(fileName, enabled) {
+      record('pluginSetEnabledFile', [fileName, !!enabled]);
+      const target = p3FindPlugin(fileName);
+      if (!target) return false;
+      target.enabled = !!enabled;
+      return true;
+    },
+    /** HMAC-SHA256(内置密钥, content) hex（mock：确定性 64 hex；测试用 __p3.hmacFor 取同值） */
+    pluginHmac(content) {
+      record('pluginHmac', [content]);
+      p3.hmacCalls.push(String(content == null ? '' : content));
+      return p3HmacHex(content);
+    },
+    pluginSha256(content) {
+      record('pluginSha256', [content]);
+      return p3Sha256Hex(content);
+    },
+    pluginOpenDir() {
+      record('pluginOpenDir', []);
+      p3.dirOpens += 1;
+    },
+
+    /* ---------------- ARCH v2 P3：原生记忆（MemoryDb 契约） ---------------- */
+    memoryGetSummaries() {
+      record('memoryGetSummaries', []);
+      return JSON.stringify(p3Clone(p3.summaries));
+    },
+    memorySaveSummary(chatId, summary) {
+      record('memorySaveSummary', [chatId, summary]);
+      const id = String(chatId == null ? '' : chatId);
+      if (!id) return;
+      const text = String(summary == null ? '' : summary);
+      p3.memoryWrites.push({ op: 'summary-save', chatId: id, value: text });
+      const existing = p3.summaries.find((item) => String(item.chatId) === id);
+      if (existing) {
+        existing.summary = text;
+        existing.updatedAt = Date.now();
+      } else {
+        p3.summaries.push({ chatId: id, summary: text, updatedAt: Date.now() });
+      }
+    },
+    memoryDeleteSummary(chatId) {
+      record('memoryDeleteSummary', [chatId]);
+      const id = String(chatId == null ? '' : chatId);
+      p3.memoryWrites.push({ op: 'summary-delete', chatId: id });
+      p3.summaries = p3.summaries.filter((item) => String(item.chatId) !== id);
+    },
+    memoryKvGet(scope) {
+      record('memoryKvGet', [scope]);
+      const key = String(scope == null ? '' : scope);
+      return JSON.stringify(p3Clone(p3.kv[key] || {}));
+    },
+    memoryKvSet(scope, key, value) {
+      record('memoryKvSet', [scope, key, value]);
+      const scopeKey = String(scope == null ? '' : scope);
+      const name = String(key == null ? '' : key);
+      if (!scopeKey || !name) return;
+      if (!p3.kv[scopeKey]) p3.kv[scopeKey] = Object.create(null);
+      p3.kv[scopeKey][name] = String(value == null ? '' : value);
+      p3.memoryWrites.push({ op: 'kv-set', scope: scopeKey, key: name, value: String(value == null ? '' : value) });
+    },
+    memoryKvDelete(scope, key) {
+      record('memoryKvDelete', [scope, key]);
+      const scopeKey = String(scope == null ? '' : scope);
+      const name = String(key == null ? '' : key);
+      if (p3.kv[scopeKey]) delete p3.kv[scopeKey][name];
+      p3.memoryWrites.push({ op: 'kv-delete', scope: scopeKey, key: name });
+    },
+    memoryAll() {
+      record('memoryAll', []);
+      return JSON.stringify(p3MemoryAllJson());
+    },
+
     __calls: calls,
     __pending: pending,
     __prefs: prefs,
     __plugins: plugins,
     /** P2 mock 运行时状态（测试可读写：servers/tools/autoConnect/saveConnect/...） */
     __p2: p2,
+    /** 可运行时改写的 httpFetch 响应表：native.__http.responses[url] = {status,body} */
+    __http: { responses: httpResponses, defaultBody: httpDefaultBody },
+    /** P3 mock 运行时状态 + 签名助手（测试可读写：plugins/summaries/kv，sha256For/hmacFor） */
+    __p3: Object.assign(p3, {
+      sha256For: (content) => p3Sha256Hex(content),
+      hmacFor: (content) => p3HmacHex(content),
+      memoryAll: () => p3MemoryAllJson(),
+    }),
     /** P1 mock 运行时状态（测试可读写：listDirError / dirs / files / audit / auth / workspace ...） */
     __p1: p1,
     __setClipboard: (t) => {

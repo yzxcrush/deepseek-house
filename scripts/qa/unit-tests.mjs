@@ -897,4 +897,109 @@ window.DSPlugins.register({id:'user.temp',name:'临时',version:'1.0.0',builtin:
     const offEvt = await B.waitMcpStatus('mcp-remote-demo', 2000);
     equal(offEvt && offEvt.status, 'disconnected', '断开后 mcp-status 应为 disconnected');
   });
+
+  /* ================================================================== *
+   * bridge.js · ARCH v2 P3 插件目录 / 记忆 / HMAC 原生封装
+   * ================================================================== */
+  suite('单元测试 · bridge.js P3 插件与记忆原生封装');
+
+  const PLUGIN_SRC = "window.DSPlugins.installHousePlugin({id:'user.qa-unit',name:'QA 单测插件',version:'1.0.0'})";
+
+  function p3BridgeWindow() {
+    const ctx = createUnitWindow();
+    const native = createMockNative({
+      p3: {
+        plugins: [{ fileName: 'user.qa-unit-1.0.0.js', source: PLUGIN_SRC, enabled: true }],
+        memory: {
+          long_term: { style: '结论先行' },
+          project: { tech_stack: 'Node 22' },
+          summaries: [{ chatId: 'chat-1', summary: '早前摘要', updatedAt: 1700000000000 }],
+        },
+      },
+    });
+    native.__bind(ctx.win);
+    ctx.win.DSNative = native;
+    runWebScripts(ctx, ['util.js', 'bridge.js']);
+    return { ...ctx, native };
+  }
+
+  test('P3 返回值归一化：pluginList/pluginRead/pluginHmac/pluginSha256/memoryAll/memoryKvGet', () => {
+    const { win, native } = p3BridgeWindow();
+    const B = win.Bridge;
+    equal(B.__isMock, false, '注入 DSNative 后不应处于 mock 模式');
+
+    const plugins = B.pluginList();
+    isArray(plugins, 'pluginList() 应返回数组');
+    equal(plugins.length, 1, 'pluginList 应返回 1 个插件');
+    equal(plugins[0].id, 'user.qa-unit', '插件 id 未从文件名解析');
+    equal(plugins[0].version, '1.0.0', '插件 version 未从文件名解析');
+    equal(plugins[0].fileName, 'user.qa-unit-1.0.0.js', '插件 fileName 不正确');
+    equal(plugins[0].enabled, true, '插件 enabled 不正确');
+    ok(plugins[0].size > 0, '插件 size 不正确');
+
+    equal(B.pluginRead('user.qa-unit-1.0.0.js'), PLUGIN_SRC, 'pluginRead 源码未透传');
+    equal(B.pluginRead('missing-file.js'), '', 'pluginRead 缺失文件应返回空串');
+    equal(B.pluginRead('user.qa-unit-1.0.0.js'), PLUGIN_SRC, 'pluginRead 二次读取应稳定');
+
+    const hmac = B.pluginHmac('abc');
+    equal(hmac, native.__p3.hmacFor('abc'), 'pluginHmac 与 mock 原生结果不一致');
+    match(hmac, /^[0-9a-f]{64}$/, 'pluginHmac 应为 64 位小写 hex');
+    const sha = B.pluginSha256('abc');
+    match(sha, /^[0-9a-f]{64}$/, 'pluginSha256 应为 64 位小写 hex');
+    ok(native.__calls.some((c) => c.method === 'pluginHmac'), 'Bridge.pluginHmac 未调用原生');
+
+    const all = B.memoryAll();
+    isObject(all, 'memoryAll() 应返回对象');
+    equal(all.long_term.style, '结论先行', 'memoryAll.long_term 未归一化');
+    equal(all.project.tech_stack, 'Node 22', 'memoryAll.project 未归一化');
+    equal(all.summaries.length, 1, 'memoryAll.summaries 数量不正确');
+    equal(all.summaries[0].chatId, 'chat-1', '摘要 chatId 不正确');
+    deepEqual(B.memoryKvGet('long_term'), { style: '结论先行' }, 'memoryKvGet(long_term) 不正确');
+    deepEqual(B.memoryKvGet('project'), { tech_stack: 'Node 22' }, 'memoryKvGet(project) 不正确');
+    const summaries = B.memoryGetSummaries();
+    isArray(summaries, 'memoryGetSummaries() 应返回数组');
+    equal(summaries[0].summary, '早前摘要', 'memoryGetSummaries summary 不正确');
+    ok(native.__calls.some((c) => c.method === 'memoryAll'), 'Bridge.memoryAll 未调用原生');
+  });
+
+  test('P3 方法转发：pluginWrite/delete/setEnabled/openDir + memoryKvSet/Delete、memorySaveSummary/DeleteSummary', () => {
+    const { win, native } = p3BridgeWindow();
+    const B = win.Bridge;
+
+    // 写入新插件文件（fileName 形式 → 走 P3 文件式原生方法）
+    const newFile = 'user.qa-unit-1.1.0.js';
+    equal(B.pluginWrite(newFile, PLUGIN_SRC.replace('1.0.0', '1.1.0')), true, 'pluginWrite 应返回 true');
+    const writeCall = native.__calls.filter((c) => c.method === 'pluginWriteFile').pop();
+    ok(writeCall, 'Bridge.pluginWrite(fileName) 应转发 pluginWriteFile');
+    deepEqual(writeCall.args, [newFile, PLUGIN_SRC.replace('1.0.0', '1.1.0')], 'pluginWrite 参数未透传');
+    equal(B.pluginList().length, 2, '写入后 pluginList 应有 2 个插件');
+
+    equal(B.pluginSetEnabled(newFile, false), true, 'pluginSetEnabled 应返回 true');
+    const enableCall = native.__calls.filter((c) => c.method === 'pluginSetEnabledFile').pop();
+    ok(enableCall && enableCall.args[0] === newFile && enableCall.args[1] === false, 'pluginSetEnabled 参数未透传');
+    equal(B.pluginList().find((p) => p.fileName === newFile).enabled, false, '禁用后 pluginList.enabled 应为 false');
+
+    equal(B.pluginDelete(newFile), true, 'pluginDelete 应返回 true');
+    ok(native.__calls.some((c) => c.method === 'pluginDeleteFile'), 'Bridge.pluginDelete(fileName) 应转发 pluginDeleteFile');
+    equal(B.pluginList().length, 1, '删除后 pluginList 应剩 1 个插件');
+
+    equal(B.pluginOpenDir(), true, 'pluginOpenDir 应返回 true');
+    ok(native.__calls.some((c) => c.method === 'pluginOpenDir'), 'Bridge.pluginOpenDir 未调用原生');
+
+    // 记忆 KV 写/读/删
+    equal(B.memoryKvSet('long_term', 'tone', '轻松'), true, 'memoryKvSet 应返回 true');
+    deepEqual(native.__calls.filter((c) => c.method === 'memoryKvSet').pop().args, ['long_term', 'tone', '轻松'], 'memoryKvSet 参数未透传');
+    equal(B.memoryKvGet('long_term').tone, '轻松', 'memoryKvSet 后读回值不正确');
+    equal(B.memoryKvDelete('long_term', 'tone'), true, 'memoryKvDelete 应返回 true');
+    deepEqual(native.__calls.filter((c) => c.method === 'memoryKvDelete').pop().args, ['long_term', 'tone'], 'memoryKvDelete 参数未透传');
+    equal(B.memoryKvGet('long_term').tone, undefined, 'memoryKvDelete 后仍能读到值');
+
+    // 会话摘要写/删
+    equal(B.memorySaveSummary('chat-2', '新摘要'), true, 'memorySaveSummary 应返回 true');
+    deepEqual(native.__calls.filter((c) => c.method === 'memorySaveSummary').pop().args, ['chat-2', '新摘要'], 'memorySaveSummary 参数未透传');
+    equal(B.memoryGetSummaries().length, 2, '保存摘要后数量应 +1');
+    equal(B.memoryDeleteSummary('chat-2'), true, 'memoryDeleteSummary 应返回 true');
+    deepEqual(native.__calls.filter((c) => c.method === 'memoryDeleteSummary').pop().args, ['chat-2'], 'memoryDeleteSummary 参数未透传');
+    equal(B.memoryGetSummaries().length, 1, '删除摘要后数量应恢复');
+  });
 }
