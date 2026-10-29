@@ -3316,3 +3316,62 @@ body { background-color: #181818; }
   color: var(--text);
 }
 .menu-list { padding: 0 !important; }
+
+/* ==========================================================================
+   v1.1.1：分享页统计/快捷操作/历史 + 资料页简介与统计（Telegram 风格卡片）
+   ========================================================================== */
+.share-stats {
+  display: flex;
+  gap: 8px;
+  margin: 12px 12px 4px;
+}
+.share-stat {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 14px 8px;
+  border-radius: 16px;
+  background-color: #1f1f1f;
+}
+.share-stat b { font-size: 19px; font-weight: 600; }
+.share-stat span { font-size: 12px; color: #8b8b8b; }
+
+.info-row--action {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+.info-row--action:active { background-color: rgba(255, 255, 255, 0.05); }
+.info-icon { flex: none; display: flex; color: var(--accent-2); }
+.info-icon svg { width: 20px; height: 20px; }
+.info-label--text { flex: 1 1 auto; color: var(--text); font-size: 15px; }
+
+.profile-name {
+  margin-top: 12px;
+  padding: 2px 8px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border-radius: 8px;
+}
+.profile-name:active { background-color: rgba(255, 255, 255, 0.06); }
+.profile-bio {
+  margin-top: 6px;
+  max-width: 86%;
+  color: #9a9a9a;
+  font-size: 13.5px;
+  line-height: 1.45;
+  text-align: center;
+  white-space: pre-wrap;
+}
+.share-history-empty {
+  padding: 14px 16px;
+  color: #8b8b8b;
+  font-size: 13.5px;
+}
+.info-row--history .info-value { font-size: 12.5px; color: #8b8b8b; }

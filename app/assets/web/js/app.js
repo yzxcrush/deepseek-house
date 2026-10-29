@@ -331,7 +331,94 @@
     setBackDepth(0);
   }
 
+  var PROFILE_KEY = 'dsh.profile';
+  var SHARE_HISTORY_KEY = 'dsh.shareHistory';
   var SHARE_OPTS_KEY = 'dsh.shareOpts';
+
+  function loadProfile() {
+    var defaults = { name: 'DeepSeek House', bio: '' };
+    try {
+      var raw = global.localStorage.getItem(PROFILE_KEY);
+      if (!raw) return defaults;
+      var parsed = JSON.parse(raw) || {};
+      return {
+        name: parsed.name ? String(parsed.name).slice(0, 40) : defaults.name,
+        bio: parsed.bio ? String(parsed.bio).slice(0, 200) : ''
+      };
+    } catch (e) { return defaults; }
+  }
+
+  function saveProfile(profile) {
+    try { global.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch (e) { /* ignore */ }
+  }
+
+  function enabledPluginCount() {
+    try {
+      var P = global.DSPlugins;
+      if (!P || typeof P.list !== 'function') return 0;
+      return (P.list() || []).filter(function (plugin) { return plugin && plugin.enabled; }).length;
+    } catch (e) { return 0; }
+  }
+
+  function loadShareHistory() {
+    try {
+      var raw = global.localStorage.getItem(SHARE_HISTORY_KEY);
+      var list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list.slice(0, 10) : [];
+    } catch (e) { return []; }
+  }
+
+  function pushShareHistory(title) {
+    var list = loadShareHistory();
+    list.unshift({ title: String(title || '聊天记录'), time: shareTimestamp(Date.now()) });
+    list = list.slice(0, 10);
+    try { global.localStorage.setItem(SHARE_HISTORY_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
+    var U = getUI();
+    if (U && typeof U.renderShareHistory === 'function') U.renderShareHistory(list);
+    return list;
+  }
+
+  function copyCurrentChat() {
+    var chat = Store.getActiveChat();
+    if (!chat) { toast('没有当前会话'); return; }
+    var text = buildShareText(chat, getShareOptions());
+    if (!text) { toast('会话为空，暂无可复制内容'); return; }
+    var B = global.Bridge;
+    try {
+      if (B && typeof B.setClipboard === 'function') { B.setClipboard(text); toast('已复制当前会话'); return; }
+    } catch (e) { warn('复制失败：' + errText(e)); }
+    toast('复制失败');
+  }
+
+  function exportCurrentChat() {
+    var chat = Store.getActiveChat();
+    if (!chat) { toast('没有当前会话'); return; }
+    var md = '';
+    try { md = Store.exportChatMarkdown(chat.id) || ''; } catch (e) { warn('导出失败：' + errText(e)); }
+    if (!md) { toast('会话为空，暂无可导出内容'); return; }
+    var text = md + '\n\n—— DeepSeek House · @惜白.\n';
+    var B = global.Bridge;
+    try {
+      if (B && typeof B.saveTextFile === 'function') { B.saveTextFile((chat.title || 'DeepSeek-对话') + '.md', text); toast('正在导出…'); return; }
+      if (B && typeof B.setClipboard === 'function') { B.setClipboard(text); toast('已复制 Markdown'); return; }
+    } catch (e2) { warn('导出失败：' + errText(e2)); }
+    toast('导出失败');
+  }
+
+  function editProfile() {
+    var profile = loadProfile();
+    promptAsync('编辑昵称', profile.name, '例如 DeepSeek House').then(function (name) {
+      if (name === null || name === undefined) return;
+      profile.name = String(name).replace(/^\s+|\s+$/g, '') || 'DeepSeek House';
+      return promptAsync('编辑简介', profile.bio || '', '一句话介绍自己（可留空）').then(function (bio) {
+        if (bio === null || bio === undefined) return;
+        profile.bio = String(bio).replace(/^\s+|\s+$/g, '').slice(0, 200);
+        saveProfile(profile);
+        if (state.nav.screen === 'profile') showProfile();
+        toast('资料已更新');
+      });
+    });
+  }
 
   function getShareOptions() {
     var defaults = { time: false, reasoning: false, signature: true };
@@ -441,9 +528,12 @@
 
   function showShare() {
     state.nav = { screen: 'share', drawerOpen: false };
-    ui('renderShareList', Store.listChats());
+    var chats = [];
+    try { chats = Store.listChats(); } catch (e) { chats = []; }
+    ui('renderShareList', chats);
     var U = getUI();
     if (U && typeof U.setShareOptions === 'function') U.setShareOptions(getShareOptions());
+    if (U && typeof U.renderShareHistory === 'function') U.renderShareHistory(loadShareHistory());
     ui('showScreen', 'share');
     setBackDepth(0);
   }
@@ -457,7 +547,10 @@
     var B = global.Bridge;
     try {
       if (B && typeof B.shareText === 'function') {
-        if (B.shareText(chat.title || '聊天记录', text) !== false) return;
+        if (B.shareText(chat.title || '聊天记录', text) !== false) {
+          pushShareHistory(chat.title || '聊天记录');
+          return;
+        }
       }
       if (B && typeof B.setClipboard === 'function') {
         B.setClipboard(text);
@@ -481,9 +574,18 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '1.1.0' }
+      { label: '版本', value: '1.1.1' }
     ];
-    ui('renderProfile', { status: status, rows: infoRows, chats: chats.length, messages: messages });
+    var profile = loadProfile();
+    ui('renderProfile', {
+      name: profile.name,
+      bio: profile.bio,
+      status: status,
+      rows: infoRows,
+      chats: chats.length,
+      messages: messages,
+      plugins: enabledPluginCount()
+    });
     ui('showScreen', 'profile');
     setBackDepth(0);
   }
@@ -661,6 +763,9 @@
       onExportAll: safe(function () { exportAllChats(); return true; }, 'onExportAll'),
       onClearAll: safe(function () { clearAllChats(); return true; }, 'onClearAll'),
       onAbout: safe(function () { showAbout(); return true; }, 'onAbout'),
+      onCopyCurrent: safe(function () { copyCurrentChat(); return true; }, 'onCopyCurrent'),
+      onExportCurrent: safe(function () { exportCurrentChat(); return true; }, 'onExportCurrent'),
+      onEditProfile: safe(function () { editProfile(); return true; }, 'onEditProfile'),
       onDismissTip: safe(function () { dismissTip(); return true; }, 'onDismissTip'),
       onOpenSettings: safe(function () { openSettings(); }, 'onOpenSettings'),
       onOpenPlugins: safe(function () { openPlugins(); }, 'onOpenPlugins'),

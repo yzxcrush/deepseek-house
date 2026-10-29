@@ -2315,6 +2315,15 @@
         else renderChatListImpl(state.chats, state.activeChatId);
         break;
       }
+      case 'copy-current':
+        invoke('onCopyCurrent');
+        break;
+      case 'export-current':
+        invoke('onExportCurrent');
+        break;
+      case 'edit-profile':
+        invoke('onEditProfile');
+        break;
       case 'export-all':
         invoke('onExportAll');
         break;
@@ -2649,6 +2658,8 @@
       'chats-list', 'chats-empty', 'chats-title', 'chat-search-wrap', 'chat-search-input', 'chat-search-clear',
       'share-list', 'share-empty', 'profile-status', 'profile-info', 'profile-chat-count', 'profile-msg-count',
       'share-opt-time', 'share-opt-reasoning', 'share-opt-signature',
+      'share-chat-count', 'share-msg-count', 'share-history', 'share-history-count',
+      'profile-name', 'profile-bio', 'profile-plugin-count',
       'nav-badge', 'nav-chats', 'nav-share', 'nav-profile', 'tip-card',
       'chat-header', 'chat-head-avatar', 'emoji-panel', 'emoji-grid',
       'login-form', 'login-key', 'login-baseurl', 'login-error', 'login-submit', 'login-advanced',
@@ -2708,14 +2719,49 @@
       item.appendChild(meta);
       list.appendChild(item);
     });
+    var total = 0;
+    items.forEach(function (chat) { total += (chat.messages || []).length; });
+    var chatCount = r('share-chat-count');
+    if (chatCount) chatCount.textContent = String(items.length);
+    var msgCount = r('share-msg-count');
+    if (msgCount) msgCount.textContent = String(total);
+
     var empty = r('share-empty');
     if (empty) empty.hidden = items.length > 0;
   }
 
+  function renderShareHistory(items) {
+    var box = r('share-history');
+    if (!box) return;
+    box.textContent = '';
+    var list = Array.isArray(items) ? items : [];
+    var countEl = r('share-history-count');
+    if (countEl) countEl.textContent = String(list.length);
+    if (!list.length) {
+      box.appendChild(makeText('div', 'share-history-empty', '还没有分享记录，点上面的会话即可分享'));
+      return;
+    }
+    list.forEach(function (item) {
+      if (!item) return;
+      var row = el('div', 'info-row info-row--history');
+      row.appendChild(makeText('span', 'info-label', String(item.title || '聊天记录')));
+      row.appendChild(makeText('span', 'info-value', String(item.time || '')));
+      box.appendChild(row);
+    });
+  }
+
   function renderProfile(info) {
     info = info || {};
+    var nameEl = r('profile-name');
+    if (nameEl && info.name) nameEl.textContent = String(info.name);
     var status = r('profile-status');
     if (status) status.textContent = info.status == null ? '' : String(info.status);
+    var bioEl = r('profile-bio');
+    if (bioEl) {
+      var bio = info.bio == null ? '' : String(info.bio).trim();
+      bioEl.hidden = !bio;
+      bioEl.textContent = bio;
+    }
 
     var box = r('profile-info');
     if (box) {
@@ -2732,6 +2778,8 @@
     if (chatCount) chatCount.textContent = String(Math.max(0, parseInt(info.chats, 10) || 0));
     var msgCount = r('profile-msg-count');
     if (msgCount) msgCount.textContent = String(Math.max(0, parseInt(info.messages, 10) || 0));
+    var pluginCount = r('profile-plugin-count');
+    if (pluginCount) pluginCount.textContent = String(Math.max(0, parseInt(info.plugins, 10) || 0));
   }
 
   function setShareOptions(opts) {
@@ -3055,6 +3103,7 @@
   UI.getScreen = function () { return state.screen; };
   UI.renderShareList = renderShareList;
   UI.setShareOptions = setShareOptions;
+  UI.renderShareHistory = renderShareHistory;
   UI.renderProfile = renderProfile;
   UI.setNavBadge = setNavBadge;
   UI.setTipVisible = setTipVisible;
@@ -3082,5 +3131,5 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.1.0';
+  UI.version = '1.1.1';
 })();

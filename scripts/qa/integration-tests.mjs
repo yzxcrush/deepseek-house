@@ -683,6 +683,11 @@ export function registerIntegrationTests() {
     clickAction('nav-share');
     await waitFor(() => isScreenActive(w, 'screen-share'), { timeout: 3000, label: '分享页显示' });
     ok($id('nav-share').classList.contains('is-active'), '分享标签未高亮');
+    // 统计卡片
+    ok(parseInt($id('share-chat-count').textContent, 10) >= 1, '分享页会话统计不正确');
+    ok(parseInt($id('share-msg-count').textContent, 10) >= 0, '分享页消息统计不正确');
+    ok($sel('[data-action="copy-current"]'), '分享页缺少「复制当前会话」');
+    ok($sel('[data-action="export-current"]'), '分享页缺少「导出当前会话」');
     // 分享选项存在，署名默认开启
     const optTime = $id('share-opt-time');
     const optReasoning = $id('share-opt-reasoning');
@@ -710,6 +715,10 @@ export function registerIntegrationTests() {
     includes(shareText, '你好，分享这条消息', '分享文本应包含消息内容');
     includes(shareText, '@惜白.', '分享文本应包含署名');
     ok(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]/.test(shareText), '开启时间戳后分享文本应包含时间戳');
+    // 分享历史要有记录
+    await waitFor(() => $$('#share-history .info-row--history').length >= 1, { timeout: 3000, label: '分享历史渲染' });
+    equal($id('share-history-count').textContent, '1', '分享历史计数应为 1');
+    includes(($id('share-history').textContent || ''), '分享测试会话', '分享历史应包含会话标题');
     // 导出全部会话按钮
     const exportBtn = $sel('[data-action="export-all"]');
     ok(exportBtn, '分享页缺少「导出全部会话」按钮');
@@ -720,6 +729,9 @@ export function registerIntegrationTests() {
     ok($id('nav-profile').classList.contains('is-active'), '个人资料标签未高亮');
     ok(($id('profile-status').textContent || '').length > 0, '个人资料页缺少状态文案');
     ok($$('#profile-info .info-row').length >= 4, '个人资料页账户信息行不足');
+    ok(($id('profile-name').textContent || '').trim().length > 0, '个人资料页缺少昵称');
+    ok(parseInt($id('profile-plugin-count').textContent, 10) >= 0, '个人资料页插件统计不正确');
+    ok($sel('[data-action="edit-profile"]'), '个人资料页缺少编辑资料入口');
     const chatCount = parseInt($id('profile-chat-count').textContent, 10);
     ok(chatCount >= 1, '个人资料页会话数不正确');
     ok(parseInt($id('profile-msg-count').textContent, 10) >= 2, '个人资料页消息数不正确');
