@@ -3248,3 +3248,71 @@ body { background-color: #181818; }
   align-self: center;
   gap: 3px;
 }
+
+/* ==========================================================================
+   v1.1.0：行高微调（48→56，视觉更协调）+ 分享/个人资料页 Telegram 化
+   ========================================================================== */
+.chat-item {
+  min-height: 56px;
+  padding: 2px 12px;
+  gap: 12px;
+}
+.chat-avatar { width: 44px; height: 44px; }
+.chat-item-title { font-size: 15.5px; }
+.chat-item-preview { font-size: 13.5px; }
+.chat-item-time { font-size: 11.5px; }
+.unread-badge { min-width: 18px; height: 18px; padding: 0 5px; font-size: 10.5px; }
+
+/* ---------- 分享页 ---------- */
+.screen--share { display: flex; flex-direction: column; background-color: var(--bg); }
+.share-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.screen--share .section-label, .screen--profile .section-label { padding: 12px 20px 6px; }
+.option-list, .info-list { padding: 0 !important; margin: 0 12px 4px; }
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  min-height: 52px;
+}
+.option-row + .option-row { border-top: 1px solid #2a2a2a; }
+.option-text { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.option-title { font-size: 15px; color: var(--text); }
+.option-desc { font-size: 12.5px; color: #8b8b8b; }
+.chatlist--inset { flex: none; overflow: visible; padding: 0; }
+.chatlist-empty--inline { position: static; transform: none; padding: 22px 0 8px; }
+.page-actions { padding: 14px 12px 6px; }
+.page-actions .btn { width: 100%; }
+
+/* ---------- 个人资料页 ---------- */
+.profile-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 26px 16px 18px;
+}
+.profile-avatar { width: 92px; height: 92px; }
+.profile-actions { display: flex; gap: 10px; margin-top: 16px; }
+.btn--pill { border-radius: 20px; padding: 8px 22px; font-size: 14px; }
+.info-list { padding: 0 !important; margin: 0 12px 4px; background-color: #1f1f1f; border-radius: 16px; overflow: hidden; }
+.info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  min-height: 46px;
+  font-size: 15px;
+}
+.info-row + .info-row { border-top: 1px solid #2a2a2a; }
+.info-label { flex: none; color: #8b8b8b; }
+.info-value {
+  flex: 0 1 auto;
+  max-width: 64%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
+  color: var(--text);
+}
+.menu-list { padding: 0 !important; }

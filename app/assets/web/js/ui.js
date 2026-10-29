@@ -2315,6 +2315,15 @@
         else renderChatListImpl(state.chats, state.activeChatId);
         break;
       }
+      case 'export-all':
+        invoke('onExportAll');
+        break;
+      case 'clear-all':
+        invoke('onClearAll');
+        break;
+      case 'about':
+        invoke('onAbout');
+        break;
       case 'dismiss-tip':
         setTipVisible(false);
         if (typeof state.cb.onDismissTip === 'function') invoke('onDismissTip');
@@ -2526,6 +2535,11 @@
   function onChange(event) {
     var target = event.target;
     if (!target || !target.getAttribute) return;
+    var shareOpt = target.getAttribute('data-share-opt');
+    if (shareOpt) {
+      invoke('onShareOption', shareOpt, !!target.checked);
+      return;
+    }
     var pluginId = target.getAttribute('data-plugin-toggle');
     if (pluginId) {
       invoke('onPluginToggle', pluginId, !!target.checked);
@@ -2633,7 +2647,9 @@
       'app', 'screens',
       'screen-login', 'screen-chats', 'screen-chat', 'screen-settings', 'screen-plugins',
       'chats-list', 'chats-empty', 'chats-title', 'chat-search-wrap', 'chat-search-input', 'chat-search-clear',
-      'share-list', 'share-empty', 'profile-status', 'nav-badge', 'nav-chats', 'nav-share', 'nav-profile', 'tip-card',
+      'share-list', 'share-empty', 'profile-status', 'profile-info', 'profile-chat-count', 'profile-msg-count',
+      'share-opt-time', 'share-opt-reasoning', 'share-opt-signature',
+      'nav-badge', 'nav-chats', 'nav-share', 'nav-profile', 'tip-card',
       'chat-header', 'chat-head-avatar', 'emoji-panel', 'emoji-grid',
       'login-form', 'login-key', 'login-baseurl', 'login-error', 'login-submit', 'login-advanced',
       'header-title', 'header-subtitle',
@@ -2700,6 +2716,30 @@
     info = info || {};
     var status = r('profile-status');
     if (status) status.textContent = info.status == null ? '' : String(info.status);
+
+    var box = r('profile-info');
+    if (box) {
+      box.textContent = '';
+      (Array.isArray(info.rows) ? info.rows : []).forEach(function (row) {
+        if (!row) return;
+        var node = el('div', 'info-row');
+        node.appendChild(makeText('span', 'info-label', row.label == null ? '' : String(row.label)));
+        node.appendChild(makeText('span', 'info-value', row.value == null ? '' : String(row.value)));
+        box.appendChild(node);
+      });
+    }
+    var chatCount = r('profile-chat-count');
+    if (chatCount) chatCount.textContent = String(Math.max(0, parseInt(info.chats, 10) || 0));
+    var msgCount = r('profile-msg-count');
+    if (msgCount) msgCount.textContent = String(Math.max(0, parseInt(info.messages, 10) || 0));
+  }
+
+  function setShareOptions(opts) {
+    opts = opts || {};
+    ['time', 'reasoning', 'signature'].forEach(function (key) {
+      var input = r('share-opt-' + key);
+      if (input) input.checked = !!opts[key];
+    });
   }
 
   function setTipVisible(visible) {
@@ -3014,6 +3054,7 @@
   /* 扩展辅助 API（非 SPEC 必需，提供给 app.js 做返回键/层级协作） */
   UI.getScreen = function () { return state.screen; };
   UI.renderShareList = renderShareList;
+  UI.setShareOptions = setShareOptions;
   UI.renderProfile = renderProfile;
   UI.setNavBadge = setNavBadge;
   UI.setTipVisible = setTipVisible;
@@ -3041,5 +3082,5 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.0.9';
+  UI.version = '1.1.0';
 })();

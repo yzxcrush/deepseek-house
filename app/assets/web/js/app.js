@@ -331,9 +331,119 @@
     setBackDepth(0);
   }
 
+  var SHARE_OPTS_KEY = 'dsh.shareOpts';
+
+  function getShareOptions() {
+    var defaults = { time: false, reasoning: false, signature: true };
+    try {
+      var raw = global.localStorage.getItem(SHARE_OPTS_KEY);
+      if (!raw) return defaults;
+      var parsed = JSON.parse(raw) || {};
+      return {
+        time: !!parsed.time,
+        reasoning: !!parsed.reasoning,
+        signature: parsed.signature === undefined ? true : !!parsed.signature
+      };
+    } catch (e) { return defaults; }
+  }
+
+  function saveShareOptions(opts) {
+    try { global.localStorage.setItem(SHARE_OPTS_KEY, JSON.stringify(opts)); } catch (e) { /* ignore */ }
+  }
+
+  function shareTimestamp(ts) {
+    try {
+      var d = new Date(Number(ts) || Date.now());
+      var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+      return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +
+        ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+    } catch (e) { return ''; }
+  }
+
+  /** 按分享选项生成纯文本聊天记录 */
+  function buildShareText(chat, opts) {
+    opts = opts || getShareOptions();
+    var title = chat && chat.title ? String(chat.title) : 'DeepSeek 对话';
+    var lines = ['【' + title + '】', ''];
+    var messages = (chat && chat.messages) || [];
+    var speaker = title;
+    messages.forEach(function (m) {
+      if (!m || m.role === 'tool' || m.role === 'note') return;
+      var content = String(m.content == null ? '' : m.content).replace(/\s+$/, '');
+      var reasoning = String(m.reasoning == null ? '' : m.reasoning).replace(/\s+$/, '');
+      if (!content && !reasoning) return;
+      var who = m.role === 'user' ? '我' : speaker;
+      var prefix = opts.time ? '[' + shareTimestamp(m.createdAt) + '] ' : '';
+      if (opts.reasoning && reasoning) {
+        lines.push(prefix + who + '（思考过程）：');
+        lines.push(reasoning);
+        lines.push('');
+      }
+      if (content) {
+        lines.push(prefix + who + '：');
+        lines.push(content);
+        lines.push('');
+      }
+    });
+    if (opts.signature) lines.push('—— DeepSeek House · @惜白.');
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\s+|\s+$/g, '');
+  }
+
+  function setShareOption(key, on) {
+    var opts = getShareOptions();
+    if (key !== 'time' && key !== 'reasoning' && key !== 'signature') return;
+    opts[key] = !!on;
+    saveShareOptions(opts);
+    var U = getUI();
+    if (U && typeof U.setShareOptions === 'function') U.setShareOptions(opts);
+  }
+
+  function exportAllChats() {
+    var chats = Store.listChats();
+    if (!chats.length) { toast('还没有可导出的会话'); return; }
+    var parts = [];
+    chats.forEach(function (chat) {
+      var md = '';
+      try { md = Store.exportChatMarkdown(chat.id) || ''; } catch (e) { warn('导出失败：' + errText(e)); }
+      if (md) parts.push(md);
+    });
+    if (!parts.length) { toast('会话为空，暂无可导出内容'); return; }
+    var text = '# DeepSeek House 聊天记录\n\n' + parts.join('\n\n---\n\n') +
+      '\n\n---\n\n*DeepSeek House · @惜白.*\n';
+    var B = global.Bridge;
+    try {
+      if (B && typeof B.saveTextFile === 'function') {
+        if (B.saveTextFile('DeepSeekHouse-聊天记录.md', text) !== false) {
+          toast('正在导出全部会话…');
+          return;
+        }
+      }
+      if (B && typeof B.setClipboard === 'function') { B.setClipboard(text); toast('已复制全部聊天记录'); return; }
+    } catch (e2) { warn('导出全部失败：' + errText(e2)); }
+    toast('导出失败');
+  }
+
+  function clearAllChats() {
+    confirmAsync('清空所有会话', '将删除本机保存的全部会话记录（不可恢复），API Key 与设置保留。').then(function (ok2) {
+      if (!ok2) return;
+      try { Store.clearAll(); } catch (e) { warn('清空失败：' + errText(e)); }
+      refreshChatList();
+      if (state.nav.screen === 'chat') { ui('showScreen', 'chats'); state.nav = { screen: 'chats', drawerOpen: false }; setBackDepth(0); }
+      toast('已清空所有会话');
+    });
+  }
+
+  function showAbout() {
+    confirmAsync('关于 DeepSeek House',
+      '版本 1.1.0 · 开源 MIT\n仿 Telegram 的 DeepSeek 安卓客户端\n由 @惜白. 定制\nhttps://github.com/yzxcrush/deepseek-house')
+      .then(function () { /* 仅展示 */ });
+  }
+
   function showShare() {
     state.nav = { screen: 'share', drawerOpen: false };
     ui('renderShareList', Store.listChats());
+    var U = getUI();
+    if (U && typeof U.setShareOptions === 'function') U.setShareOptions(getShareOptions());
     ui('showScreen', 'share');
     setBackDepth(0);
   }
@@ -342,10 +452,8 @@
   function shareChat(id) {
     var chat = Store.getChat(id) || Store.getActiveChat();
     if (!chat) { toast('没有可分享的会话'); return; }
-    var md = '';
-    try { md = Store.exportChatMarkdown(chat.id) || ''; } catch (e) { warn('导出聊天失败：' + errText(e)); }
-    if (!md) { toast('会话为空，暂无可分享内容'); return; }
-    var text = '【' + (chat.title || 'DeepSeek 对话') + '】\n\n' + md + '\n\n—— DeepSeek House · @惜白.';
+    var text = buildShareText(chat, getShareOptions());
+    if (!text) { toast('会话为空，暂无可分享内容'); return; }
     var B = global.Bridge;
     try {
       if (B && typeof B.shareText === 'function') {
@@ -365,7 +473,17 @@
     var status = state.apiKey
       ? 'API Key 已配置 · ' + labelForModelId(state.prefs.model)
       : '未配置 API Key';
-    ui('renderProfile', { status: status });
+    var chats = [];
+    try { chats = Store.listChats(); } catch (e) { chats = []; }
+    var messages = 0;
+    chats.forEach(function (chat) { messages += (chat.messages || []).length; });
+    var infoRows = [
+      { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
+      { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
+      { label: '当前模型', value: labelForModelId(state.prefs.model) },
+      { label: '版本', value: '1.1.0' }
+    ];
+    ui('renderProfile', { status: status, rows: infoRows, chats: chats.length, messages: messages });
     ui('showScreen', 'profile');
     setBackDepth(0);
   }
@@ -539,6 +657,10 @@
       onNavShare: safe(function () { showShare(); return true; }, 'onNavShare'),
       onNavProfile: safe(function () { showProfile(); return true; }, 'onNavProfile'),
       onShareChat: safe(function (id) { shareChat(id); return true; }, 'onShareChat'),
+      onShareOption: safe(function (key, on) { setShareOption(key, on); return true; }, 'onShareOption'),
+      onExportAll: safe(function () { exportAllChats(); return true; }, 'onExportAll'),
+      onClearAll: safe(function () { clearAllChats(); return true; }, 'onClearAll'),
+      onAbout: safe(function () { showAbout(); return true; }, 'onAbout'),
       onDismissTip: safe(function () { dismissTip(); return true; }, 'onDismissTip'),
       onOpenSettings: safe(function () { openSettings(); }, 'onOpenSettings'),
       onOpenPlugins: safe(function () { openPlugins(); }, 'onOpenPlugins'),

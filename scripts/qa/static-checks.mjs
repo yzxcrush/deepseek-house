@@ -364,7 +364,7 @@ export function registerStaticTests() {
       [/android:exported="true"/, 'Activity 缺少 exported=true'],
       [/android\.intent\.category\.LAUNCHER/, '缺少 LAUNCHER intent-filter'],
       [/android:configChanges="[^"]*orientation[^"]*"/, 'configChanges 缺少 orientation'],
-      [/android:versionName="1\.0\.\d+"/, 'versionName 应为 1.0.x'],
+      [/android:versionName="\d+\.\d+\.\d+"/, 'versionName 应为 x.y.z'],
       [/android:versionCode="[1-9]\d*"/, 'versionCode 应为正整数'],
     ]) {
       ok(re.test(manifest), description);
@@ -399,6 +399,10 @@ export function registerStaticTests() {
     ok(html.indexOf('id="bottom-nav"') !== -1, '缺少底部三标签导航（聊天/分享/个人资料）');
     ok(html.indexOf('id="screen-share"') !== -1, '缺少「分享聊天记录」页');
     ok(html.indexOf('data-action="nav-share"') !== -1, '底部导航缺少「分享」标签');
+    ok(html.indexOf('data-share-opt="time"') !== -1, '分享页缺少分享选项开关');
+    ok(html.indexOf('id="profile-info"') !== -1, '个人资料页缺少账户信息区');
+    ok(html.indexOf('data-action="export-all"') !== -1, '分享页缺少导出全部入口');
+    ok(html.indexOf('data-action="clear-all"') !== -1, '个人资料页缺少清空全部会话入口');
     ok(html.indexOf('id="screen-profile"') !== -1, '缺少个人资料页');
     ok(html.indexOf('id="nav-badge"') !== -1, '缺少底部导航未读徽章');
     ok(html.indexOf('img/agent-avatar.jpg') !== -1, '对话页头像未使用 App 图标');

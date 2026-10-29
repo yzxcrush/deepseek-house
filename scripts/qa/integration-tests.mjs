@@ -672,35 +672,65 @@ export function registerIntegrationTests() {
     equal(navBadge.textContent, '2', '底部导航未读角标应为 2');
   });
 
-  test('底部导航：聊天 / 分享 / 个人资料三个标签可切换，分享聊天记录走原生分享', async () => {
+  test('底部导航：聊天 / 分享 / 个人资料，分享选项与个人资料内容可用', async () => {
     const app = await loginIfNeeded();
     const w = app.win;
     clickAction('back-to-chats');
     await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
     ok($id('bottom-nav'), '缺少底部导航');
-    // 分享页
+
+    // ---------- 分享页 ----------
     clickAction('nav-share');
     await waitFor(() => isScreenActive(w, 'screen-share'), { timeout: 3000, label: '分享页显示' });
     ok($id('nav-share').classList.contains('is-active'), '分享标签未高亮');
+    // 分享选项存在，署名默认开启
+    const optTime = $id('share-opt-time');
+    const optReasoning = $id('share-opt-reasoning');
+    const optSignature = $id('share-opt-signature');
+    ok(optTime && optReasoning && optSignature, '缺少分享选项开关');
+    equal(optSignature.checked, true, '署名默认应开启');
+    // 准备一个带消息的会话用于分享
+    const shareChatObj = w.Store.createChat({ title: '分享测试会话' });
+    w.Store.appendMessage(shareChatObj.id, { role: 'user', content: '你好，分享这条消息' });
+    w.Store.appendMessage(shareChatObj.id, { role: 'assistant', content: '收到，这是一条测试回复' });
+    w.App.refreshChatList();
+    w.App.handlers.onNavShare();
     await waitFor(() => $$('#share-list .chat-item--share').length >= 1, { timeout: 3000, label: '分享会话列表渲染' });
+    // 打开「包含时间戳」并确认持久化
+    optTime.checked = true;
+    optTime.dispatchEvent(new w.Event('change', { bubbles: true }));
+    includes(String(w.localStorage.getItem('dsh.shareOpts') || ''), '"time":true', '分享选项未持久化');
+    const row = $$('#share-list .chat-item--share').find((n) => n.getAttribute('data-share-id') === String(shareChatObj.id));
+    ok(row, '分享列表缺少刚创建的会话');
     const beforeShare = nativeCalls('shareText').length;
-    click(w, $$('#share-list .chat-item--share')[0]);
+    click(w, row);
     await waitFor(() => nativeCalls('shareText').length > beforeShare, { timeout: 3000, label: '调用原生分享' });
-    const shareCall = nativeCalls('shareText')[nativeCalls('shareText').length - 1];
-    ok(shareCall.args[1] && String(shareCall.args[1]).length > 0, '分享文本不应为空');
-    includes(String(shareCall.args[1]), 'DeepSeek House', '分享文本应带署名');
-    // 个人资料
+    const shareText = String(nativeCalls('shareText')[nativeCalls('shareText').length - 1].args[1] || '');
+    includes(shareText, '分享测试会话', '分享文本应包含会话标题');
+    includes(shareText, '你好，分享这条消息', '分享文本应包含消息内容');
+    includes(shareText, '@惜白.', '分享文本应包含署名');
+    ok(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]/.test(shareText), '开启时间戳后分享文本应包含时间戳');
+    // 导出全部会话按钮
+    const exportBtn = $sel('[data-action="export-all"]');
+    ok(exportBtn, '分享页缺少「导出全部会话」按钮');
+
+    // ---------- 个人资料 ----------
     clickAction('nav-profile');
     await waitFor(() => isScreenActive(w, 'screen-profile'), { timeout: 3000, label: '个人资料页显示' });
     ok($id('nav-profile').classList.contains('is-active'), '个人资料标签未高亮');
     ok(($id('profile-status').textContent || '').length > 0, '个人资料页缺少状态文案');
+    ok($$('#profile-info .info-row').length >= 4, '个人资料页账户信息行不足');
+    const chatCount = parseInt($id('profile-chat-count').textContent, 10);
+    ok(chatCount >= 1, '个人资料页会话数不正确');
+    ok(parseInt($id('profile-msg-count').textContent, 10) >= 2, '个人资料页消息数不正确');
+    ok($sel('[data-action="clear-all"]'), '个人资料页缺少清空会话入口');
+    ok($sel('[data-action="about"]'), '个人资料页缺少关于入口');
     // 设置返回个人资料
     clickAction('open-settings');
     await waitFor(() => isScreenActive(w, 'screen-settings'), { timeout: 3000, label: '设置页显示' });
     await sleep(200);
     app.native.__emit({ type: 'back' });
     await waitFor(() => isScreenActive(w, 'screen-profile'), { timeout: 3000, label: '设置返回个人资料' });
-    // 返回聊天
     clickAction('nav-chats');
     await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到聊天标签' });
   });

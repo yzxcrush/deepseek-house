@@ -160,16 +160,43 @@
           </svg>
         </button>
       </header>
-      <div class="tip-card share-tip">
-        <div class="tip-body">
-          <div class="tip-title">选择一个会话分享</div>
-          <div class="tip-sub">把整段对话以文本形式发送到任意 App，内容只在本机生成。</div>
+      <div class="page-scroll share-scroll">
+        <div class="section-label">分享选项</div>
+        <div class="section option-list">
+          <label class="option-row" for="share-opt-time">
+            <span class="option-text">
+              <span class="option-title">包含时间戳</span>
+              <span class="option-desc">每条消息前加上发送时间</span>
+            </span>
+            <span class="switch"><input type="checkbox" id="share-opt-time" data-share-opt="time"><span class="switch-track"></span></span>
+          </label>
+          <label class="option-row" for="share-opt-reasoning">
+            <span class="option-text">
+              <span class="option-title">包含思考过程</span>
+              <span class="option-desc">推理模型的 reasoning 内容一并分享</span>
+            </span>
+            <span class="switch"><input type="checkbox" id="share-opt-reasoning" data-share-opt="reasoning"><span class="switch-track"></span></span>
+          </label>
+          <label class="option-row" for="share-opt-signature">
+            <span class="option-text">
+              <span class="option-title">包含署名</span>
+              <span class="option-desc">结尾附上 DeepSeek House · @惜白.</span>
+            </span>
+            <span class="switch"><input type="checkbox" id="share-opt-signature" data-share-opt="signature"><span class="switch-track"></span></span>
+          </label>
         </div>
-      </div>
-      <div class="chatlist" id="share-list" role="list"></div>
-      <div class="chatlist-empty" id="share-empty" hidden>
-        <div class="chatlist-empty-title">还没有可分享的会话</div>
-        <div class="chatlist-empty-sub">先和 DeepSeek 聊几句吧</div>
+
+        <div class="section-label">选择会话</div>
+        <div class="chatlist chatlist--inset" id="share-list" role="list"></div>
+        <div class="chatlist-empty chatlist-empty--inline" id="share-empty" hidden>
+          <div class="chatlist-empty-title">还没有可分享的会话</div>
+          <div class="chatlist-empty-sub">先和 DeepSeek 聊几句吧</div>
+        </div>
+
+        <div class="page-actions">
+          <button class="btn btn--ghost" type="button" data-action="export-all">导出全部会话（Markdown）</button>
+        </div>
+        <div class="profile-foot">记录只在本机生成，分享由系统面板完成</div>
       </div>
     </section>
 
@@ -186,25 +213,40 @@
         </button>
       </header>
       <div class="page-scroll profile-scroll">
-        <div class="profile-card">
+        <div class="profile-hero">
           <img class="profile-avatar" src="img/agent-avatar.jpg" alt="">
           <div class="profile-name">DeepSeek House</div>
           <div class="profile-status" id="profile-status">API Key 已配置</div>
+          <div class="profile-actions">
+            <button class="btn btn--primary btn--pill" type="button" data-action="open-settings">设置</button>
+            <button class="btn btn--ghost btn--pill" type="button" data-action="open-plugins">插件</button>
+          </div>
         </div>
+
+        <div class="section-label">账号信息</div>
+        <div class="section info-list" id="profile-info"></div>
+
+        <div class="section-label">数据</div>
+        <div class="section info-list">
+          <div class="info-row"><span class="info-label">会话</span><span class="info-value" id="profile-chat-count">0</span></div>
+          <div class="info-row"><span class="info-label">消息</span><span class="info-value" id="profile-msg-count">0</span></div>
+        </div>
+
+        <div class="section-label">更多</div>
         <div class="section menu-list">
-          <button class="menu-item" type="button" data-action="open-settings">
-            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M20 7h-9M14 17H5"/></svg></span>
-            <span class="menu-text">设置</span>
+          <button class="menu-item" type="button" data-action="nav-share">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg></span>
+            <span class="menu-text">分享聊天记录</span>
             <span class="menu-arrow">›</span>
           </button>
-          <button class="menu-item" type="button" data-action="open-plugins">
-            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"/></svg></span>
-            <span class="menu-text">插件</span>
+          <button class="menu-item" type="button" data-action="clear-all">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></span>
+            <span class="menu-text">清空所有会话</span>
             <span class="menu-arrow">›</span>
           </button>
-          <button class="menu-item" type="button" data-action="nav-chats">
-            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.9A8 8 0 1 1 21 12Z"/></svg></span>
-            <span class="menu-text">会话</span>
+          <button class="menu-item" type="button" data-action="about">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg></span>
+            <span class="menu-text">关于 DeepSeek House</span>
             <span class="menu-arrow">›</span>
           </button>
           <button class="menu-item menu-item--danger" type="button" data-action="logout">
@@ -212,7 +254,8 @@
             <span class="menu-text">退出登录</span>
           </button>
         </div>
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.0.9</div>
+
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.1.0<br>开源协议 MIT</div>
       </div>
     </section>
 
@@ -415,7 +458,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.0.9</span></div>
+          <div class="about-row"><span>版本</span><span>1.1.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -578,7 +621,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v1.0.9</span>
+      <span class="drawer-version">v1.1.0</span>
     </div>
   </aside>
 
