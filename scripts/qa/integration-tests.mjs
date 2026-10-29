@@ -133,9 +133,20 @@ function pendingChat() {
   return list.length ? list[list.length - 1] : null;
 }
 
+async function enterChatScreen(app) {
+  if (isScreenActive(app.win, 'screen-chat')) return;
+  const items = $$('#chats-list .chat-item[data-id]');
+  if (items.length) click(app.win, items[items.length - 1]);
+  else clickAction('new-chat');
+  await waitFor(() => isScreenActive(app.win, 'screen-chat'), { timeout: 6000, label: '进入对话页' });
+}
+
 async function loginIfNeeded() {
   const app = await getApp();
-  if (ctx.loggedIn && isScreenActive(app.win, 'screen-chat')) return app;
+  if (ctx.loggedIn) {
+    if (isScreenActive(app.win, 'screen-chats')) await enterChatScreen(app);
+    return app;
+  }
   if (isScreenActive(app.win, 'screen-login')) {
     const keyInput = $id('login-key');
     ok(keyInput, '登录页缺少 #login-key');
@@ -144,9 +155,10 @@ async function loginIfNeeded() {
     ok(form, '登录页缺少 #login-form');
     form.dispatchEvent(new app.win.Event('submit', { bubbles: true, cancelable: true }));
     await waitFor(() => nativeCalls('validateKey').length > 0, { timeout: 3000, label: 'Bridge.validateKey 调用' });
-    await waitFor(() => isScreenActive(app.win, 'screen-chat'), { timeout: 5000, label: '登录成功后进入聊天界面' });
+    await waitFor(() => isScreenActive(app.win, 'screen-chats'), { timeout: 6000, label: '登录成功后进入会话列表' });
   }
   ctx.loggedIn = true;
+  await enterChatScreen(app);
   return app;
 }
 
@@ -277,7 +289,7 @@ export function registerIntegrationTests() {
     const validateCall = nativeCalls('validateKey')[0];
     ok(validateCall.args[0], 'validateKey 应携带 requestId');
 
-    await waitFor(() => isScreenActive(app.win, 'screen-chat'), { timeout: 5000, label: '进入聊天界面' });
+    await waitFor(() => isScreenActive(app.win, 'screen-chats'), { timeout: 6000, label: '进入会话列表' });
     ok(!isScreenActive(app.win, 'screen-login'), '登录成功后登录页应隐藏');
     ok(nativeCalls('setPrefs').length > beforeSetPrefs, '登录时应调用 Bridge.setPrefs 保存 apiKey');
     const keyPayloads = nativeCalls('setPrefs')
@@ -296,15 +308,16 @@ export function registerIntegrationTests() {
     notIncludes(stored, 'sk-qa-test-valid-key', 'API Key 被写入了 localStorage');
     const leakedLogs = app.consoleLogs.filter((entry) => entry.args.join(' ').indexOf('sk-qa-test-valid-key') !== -1);
     ok(leakedLogs.length === 0, 'API Key 出现在 console 日志中');
-    // 进入聊天后应自动创建一个活动会话
-    ok(app.win.Store.getActiveChat(), '进入聊天界面后应存在活动会话');
+    // 进入对话页（FAB/会话项）后应存在活动会话
+    await enterChatScreen(app);
+    ok(app.win.Store.getActiveChat(), '进入对话页后应存在活动会话');
     ctx.loggedIn = true;
   });
 
-  test('已配置 Key 时二次启动直接进入聊天页', async () => {
+  test('已配置 Key 时二次启动直接进入会话列表', async () => {
     const app2 = await loadAppWindow({ native: { prefs: { apiKey: 'sk-qa-existing-key' } } });
     try {
-      await waitFor(() => isScreenActive(app2.win, 'screen-chat'), { timeout: 5000, label: '有 Key 启动进入聊天页' });
+      await waitFor(() => isScreenActive(app2.win, 'screen-chats'), { timeout: 6000, label: '有 Key 启动进入会话列表' });
       ok(!isScreenActive(app2.win, 'screen-login'), '有 Key 启动不应显示登录页');
     } finally {
       app2.dom.window.close();
@@ -538,22 +551,32 @@ export function registerIntegrationTests() {
     clickAction('close-drawer');
   });
 
-  test('返回键分层：设置页 → 原生 back 事件 → 回到聊天页且 backDepth 归零', async () => {
+  test('返回键分层：设置页(2) → 对话页(1) → 会话列表(0)', async () => {
     const app = await loginIfNeeded();
     const w = app.win;
     clickAction('open-settings');
     await waitFor(() => isScreenActive(w, 'screen-settings'), { timeout: 3000, label: '设置页显示' });
     await waitFor(() => {
       const calls = nativeCalls('setBackDepth');
+      return calls.length && Number(calls[calls.length - 1].args[0]) === 2;
+    }, { timeout: 3000, label: 'setBackDepth(2)' });
+
+    app.native.__emit({ type: 'back' });
+    await waitFor(() => isScreenActive(w, 'screen-chat'), { timeout: 3000, label: 'back 事件回到对话页' });
+    await waitFor(() => {
+      const calls = nativeCalls('setBackDepth');
       return calls.length && Number(calls[calls.length - 1].args[0]) === 1;
     }, { timeout: 3000, label: 'setBackDepth(1)' });
 
+    await sleep(320);
     app.native.__emit({ type: 'back' });
-    await waitFor(() => isScreenActive(w, 'screen-chat'), { timeout: 3000, label: 'back 事件回到聊天页' });
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '再次 back 回到会话列表' });
     await waitFor(() => {
       const calls = nativeCalls('setBackDepth');
       return calls.length && Number(calls[calls.length - 1].args[0]) === 0;
     }, { timeout: 3000, label: 'setBackDepth(0)' });
+
+    await enterChatScreen(app);
   });
 
   test('插件工具调用循环：done(toolCalls) → 执行插件工具 → 结果回传 → 继续请求', async () => {
@@ -691,6 +714,85 @@ export function registerIntegrationTests() {
     ok(stored.indexOf('deepseek-qa-custom-v9') !== -1, '自定义模型未持久化到 Store');
     const catalog = app.win.App.currentModelCatalog();
     ok(catalog.some((m) => m.id === 'deepseek-qa-custom-v9'), '自定义模型未加入模型目录');
+  });
+
+  /* ---------------------------------------------------------------- *
+   * SPEC v1.3：Telegram 式信息架构（会话列表首屏 / FAB / 列表项 / 表情）
+   * ---------------------------------------------------------------- */
+  suite('集成冒烟 · Telegram 式信息架构');
+
+  test('新启动（已有 Key）首屏为会话列表，空状态与 FAB 可见', async () => {
+    const app2 = await loadAppWindow({ native: { prefs: { apiKey: 'sk-qa-existing-key' } } });
+    try {
+      const w2 = app2.win;
+      await waitFor(() => isScreenActive(w2, 'screen-chats'), { timeout: 6000, label: '首屏会话列表' });
+      ok(w2.document.getElementById('chats-list'), '缺少 #chats-list 会话列表');
+      const fab = w2.document.querySelector('.fab[data-action="new-chat"]');
+      ok(fab, '缺少 FAB 新建会话按钮');
+      ok(!isScreenActive(w2, 'screen-chat'), '首屏不应直接进入对话页');
+      click(w2, fab);
+      await waitFor(() => isScreenActive(w2, 'screen-chat'), { timeout: 5000, label: 'FAB 进入对话页' });
+      ok(w2.Store.getActiveChat(), 'FAB 新建后应有活动会话');
+    } finally {
+      app2.dom.window.close();
+    }
+  });
+
+  test('会话项渲染头像/标题/预览/时间，点击进入对话页', async () => {
+    const app = await loginIfNeeded();
+    const w = app.win;
+    // 造两个会话
+    w.Store.createChat({ title: '会话说 A' });
+    w.Store.createChat({ title: '会话 B' });
+    w.App.refreshChatList();
+    await waitFor(() => $$('#chats-list .chat-item[data-id]').length >= 2, { timeout: 3000, label: '会话列表渲染' });
+    const item = $$('#chats-list .chat-item[data-id]')[0];
+    ok(item.querySelector('.chat-avatar'), '会话项缺少头像');
+    ok(item.querySelector('.chat-item-title'), '会话项缺少标题');
+    ok(item.querySelector('.chat-item-preview'), '会话项缺少预览');
+    ok(item.querySelector('.chat-item-time'), '会话项缺少时间');
+    const id = item.getAttribute('data-id');
+    click(w, item);
+    await waitFor(() => isScreenActive(w, 'screen-chat'), { timeout: 5000, label: '点击会话进入对话页' });
+    equal(String(w.Store.getActiveChatId()), String(id), '应激活所点会话');
+    // 返回列表
+    clickAction('back-to-chats');
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '返回会话列表' });
+  });
+
+  test('会话列表搜索：输入关键词过滤会话', async () => {
+    const app = await loginIfNeeded();
+    const w = app.win;
+    clickAction('back-to-chats');
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
+    clickAction('toggle-chat-search');
+    const input = $id('chat-search-input');
+    ok(input, '缺少首页搜索输入框');
+    input.value = '会话 B';
+    input.dispatchEvent(new w.Event('input', { bubbles: true }));
+    await waitFor(() => {
+      const titles = $$('#chats-list .chat-item-title').map((n) => n.textContent || '');
+      return titles.length === 1 && titles[0].indexOf('会话 B') !== -1;
+    }, { timeout: 4000, label: '搜索过滤会话列表' });
+    clickAction('close-chat-search');
+    await waitFor(() => $$('#chats-list .chat-item[data-id]').length >= 2, { timeout: 4000, label: '关闭搜索恢复列表' });
+  });
+
+  test('表情面板：点开并插入表情到输入框', async () => {
+    const app = await loginIfNeeded();
+    const w = app.win;
+    clickAction('toggle-emoji');
+    const panel = $id('emoji-panel');
+    ok(panel, '缺少表情面板');
+    ok(!panel.hidden, '表情面板未打开');
+    const btn = panel.querySelector('[data-emoji]');
+    ok(btn, '表情面板没有表情按钮');
+    const emoji = btn.getAttribute('data-emoji');
+    click(w, btn);
+    const value = $id('composer-input').value || '';
+    ok(value.indexOf(emoji) !== -1, '表情未插入输入框');
+    clickAction('toggle-emoji');
+    ok(panel.hidden, '表情面板未关闭');
   });
 
   suite('集成冒烟 · 错误与收尾');

@@ -372,6 +372,25 @@ export function registerStaticTests() {
     equal((manifest.match(/package="com\.deepseekhouse\.app"/) || []).length, 1, 'applicationId 应为 com.deepseekhouse.app');
   });
 
+  test('Telegram 式信息架构：会话列表首屏 / FAB / 壁纸 / 气泡尾巴（SPEC v1.3）', () => {
+    const html = readOrNull(path.join(WEB_DIR, 'index.html')) || '';
+    const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';
+    const uiJs = readOrNull(path.join(WEB_DIR, 'js', 'ui.js')) || '';
+    ok(html.indexOf('id="screen-chats"') !== -1, '缺少会话列表首屏 #screen-chats');
+    ok(html.indexOf('class="fab"') !== -1, '缺少 FAB 新建对话按钮');
+    ok(html.indexOf('data-action="back-to-chats"') !== -1, '对话页缺少返回会话列表按钮');
+    ok(html.indexOf('id="emoji-panel"') !== -1, '缺少表情面板');
+    ok(css.indexOf('.chat-avatar') !== -1, '缺少会话列表头像样式');
+    ok(css.indexOf('.chat-item-meta') !== -1, '缺少会话列表右侧时间/置顶样式');
+    ok(css.indexOf('bubble::before') !== -1, '缺少消息气泡尾巴');
+    ok(css.indexOf('img/wallpaper.jpg') !== -1 || css.indexOf('../img/wallpaper.jpg') !== -1, 'app.css 未使用壁纸');
+    const bg = readOrNull(path.join(WEB_DIR, 'img', 'wallpaper.jpg'));
+    ok(bg && bg.length > 10240, '壁纸文件缺失或过小');
+    ok(uiJs.indexOf('EMOJI_LIST') !== -1, '缺少表情列表实现');
+    ok(uiJs.indexOf('buildChatItem') !== -1, '缺少会话项渲染');
+    ok(uiJs.indexOf('spawnRipple') !== -1 || css.indexOf('ripple-ink') !== -1, '缺少水波纹');
+  });
+
   test('水印 @惜白. 出现在 UI 与导出（SPEC v1.2）', () => {
     const html = readOrNull(path.join(WEB_DIR, 'index.html')) || '';
     const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';

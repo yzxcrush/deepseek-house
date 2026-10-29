@@ -296,28 +296,42 @@
       ui('showScreen', 'login');
       ui('renderLogin', { hasKey: false, busy: false });
     } else {
-      enterChat();
+      enterChats();
     }
 
     loadPlugins(false);
     return App;
   }
 
-  function enterChat() {
+  /* Telegram 式首屏：会话列表（Home） */
+  function enterChats() {
+    state.nav = { screen: 'chats', drawerOpen: false };
+    ui('showScreen', 'chats');
+    ui('setUser', { name: 'DeepSeek 用户' });
+    ui('setModel', state.prefs.model);
+    applyModelLabel();
+    // B1：启动/登录成功后静默拉取 GET /models，失败则保留内置回退目录
+    refreshModelsFromApi({});
+    refreshChatList();
+    setBackDepth(0);
+  }
+
+  /* 进入某个会话（对话页从右侧推入） */
+  function enterChat(chat) {
+    chat = chat || ensureActiveChat();
     state.nav = { screen: 'chat', drawerOpen: false };
     ui('showScreen', 'chat');
     ui('setUser', { name: 'DeepSeek 用户' });
     ui('setModel', state.prefs.model);
     applyModelLabel();
-    ensureActiveChat();
-    // B1：启动/登录成功后静默拉取 GET /models，失败则保留内置回退目录
-    refreshModelsFromApi({});
     refreshChatList();
-    renderActiveChat();
+    ui('renderMessages', chat);
+    ui('setChatAvatar', chat);
     ui('setStreaming', false);
     ui('setComposer', { value: '', busy: false });
-    setHeader(null, '');
-    setBackDepth(0);
+    setHeader(chat, '');
+    setBackDepth(1);
+    ui('scrollBottom', true);
   }
 
   function ensureActiveChat() {
@@ -361,7 +375,8 @@
   function navTo(screen) {
     state.nav.screen = screen;
     state.nav.drawerOpen = false;
-    if (screen === 'settings' || screen === 'plugins') setBackDepth(1);
+    if (screen === 'settings' || screen === 'plugins') setBackDepth(2);
+    else if (screen === 'chat') setBackDepth(1);
     else setBackDepth(0);
   }
 
@@ -376,20 +391,31 @@
 
   function onBack() {
     var screen = state.nav.screen;
-    if (screen !== 'chat') {
+    if (screen === 'chats') {
       closeDrawer();
-      ui('showScreen', 'chat');
-      navTo('chat');
-      var chat = Store.getActiveChat();
-      if (chat) {
-        setHeader(chat, '');
-        ui('renderMessages', chat);
-        ui('scrollBottom', true);
-      }
+      try { if (global.Bridge && global.Bridge.finishApp) global.Bridge.finishApp(); } catch (e) { /* ignore */ }
       return;
     }
+    if (screen === 'chat') {
+      closeDrawer();
+      state.nav.screen = 'chats';
+      ui('showScreen', 'chats');
+      setBackDepth(0);
+      refreshChatList();
+      return;
+    }
+    /* 设置 / 插件页 → 回到对话页 */
     closeDrawer();
-    setBackDepth(0);
+    var chat = Store.getActiveChat();
+    ui('showScreen', 'chat');
+    state.nav.screen = 'chat';
+    setBackDepth(1);
+    if (chat) {
+      ui('setChatAvatar', chat);
+      setHeader(chat, '');
+      ui('renderMessages', chat);
+      ui('scrollBottom', true);
+    }
   }
 
   /* ------------------------------------------------------------------ *
@@ -525,7 +551,7 @@
         state.prefs = mergePrefs(Store.getPrefs(), readNativePrefs());
         state.prefs.baseUrl = baseUrl;
         ui('renderLogin', { hasKey: true, busy: false, error: '' });
-        enterChat();
+        enterChats();
         toast('登录成功', true);
         return;
       }
@@ -1035,14 +1061,8 @@
     var chat = Store.createChat({ model: state.prefs.model });
     Store.setActiveChat(chat.id);
     closeDrawer();
-    ui('showScreen', 'chat');
-    ui('renderMessages', chat);
-    ui('setHeader', { title: chat.title, subtitle: '' });
-    ui('setStreaming', false);
-    ui('setComposer', { value: '', busy: false });
-    refreshChatList();
     navTo('chat');
-    ui('scrollBottom', true);
+    enterChat(chat);
   }
 
   function selectChat(id) {
@@ -1051,14 +1071,8 @@
     if (!chat) return;
     Store.setActiveChat(chat.id);
     closeDrawer();
-    ui('showScreen', 'chat');
-    ui('renderMessages', chat);
-    ui('setHeader', { title: chat.title, subtitle: '' });
-    ui('setStreaming', false);
-    ui('setComposer', { value: '', busy: false });
-    refreshChatList();
     navTo('chat');
-    ui('scrollBottom', true);
+    enterChat(chat);
   }
 
   function deleteChat(id, skipConfirm) {
@@ -1076,6 +1090,7 @@
       refreshChatList();
       if (wasActive) {
         ui('renderMessages', next);
+        ui('setChatAvatar', next);
         ui('setHeader', { title: next.title, subtitle: '' });
         ui('scrollBottom', true);
       }
@@ -1094,6 +1109,7 @@
     if (!chat) return;
     refreshChatList();
     if (Store.getActiveChatId() === chat.id) {
+      ui('setChatAvatar', chat);
       ui('setHeader', { title: chat.title, subtitle: '' });
     }
   }

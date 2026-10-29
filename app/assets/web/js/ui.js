@@ -68,6 +68,7 @@
     drawerOpen: false,
     searchQuery: '',
     searchTimer: 0,
+    emojiOpen: false,
     chats: [],
     activeChatId: null,
 
@@ -714,8 +715,9 @@
    * ------------------------------------------------------------------ */
   function syncDepth() {
     var base;
-    if (state.screen === 'chat') base = 0;
-    else if (state.screen === 'settings' || state.screen === 'plugins') base = 1;
+    if (state.screen === 'chats') base = 0;
+    else if (state.screen === 'chat') base = 1;
+    else if (state.screen === 'settings' || state.screen === 'plugins') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal'));
@@ -825,6 +827,7 @@
    * ------------------------------------------------------------------ */
   var SCREEN_IDS = {
     login: 'screen-login',
+    chats: 'screen-chats',
     chat: 'screen-chat',
     settings: 'screen-settings',
     plugins: 'screen-plugins'
@@ -846,6 +849,7 @@
     if (name !== 'chat') closeDrawer();
     closeAllModals();
     closeModelPickerPanel(true);
+    if (name !== 'chat') closeEmojiPanel();
     syncDepth();
   }
 
@@ -941,6 +945,137 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 首页会话搜索（Telegram 式首屏）
+   * ------------------------------------------------------------------ */
+  function onChatSearchInput() {
+    var input = r('chat-search-input');
+    state.searchQuery = input ? String(input.value || '') : '';
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(function () {
+      if (typeof state.cb.onSearch === 'function') invoke('onSearch', state.searchQuery);
+      else renderChatListImpl(state.chats, state.activeChatId);
+    }, 180);
+  }
+
+  function toggleChatSearch(forceOpen) {
+    var wrap = r('chat-search-wrap');
+    if (!wrap) return;
+    var open = forceOpen === undefined ? wrap.hidden : !!forceOpen;
+    wrap.hidden = !open;
+    var input = r('chat-search-input');
+    if (open) {
+      if (input) { try { input.focus(); input.select(); } catch (err) { /* 静默 */ } }
+    } else {
+      if (input) input.value = '';
+      state.searchQuery = '';
+      clearTimeout(state.searchTimer);
+      if (typeof state.cb.onSearch === 'function') invoke('onSearch', '');
+      else renderChatListImpl(state.chats, state.activeChatId);
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 表情面板
+   * ------------------------------------------------------------------ */
+  var EMOJI_LIST = ['😀','😄','😁','😆','😅','🤣','🥲','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗','😙','😚','😋','😛','😜','😝','🤪','🤨','🧐','🤓','😎','🥳','😏','😒','😞','😔','😟','😕','🙁','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','😰','😥','😓','🤗','🤔','🫣','🤭','🫢','🤫','🤥','😶','😐','😑','😬','🙄','😯','😦','😧','😮','😲','🥱','😴','🤤','😪','😵','🤐','🥴','🤢','🤮','🤧','😷','🤒','🤕'];
+
+  function buildEmojiPanel() {
+    var grid = r('emoji-grid');
+    if (!grid || grid.childElementCount) return;
+    EMOJI_LIST.forEach(function (emoji) {
+      var btn = el('button', 'emoji-item', emoji);
+      btn.type = 'button';
+      btn.setAttribute('data-emoji', emoji);
+      btn.setAttribute('aria-label', '表情 ' + emoji);
+      grid.appendChild(btn);
+    });
+  }
+
+  function insertEmoji(emoji) {
+    var input = r('composer-input');
+    if (!input || !emoji) return;
+    var value = String(input.value || '');
+    var start = input.selectionStart == null ? value.length : input.selectionStart;
+    var end = input.selectionEnd == null ? value.length : input.selectionEnd;
+    input.value = value.slice(0, start) + emoji + value.slice(end);
+    var caret = start + emoji.length;
+    try { input.setSelectionRange(caret, caret); } catch (err) { /* 静默 */ }
+    autosize();
+    try { input.focus(); } catch (err) { /* 静默 */ }
+  }
+
+  function toggleEmojiPanel(forceOpen) {
+    var panel = r('emoji-panel');
+    if (!panel) return;
+    var open = forceOpen === undefined ? panel.hidden : !!forceOpen;
+    if (open) {
+      buildEmojiPanel();
+      panel.hidden = false;
+      var grid = r('emoji-grid');
+      if (grid) grid.scrollTop = grid.scrollHeight;
+      var input = r('composer-input');
+      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+    } else {
+      panel.hidden = true;
+    }
+    state.emojiOpen = open;
+    if (state.autoScroll) scrollToBottom();
+  }
+
+  function closeEmojiPanel() {
+    var panel = r('emoji-panel');
+    state.emojiOpen = false;
+    if (panel && !panel.hidden) panel.hidden = true;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 聊天页顶栏：滚动阴影 + 会话头像
+   * ------------------------------------------------------------------ */
+  function syncHeaderShadow(scrolled) {
+    var header = r('chat-header');
+    if (header) header.classList.toggle('is-scrolled', !!scrolled);
+  }
+
+  function applyChatHeadAvatar(chat) {
+    var node = r('chat-head-avatar');
+    if (!node) return;
+    node.textContent = chat ? chatAvatarText(chat) : 'D';
+    node.className = 'chat-head-avatar' + (chat ? chatAvatarClass(chat.id) : '');
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 水波纹（ripple）：Android 触感
+   * ------------------------------------------------------------------ */
+  function spawnRipple(event, node) {
+    try {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      var rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      var size = Math.max(rect.width, rect.height) * 1.15;
+      var ink = document.createElement('span');
+      ink.className = 'ripple-ink';
+      ink.style.width = size + 'px';
+      ink.style.height = size + 'px';
+      ink.style.left = (event.clientX - rect.left - size / 2) + 'px';
+      ink.style.top = (event.clientY - rect.top - size / 2) + 'px';
+      var style = window.getComputedStyle(node);
+      if (style && style.position === 'static') node.classList.add('ripple-host');
+      node.appendChild(ink);
+      setTimeout(function () {
+        if (ink.parentNode) ink.parentNode.removeChild(ink);
+      }, 480);
+    } catch (err) { /* 静默 */ }
+  }
+
+  function onRipplePointerDown(event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    var host = target.closest('button, .chat-item, .model-row, .drawer-item, .fab, .emoji-item');
+    if (!host || host.disabled) return;
+    spawnRipple(event, host);
+  }
+
+  /* ------------------------------------------------------------------ *
    * 会话列表
    * ------------------------------------------------------------------ */
   function previewOf(chat) {
@@ -953,27 +1088,61 @@
     return truncate(content, 90);
   }
 
+  var CHAT_AVATAR_VARIANTS = ['', ' chat-avatar--c1', ' chat-avatar--c2', ' chat-avatar--c3', ' chat-avatar--c4', ' chat-avatar--c5'];
+
+  function chatAvatarClass(id) {
+    var text = String(id == null ? '' : id);
+    var hash = 0;
+    for (var i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    return CHAT_AVATAR_VARIANTS[hash % CHAT_AVATAR_VARIANTS.length];
+  }
+
+  function chatAvatarText(chat) {
+    var title = String((chat && chat.title) || '新对话').trim();
+    var chars = Array.from(title);
+    var first = chars.length ? chars[0] : 'D';
+    return /[a-z]/i.test(first) ? first.toUpperCase() : first;
+  }
+
+  var ICON_PIN = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14.5 3.2a1.4 1.4 0 0 0-2 0l-1.6 1.6 1.1 1.1-3.9 3.9-2.4-.5a1 1 0 0 0-.9 1.7l2.7 2.7-3.4 3.4a1 1 0 0 0 1.4 1.4l3.4-3.4 2.7 2.7a1 1 0 0 0 1.7-.9l-.5-2.4 3.9-3.9 1.1 1.1 1.6-1.6a1.4 1.4 0 0 0 0-2l-4.9-4.9Z"/></svg>';
+
   function buildChatItem(chat) {
     var item = document.createElement('button');
     item.type = 'button';
     item.className = 'chat-item' + (String(chat.id) === String(state.activeChatId) ? ' is-active' : '');
     item.setAttribute('data-id', String(chat.id));
+    item.setAttribute('role', 'listitem');
 
+    var avatar = el('div', 'chat-avatar' + chatAvatarClass(chat.id));
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.textContent = chatAvatarText(chat);
+
+    var body = el('div', 'chat-item-body');
     var top = el('div', 'chat-item-top');
     top.appendChild(makeText('span', 'chat-item-title', chat.title || '新对话'));
-    top.appendChild(makeText('span', 'chat-item-time', listTime(chat.updatedAt || chat.createdAt)));
+    body.appendChild(top);
+    body.appendChild(makeText('span', 'chat-item-preview', previewOf(chat)));
 
-    item.appendChild(top);
-    item.appendChild(makeText('span', 'chat-item-preview', previewOf(chat)));
+    var meta = el('div', 'chat-item-meta');
+    meta.appendChild(makeText('span', 'chat-item-time', listTime(chat.updatedAt || chat.createdAt)));
+    if (chat.pinned) {
+      var pin = el('span', 'chat-pin');
+      pin.innerHTML = ICON_PIN;
+      meta.appendChild(pin);
+    }
+
+    item.appendChild(avatar);
+    item.appendChild(body);
+    item.appendChild(meta);
     return item;
   }
 
   function renderChatListImpl(chats, activeId) {
     state.chats = Array.isArray(chats) ? chats.slice() : [];
     if (activeId !== undefined) state.activeChatId = activeId;
-    var list = r('chat-list');
-    if (!list) return;
-    list.textContent = '';
+    var homeList = r('chats-list');
+    var drawerList = r('chat-list');
+    if (!homeList && !drawerList) return;
 
     var query = String(state.searchQuery || '').trim().toLowerCase();
     var items = state.chats;
@@ -983,9 +1152,30 @@
         return hay.toLowerCase().indexOf(query) >= 0;
       });
     }
-    items.forEach(function (chat) {
-      list.appendChild(buildChatItem(chat));
+    var pinned = items.filter(function (chat) { return !!chat.pinned; });
+    var normal = items.filter(function (chat) { return !chat.pinned; });
+
+    [homeList, drawerList].forEach(function (list) {
+      if (!list) return;
+      list.textContent = '';
+      if (pinned.length) {
+        list.appendChild(makeText('div', 'chat-group-label', '置顶'));
+        pinned.forEach(function (chat) { list.appendChild(buildChatItem(chat)); });
+        if (normal.length) list.appendChild(makeText('div', 'chat-group-label', '全部会话'));
+      }
+      normal.forEach(function (chat) { list.appendChild(buildChatItem(chat)); });
     });
+
+    var homeEmpty = r('chats-empty');
+    if (homeEmpty) {
+      homeEmpty.hidden = items.length > 0;
+      if (!items.length) {
+        var title = homeEmpty.querySelector('.chatlist-empty-title');
+        var sub = homeEmpty.querySelector('.chatlist-empty-sub');
+        if (title) title.textContent = query ? '没有找到会话' : '还没有会话';
+        if (sub) sub.textContent = query ? '换个关键词试试' : '点右下角按钮，开始第一次对话';
+      }
+    }
 
     var empty = r('chat-list-empty');
     if (empty) {
@@ -1386,6 +1576,7 @@
     state.autoScroll = distance < 80;
     var btn = r('scroll-bottom');
     if (btn) btn.hidden = distance <= 220;
+    syncHeaderShadow(box.scrollTop > 4);
   }
 
   function scheduleFlush() {
@@ -1996,6 +2187,8 @@
     if (isModalOpen(r('confirm-modal'))) { resolveConfirm(false); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
     if (state.drawerOpen) { closeDrawer(); return true; }
+    if (state.emojiOpen) { closeEmojiPanel(); return true; }
+    if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
   }
 
@@ -2040,9 +2233,21 @@
       case 'back':
         handleHeaderBack();
         break;
+      case 'back-to-chats':
+        closeEmojiPanel();
+        showScreenImpl('chats');
+        break;
+      case 'toggle-chat-search':
+        toggleChatSearch();
+        break;
+      case 'close-chat-search':
+        toggleChatSearch(false);
+        break;
+      case 'toggle-emoji':
+        toggleEmojiPanel();
+        break;
       case 'open-search':
-        openDrawer();
-        focusSearch();
+        if (state.screen === 'chats') { toggleChatSearch(true); } else { openDrawer(); focusSearch(); }
         break;
       case 'clear-search':
         clearSearch();
@@ -2171,6 +2376,12 @@
 
     if (state.menuOpen && !target.closest('#longpress')) closeMenu();
 
+    var emojiNode = target.closest('[data-emoji]');
+    if (emojiNode) {
+      insertEmoji(emojiNode.getAttribute('data-emoji'));
+      return;
+    }
+
     var actionNode = target.closest('[data-action]');
     if (actionNode && actionNode.getAttribute('data-action')) {
       handleAction(actionNode.getAttribute('data-action'), actionNode);
@@ -2195,6 +2406,10 @@
     }
     if (target.id === 'search-input') {
       onSearchInput();
+      return;
+    }
+    if (target.id === 'chat-search-input') {
+      onChatSearchInput();
       return;
     }
     if (target.id === 'model-picker-search') {
@@ -2296,6 +2511,7 @@
     app.addEventListener('keydown', onKeyDown);
     app.addEventListener('submit', onSubmit);
     app.addEventListener('pointerdown', onPointerDown, { passive: true });
+    app.addEventListener('pointerdown', onRipplePointerDown, { passive: true });
     app.addEventListener('pointermove', onPointerMove, { passive: true });
     app.addEventListener('pointerup', onPointerUp);
     app.addEventListener('pointercancel', onPointerUp);
@@ -2317,7 +2533,9 @@
   function cacheRefs() {
     var ids = [
       'app', 'screens',
-      'screen-login', 'screen-chat', 'screen-settings', 'screen-plugins',
+      'screen-login', 'screen-chats', 'screen-chat', 'screen-settings', 'screen-plugins',
+      'chats-list', 'chats-empty', 'chats-subtitle', 'chat-search-wrap', 'chat-search-input',
+      'chat-header', 'chat-head-avatar', 'emoji-panel', 'emoji-grid',
       'login-form', 'login-key', 'login-baseurl', 'login-error', 'login-submit', 'login-advanced',
       'header-title', 'header-subtitle',
       'messages', 'empty-state', 'scroll-bottom',
@@ -2347,7 +2565,8 @@
     cacheRefs();
     state.initialized = true;
     bindEvents();
-    showScreenImpl('chat');
+    showScreenImpl('chats');
+    buildEmojiPanel();
     syncSendButton();
     autosize();
     updateEmptyState();
@@ -2642,6 +2861,10 @@
   };
 
   /* 扩展辅助 API（非 SPEC 必需，提供给 app.js 做返回键/层级协作） */
+  UI.getScreen = function () { return state.screen; };
+  UI.setChatAvatar = function (chat) { applyChatHeadAvatar(chat); };
+  UI.toggleEmoji = toggleEmojiPanel;
+  UI.closeEmoji = closeEmojiPanel;
   UI.handleBack = handleBack;
   UI.openDrawer = openDrawer;
   UI.closeDrawer = closeDrawer;
@@ -2662,5 +2885,5 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.0.2';
+  UI.version = '1.0.3';
 })();

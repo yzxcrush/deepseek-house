@@ -78,14 +78,80 @@
       </div>
     </section>
 
-    <!-- ---------------------------- 主聊天界面 ---------------------------- -->
-    <section class="screen screen--chat is-active" id="screen-chat" aria-hidden="false">
-      <header class="topbar" id="chat-header">
-        <button class="icon-btn" type="button" data-action="open-drawer" aria-label="打开会话菜单">
+    <!-- ---------------------------- 会话列表（首屏，Telegram 式） ---------------------------- -->
+    <section class="screen screen--chats is-active" id="screen-chats" aria-hidden="false">
+      <header class="topbar topbar--chats" id="chats-header">
+        <button class="icon-btn" type="button" data-action="open-drawer" aria-label="打开菜单">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M4 6h16M4 12h16M4 18h16"></path>
           </svg>
         </button>
+        <div class="topbar-title">
+          <div class="title">DeepSeek House</div>
+          <div class="subtitle" id="chats-subtitle">与 DeepSeek 对话</div>
+        </div>
+        <button class="icon-btn" type="button" data-action="toggle-chat-search" aria-label="搜索会话">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20 20-3.4-3.4"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="chat-search" id="chat-search-wrap" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"></circle>
+          <path d="m20 20-3.4-3.4"></path>
+        </svg>
+        <input id="chat-search-input" class="chat-search-input" type="search" placeholder="搜索会话" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="搜索会话">
+        <button class="icon-btn chat-search-close" type="button" data-action="close-chat-search" aria-label="关闭搜索">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="chatlist" id="chats-list" role="list"></div>
+
+      <div class="chatlist-empty" id="chats-empty" hidden>
+        <div class="empty-logo" aria-hidden="true">
+          <svg viewBox="0 0 64 64">
+            <defs>
+              <linearGradient id="logoGradChats" x1="10" y1="8" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6AB2F2"></stop>
+                <stop offset="1" stop-color="#5288C1"></stop>
+              </linearGradient>
+            </defs>
+            <rect x="1" y="1" width="62" height="62" rx="18" fill="#0E1621" stroke="rgba(255,255,255,0.09)"></rect>
+            <rect x="14" y="13" width="36" height="27" rx="9" fill="url(#logoGradChats)"></rect>
+            <path d="M22 38.5 15.5 49l14.5-6.5Z" fill="url(#logoGradChats)"></path>
+            <circle cx="24" cy="26.5" r="2.4" fill="#0E1621"></circle>
+            <circle cx="32" cy="26.5" r="2.4" fill="#0E1621"></circle>
+            <circle cx="40" cy="26.5" r="2.4" fill="#0E1621"></circle>
+          </svg>
+        </div>
+        <div class="chatlist-empty-title">还没有会话</div>
+        <div class="chatlist-empty-sub">点右下角按钮，开始第一次对话</div>
+        <button class="btn btn--primary chatlist-empty-btn" type="button" data-action="new-chat">开始新对话</button>
+      </div>
+
+      <button class="fab" type="button" data-action="new-chat" aria-label="新建会话">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 20h4L20 8a2.8 2.8 0 0 0-4-4L4 16v4Z"></path>
+          <path d="M13.5 6.5 17.5 10.5"></path>
+        </svg>
+      </button>
+    </section>
+
+    <!-- ---------------------------- 主聊天界面 ---------------------------- -->
+    <section class="screen screen--page screen--chat" id="screen-chat" aria-hidden="true">
+      <header class="topbar" id="chat-header">
+        <button class="icon-btn" type="button" data-action="back-to-chats" aria-label="返回会话列表">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="chat-head-avatar" id="chat-head-avatar" aria-hidden="true">D</div>
         <div class="topbar-title">
           <div class="title" id="header-title">DeepSeek House</div>
           <button class="subtitle subtitle--action" id="header-subtitle" type="button" data-action="open-model-picker" aria-label="选择模型"></button>
@@ -161,16 +227,23 @@
       </div>
 
       <footer class="composer" id="composer">
-        <button class="round-btn" type="button" data-action="composer-plugins" aria-label="插件">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
+        <button class="round-btn round-btn--attach" type="button" data-action="composer-plugins" aria-label="插件与附件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 11.5 12.5 20a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.8 3.8 0 0 1 5.4 5.4l-8.6 8.6a2 2 0 0 1-2.8-2.8l7.9-7.9"></path>
           </svg>
         </button>
         <div class="composer-field">
-          <textarea id="composer-input" class="composer-input" rows="1" placeholder="发消息…" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="消息输入框"></textarea>
+          <textarea id="composer-input" class="composer-input" rows="1" placeholder="消息" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="消息输入框"></textarea>
+          <button class="composer-emoji" type="button" data-action="toggle-emoji" aria-label="表情">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M8.5 14.5a4.2 4.2 0 0 0 7 0"></path>
+              <path d="M9 9.5h.01M15 9.5h.01"></path>
+            </svg>
+          </button>
         </div>
         <button class="round-btn round-btn--send" id="btn-send" type="button" data-action="send" aria-label="发送">
-          <svg class="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg class="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M20.3 3.7 3.6 10.9c-.7.3-.7 1.3.1 1.5l6.2 1.7 1.7 6.2c.2.8 1.2.8 1.5.1L20.3 3.7Z"></path>
             <path d="M10 14 20 4"></path>
           </svg>
@@ -179,6 +252,10 @@
           </svg>
         </button>
       </footer>
+
+      <div class="emoji-panel" id="emoji-panel" hidden>
+        <div class="emoji-grid" id="emoji-grid"></div>
+      </div>
     </section>
 
     <!-- ---------------------------- 设置页 ---------------------------- -->
@@ -265,7 +342,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.0.2</span></div>
+          <div class="about-row"><span>版本</span><span>1.0.3</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -398,7 +475,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v1.0.2</span>
+      <span class="drawer-version">v1.0.3</span>
     </div>
   </aside>
 

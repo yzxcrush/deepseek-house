@@ -30,6 +30,12 @@ for f in js/util.js js/bridge.js js/store.js js/markdown.js js/api.js \
   [ -s "$WEB/$f" ] && pass "$f" || fail "required file missing/empty: $f"
 done
 [ -s "$WEB/css/theme.css" ] || fail "css/theme.css missing"
+[ -s "$WEB/img/wallpaper.jpg" ] && pass "img/wallpaper.jpg" || fail "聊天壁纸 img/wallpaper.jpg 缺失"
+if [ -s "$WEB/img/wallpaper.jpg" ]; then
+  head -c 2 "$WEB/img/wallpaper.jpg" | od -An -tx1 | grep -q "ff d8" && pass "壁纸为 JPEG" || fail "壁纸不是 JPEG"
+  size=$(wc -c < "$WEB/img/wallpaper.jpg"); [ "$size" -gt 10240 ] && pass "壁纸体积 ${size}B" || fail "壁纸过小（$size B）"
+fi
+grep -q "img/wallpaper.jpg" "$WEB/css/app.css" && pass "app.css 引用壁纸" || fail "app.css 未引用壁纸"
 
 # 3. script order must follow SPEC §2
 echo "- script order"

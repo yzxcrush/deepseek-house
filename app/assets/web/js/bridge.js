@@ -705,7 +705,7 @@
 
   function dispatchBack() {
     var now = Date.now();
-    if (now - lastBackAt < 250) return;
+    if (now - lastBackAt < 120) return;
     lastBackAt = now;
     emit('back', { type: 'back' });
   }
