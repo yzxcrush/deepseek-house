@@ -654,7 +654,7 @@ export function registerIntegrationTests() {
       { timeout: 3000, label: '重命名后的名字出现在列表' });
   });
 
-  test('未读徽章与「未读」标签页筛选', async () => {
+  test('未读徽章与底部导航未读角标', async () => {
     const app = await loginIfNeeded();
     const w = app.win;
     clickAction('back-to-chats');
@@ -666,23 +666,44 @@ export function registerIntegrationTests() {
     w.App.refreshChatList();
     await waitFor(() => $$('#chats-list .unread-badge').length >= 1, { timeout: 3000, label: '未读徽章出现' });
     equal($$('#chats-list .unread-badge')[0].textContent, '2', '未读徽章数量应为 2');
-    // 切到「未读」标签，只剩有未读的会话
-    click(w, w.document.querySelector('#chat-tabs [data-tab="unread"]'));
-    await waitFor(() => {
-      const tabs = w.document.querySelector('#chat-tabs [data-tab="unread"]');
-      return tabs && tabs.classList.contains('is-active');
-    }, { timeout: 3000, label: '未读标签激活' });
-    const unreadItems = $$('#chats-list .chat-item[data-id]');
-    equal(unreadItems.length, 1, '未读标签下应只显示有未读的会话');
-    // 回到全部
-    click(w, w.document.querySelector('#chat-tabs [data-tab="all"]'));
-    await waitFor(() => $$('#chats-list .chat-item[data-id]').length >= 2, { timeout: 3000, label: '全部标签恢复列表' });
+    const navBadge = $id('nav-badge');
+    ok(navBadge, '缺少底部导航未读角标');
+    ok(!navBadge.hidden, '底部导航未读角标未显示');
+    equal(navBadge.textContent, '2', '底部导航未读角标应为 2');
   });
 
-  /* ---------------------------------------------------------------- *
-   * SPEC v1.1 B3：深色锁定 + 模型选择器
-   * ---------------------------------------------------------------- */
-  suite('集成冒烟 · 深色与模型选择器（SPEC v1.1）');
+  test('底部导航：聊天 / 联系人 / 个人资料三个标签可切换', async () => {
+    const app = await loginIfNeeded();
+    const w = app.win;
+    clickAction('back-to-chats');
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
+    ok($id('bottom-nav'), '缺少底部导航');
+    clickAction('nav-contacts');
+    await waitFor(() => isScreenActive(w, 'screen-contacts'), { timeout: 3000, label: '联系人页显示' });
+    await waitFor(() => $$('#contacts-list .chat-item--contact').length >= 3, { timeout: 3000, label: '智能体列表渲染' });
+    ok($id('nav-contacts').classList.contains('is-active'), '联系人标签未高亮');
+    const agent = $$('#contacts-list .chat-item--contact')[0];
+    const agentId = agent.getAttribute('data-agent-id');
+    click(w, agent);
+    await waitFor(() => isScreenActive(w, 'screen-chat'), { timeout: 5000, label: '从联系人进入对话' });
+    const chat = w.Store.getActiveChat();
+    equal(chat.model, agentId, '会话模型应为所选智能体');
+    ok(/^DeepSeek/i.test(String(chat.title || '')), '智能体名应以 DeepSeek 开头');
+    await sleep(200);
+    app.native.__emit({ type: 'back' });
+    await waitFor(() => isScreenActive(w, 'screen-contacts'), { timeout: 3000, label: '返回联系人页' });
+    clickAction('nav-profile');
+    await waitFor(() => isScreenActive(w, 'screen-profile'), { timeout: 3000, label: '个人资料页显示' });
+    ok($id('nav-profile').classList.contains('is-active'), '个人资料标签未高亮');
+    ok(($id('profile-status').textContent || '').length > 0, '个人资料页缺少状态文案');
+    clickAction('open-settings');
+    await waitFor(() => isScreenActive(w, 'screen-settings'), { timeout: 3000, label: '设置页显示' });
+    await sleep(200);
+    app.native.__emit({ type: 'back' });
+    await waitFor(() => isScreenActive(w, 'screen-profile'), { timeout: 3000, label: '设置返回个人资料' });
+    clickAction('nav-chats');
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到聊天标签' });
+  });
 
   test('深色主题：body 背景为深色，无白色整屏', async () => {
     const app = await loginIfNeeded();
@@ -818,7 +839,6 @@ export function registerIntegrationTests() {
     const w = app.win;
     clickAction('back-to-chats');
     await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
-    clickAction('toggle-chat-search');
     const input = $id('chat-search-input');
     ok(input, '缺少首页搜索输入框');
     input.value = '会话 B';
@@ -827,8 +847,8 @@ export function registerIntegrationTests() {
       const titles = $$('#chats-list .chat-item-title').map((n) => n.textContent || '');
       return titles.length === 1 && titles[0].indexOf('会话 B') !== -1;
     }, { timeout: 4000, label: '搜索过滤会话列表' });
-    clickAction('close-chat-search');
-    await waitFor(() => $$('#chats-list .chat-item[data-id]').length >= 2, { timeout: 4000, label: '关闭搜索恢复列表' });
+    clickAction('clear-chat-search');
+    await waitFor(() => $$('#chats-list .chat-item[data-id]').length >= 2, { timeout: 4000, label: '清空搜索恢复列表' });
   });
 
   test('表情面板：点开并插入表情到输入框', async () => {

@@ -81,39 +81,35 @@
     <!-- ---------------------------- 会话列表（首屏，Telegram 式） ---------------------------- -->
     <section class="screen screen--chats is-active" id="screen-chats" aria-hidden="false">
       <header class="topbar topbar--chats" id="chats-header">
-        <button class="icon-btn" type="button" data-action="open-drawer" aria-label="打开菜单">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M4 6h16M4 12h16M4 18h16"></path>
-          </svg>
-        </button>
         <div class="topbar-title">
           <div class="title" id="chats-title">聊天</div>
         </div>
-        <button class="icon-btn" type="button" data-action="toggle-chat-search" aria-label="搜索会话">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7"></circle>
-            <path d="m20 20-3.4-3.4"></path>
-          </svg>
-        </button>
         <button class="icon-btn" type="button" data-action="open-drawer" aria-label="更多">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle>
+            <circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle>
           </svg>
         </button>
       </header>
 
-      <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="会话筛选">
-        <button class="chat-tab is-active" type="button" role="tab" data-tab="all" aria-selected="true">全部</button>
-        <button class="chat-tab" type="button" role="tab" data-tab="unread" aria-selected="false">未读</button>
-      </div>
-
-      <div class="chat-search" id="chat-search-wrap" hidden>
+      <div class="chat-search" id="chat-search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7"></circle>
           <path d="m20 20-3.4-3.4"></path>
         </svg>
-        <input id="chat-search-input" class="chat-search-input" type="search" placeholder="搜索会话" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="搜索会话">
-        <button class="icon-btn chat-search-close" type="button" data-action="close-chat-search" aria-label="关闭搜索">
+        <input id="chat-search-input" class="chat-search-input" type="search" placeholder="搜索聊天" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="搜索聊天">
+        <button class="icon-btn chat-search-close" id="chat-search-clear" type="button" data-action="clear-chat-search" aria-label="清除搜索" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="tip-card" id="tip-card">
+        <div class="tip-body">
+          <div class="tip-title">添加常用智能体！ ✨</div>
+          <div class="tip-sub">打开「联系人」，挑选不同模型开始新对话。</div>
+        </div>
+        <button class="tip-close" type="button" data-action="dismiss-tip" aria-label="关闭提示">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18"></path>
           </svg>
@@ -150,6 +146,65 @@
           <path d="M13.5 6.5 17.5 10.5"></path>
         </svg>
       </button>
+    </section>
+
+    <!-- ---------------------------- 联系人（智能体列表） ---------------------------- -->
+    <section class="screen screen--contacts" id="screen-contacts" aria-hidden="true">
+      <header class="topbar topbar--chats" id="contacts-header">
+        <div class="topbar-title">
+          <div class="title">联系人</div>
+        </div>
+        <button class="icon-btn" type="button" data-action="open-drawer" aria-label="更多">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle>
+          </svg>
+        </button>
+      </header>
+      <div class="section-label section-label--contacts">DeepSeek 智能体</div>
+      <div class="chatlist" id="contacts-list" role="list"></div>
+    </section>
+
+    <!-- ---------------------------- 个人资料 ---------------------------- -->
+    <section class="screen screen--profile" id="screen-profile" aria-hidden="true">
+      <header class="topbar topbar--chats" id="profile-header">
+        <div class="topbar-title">
+          <div class="title">个人资料</div>
+        </div>
+        <button class="icon-btn" type="button" data-action="open-drawer" aria-label="更多">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle>
+          </svg>
+        </button>
+      </header>
+      <div class="page-scroll profile-scroll">
+        <div class="profile-card">
+          <img class="profile-avatar" src="img/agent-avatar.jpg" alt="">
+          <div class="profile-name">DeepSeek House</div>
+          <div class="profile-status" id="profile-status">API Key 已配置</div>
+        </div>
+        <div class="section menu-list">
+          <button class="menu-item" type="button" data-action="open-settings">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M20 7h-9M14 17H5"/></svg></span>
+            <span class="menu-text">设置</span>
+            <span class="menu-arrow">›</span>
+          </button>
+          <button class="menu-item" type="button" data-action="open-plugins">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"/></svg></span>
+            <span class="menu-text">插件</span>
+            <span class="menu-arrow">›</span>
+          </button>
+          <button class="menu-item" type="button" data-action="nav-chats">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.9A8 8 0 1 1 21 12Z"/></svg></span>
+            <span class="menu-text">会话</span>
+            <span class="menu-arrow">›</span>
+          </button>
+          <button class="menu-item menu-item--danger" type="button" data-action="logout">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></span>
+            <span class="menu-text">退出登录</span>
+          </button>
+        </div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.0.5</div>
+      </div>
     </section>
 
     <!-- ---------------------------- 主聊天界面 ---------------------------- -->
@@ -351,7 +406,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.0.4</span></div>
+          <div class="about-row"><span>版本</span><span>1.0.5</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -423,6 +478,34 @@
     </section>
   </div>
 
+  <!-- ============================ 底部导航（聊天 / 联系人 / 个人资料） ============================ -->
+  <nav class="bottom-nav" id="bottom-nav" aria-label="主导航">
+    <button class="nav-item is-active" type="button" data-action="nav-chats" id="nav-chats">
+      <span class="nav-icon-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 20.5l1.4-5.4A8.5 8.5 0 1 1 21 11.5Z"></path>
+        </svg>
+        <span class="nav-badge" id="nav-badge" hidden>0</span>
+      </span>
+      <span class="nav-label">聊天</span>
+    </button>
+    <button class="nav-item" type="button" data-action="nav-contacts" id="nav-contacts">
+      <span class="nav-icon-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="8" r="4"></circle>
+          <path d="M4 21c0-4 3.6-6.5 8-6.5S20 17 20 21"></path>
+        </svg>
+      </span>
+      <span class="nav-label">联系人</span>
+    </button>
+    <button class="nav-item" type="button" data-action="nav-profile" id="nav-profile">
+      <span class="nav-icon-wrap">
+        <img class="nav-avatar" src="img/agent-avatar.jpg" alt="" aria-hidden="true">
+      </span>
+      <span class="nav-label">个人资料</span>
+    </button>
+  </nav>
+
   <!-- ============================ 抽屉 + 遮罩 ============================ -->
   <div class="overlay" id="overlay" data-action="close-drawer" aria-hidden="true"></div>
 
@@ -484,7 +567,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v1.0.4</span>
+      <span class="drawer-version">v1.0.5</span>
     </div>
   </aside>
 

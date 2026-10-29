@@ -304,6 +304,62 @@
     return App;
   }
 
+  /* ---------------- 底部三标签：聊天 / 联系人 / 个人资料 ---------------- */
+
+  var TIP_KEY = 'dsh.tipDismissed';
+
+  function isTipDismissed() {
+    try { return global.localStorage.getItem(TIP_KEY) === '1'; } catch (e) { return false; }
+  }
+
+  function dismissTip() {
+    try { global.localStorage.setItem(TIP_KEY, '1'); } catch (e) { /* ignore */ }
+    var U = getUI();
+    if (U && typeof U.setTipVisible === 'function') U.setTipVisible(false);
+  }
+
+  function applyTipVisibility() {
+    var U = getUI();
+    if (U && typeof U.setTipVisible === 'function') U.setTipVisible(!isTipDismissed());
+  }
+
+  function showChatsScreen() {
+    state.nav = { screen: 'chats', drawerOpen: false };
+    ui('showScreen', 'chats');
+    refreshChatList();
+    applyTipVisibility();
+    setBackDepth(0);
+  }
+
+  function showContacts() {
+    state.nav = { screen: 'contacts', drawerOpen: false };
+    state.modelCatalog = currentModelCatalog();
+    ui('renderContacts', state.modelCatalog);
+    ui('showScreen', 'contacts');
+    setBackDepth(0);
+  }
+
+  function showProfile() {
+    state.nav = { screen: 'profile', drawerOpen: false };
+    var status = state.apiKey
+      ? 'API Key 已配置 · ' + labelForModelId(state.prefs.model)
+      : '未配置 API Key';
+    ui('renderProfile', { status: status });
+    ui('showScreen', 'profile');
+    setBackDepth(0);
+  }
+
+  /** 从联系人选一个智能体：切模型 + 新建会话 */
+  function selectAgent(modelId) {
+    if (!modelId) return;
+    selectModel(modelId, { silent: true });
+    var chat = Store.createChat({ model: modelId, title: defaultAgentTitle(modelId) });
+    Store.setActiveChat(chat.id);
+    state.nav = { screen: 'chat', drawerOpen: false, from: 'contacts' };
+    navTo('chat');
+    enterChat(chat);
+  }
+
   /* Telegram 式首屏：会话列表（Home） */
   function enterChats() {
     state.nav = { screen: 'chats', drawerOpen: false };
@@ -314,13 +370,15 @@
     // B1：启动/登录成功后静默拉取 GET /models，失败则保留内置回退目录
     refreshModelsFromApi({});
     refreshChatList();
+    applyTipVisibility();
     setBackDepth(0);
   }
 
   /* 进入某个会话（对话页从右侧推入） */
   function enterChat(chat) {
     chat = chat || ensureActiveChat();
-    state.nav = { screen: 'chat', drawerOpen: false };
+    var cameFrom = state.nav && state.nav.from ? state.nav.from : 'chats';
+    state.nav = { screen: 'chat', drawerOpen: false, from: cameFrom };
     ui('showScreen', 'chat');
     ui('setUser', { name: 'DeepSeek 用户' });
     ui('setModel', state.prefs.model);
@@ -378,7 +436,7 @@
   function navTo(screen) {
     state.nav.screen = screen;
     state.nav.drawerOpen = false;
-    if (screen === 'settings' || screen === 'plugins') setBackDepth(2);
+    if (screen === 'settings' || screen === 'plugins') setBackDepth(state.nav.from === 'chat' ? 2 : 1);
     else if (screen === 'chat') setBackDepth(1);
     else setBackDepth(0);
   }
@@ -399,16 +457,23 @@
       try { if (global.Bridge && global.Bridge.finishApp) global.Bridge.finishApp(); } catch (e) { /* ignore */ }
       return;
     }
-    if (screen === 'chat') {
+    if (screen === 'contacts' || screen === 'profile') {
       closeDrawer();
-      state.nav.screen = 'chats';
-      ui('showScreen', 'chats');
-      setBackDepth(0);
-      refreshChatList();
+      showChatsScreen();
       return;
     }
-    /* 设置 / 插件页 → 回到对话页 */
+    if (screen === 'chat') {
+      closeDrawer();
+      var from = state.nav.from === 'contacts' ? 'contacts' : 'chats';
+      if (from === 'contacts') showContacts(); else showChatsScreen();
+      return;
+    }
+    /* 设置 / 插件页 → 回到来源页（对话页或某个标签页） */
     closeDrawer();
+    var back = state.nav.from || 'chats';
+    if (back === 'contacts') { showContacts(); return; }
+    if (back === 'profile') { showProfile(); return; }
+    if (back !== 'chat') { showChatsScreen(); return; }
     var chat = Store.getActiveChat();
     ui('showScreen', 'chat');
     state.nav.screen = 'chat';
@@ -460,6 +525,11 @@
       onRenameChat: safe(function (id, title) { renameChat(id, title); }, 'onRenameChat'),
       onRetry: safe(function (msgId) { retryMessage(msgId); return true; }, 'onRetry'),
       onRegenerate: safe(function (msgId) { retryMessage(msgId); return true; }, 'onRegenerate'),
+      onNavChats: safe(function () { showChatsScreen(); return true; }, 'onNavChats'),
+      onNavContacts: safe(function () { showContacts(); return true; }, 'onNavContacts'),
+      onNavProfile: safe(function () { showProfile(); return true; }, 'onNavProfile'),
+      onSelectAgent: safe(function (id) { selectAgent(id); return true; }, 'onSelectAgent'),
+      onDismissTip: safe(function () { dismissTip(); return true; }, 'onDismissTip'),
       onOpenSettings: safe(function () { openSettings(); }, 'onOpenSettings'),
       onOpenPlugins: safe(function () { openPlugins(); }, 'onOpenPlugins'),
       onOpenModelPicker: safe(function () { openModelPicker(); return true; }, 'onOpenModelPicker'),
@@ -1058,6 +1128,7 @@
 
   function newChat() {
     if (state.busy) stopGeneration();
+    state.nav.from = 'chats';
     var active = Store.getActiveChat();
     if (active && active.messages.length === 0 && (!active.title || active.title === '新的对话')) {
       closeDrawer();
@@ -1075,6 +1146,7 @@
 
   function selectChat(id) {
     if (state.busy) stopGeneration();
+    state.nav.from = state.nav.screen === 'contacts' ? 'contacts' : 'chats';
     var chat = Store.getChat(id);
     if (!chat) return;
     Store.setActiveChat(chat.id);
@@ -1535,6 +1607,7 @@
 
   function openSettings() {
     closeDrawer();
+    state.nav.from = state.nav.screen;
     state.modelCatalog = currentModelCatalog();
     ui('renderSettings', state.prefs, state.modelCatalog);
     ui('showScreen', 'settings');
@@ -1662,6 +1735,7 @@
 
   function openPlugins() {
     closeDrawer();
+    state.nav.from = state.nav.screen;
     bindPluginsChange();
     refreshPlugins();
     ui('showScreen', 'plugins');

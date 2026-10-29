@@ -396,7 +396,10 @@ export function registerStaticTests() {
     const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';
     const uiJs = readOrNull(path.join(WEB_DIR, 'js', 'ui.js')) || '';
     const appJs = readOrNull(path.join(WEB_DIR, 'js', 'app.js')) || '';
-    ok(html.indexOf('id="chat-tabs"') !== -1, '缺少「全部/未读」文件夹标签');
+    ok(html.indexOf('id="bottom-nav"') !== -1, '缺少底部三标签导航（聊天/联系人/个人资料）');
+    ok(html.indexOf('id="screen-contacts"') !== -1, '缺少联系人页');
+    ok(html.indexOf('id="screen-profile"') !== -1, '缺少个人资料页');
+    ok(html.indexOf('id="nav-badge"') !== -1, '缺少底部导航未读徽章');
     ok(html.indexOf('img/agent-avatar.jpg') !== -1, '对话页头像未使用 App 图标');
     ok(css.indexOf('.unread-badge') !== -1, '缺少未读徽章样式');
     ok(uiJs.indexOf('unread-badge') !== -1, '会话项未渲染未读徽章');

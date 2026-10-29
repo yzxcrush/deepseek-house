@@ -21,7 +21,7 @@ SRC = sys.argv[1] if len(sys.argv) > 1 else "/data/data/com.termux/files/home/1/
 OUT_DIR = os.path.join(ROOT, "app", "assets", "web", "img")
 W, H = 1080, 1920
 TILE = 420
-BASE = (23, 33, 43)
+BASE = (24, 24, 24)
 
 
 def stroke(draw, pts, width, color):
@@ -118,10 +118,10 @@ def build_tile(seed=7):
             kind = kinds[(row * cells + col) % len(kinds)]
             size = int(step * rnd.uniform(0.42, 0.62))
             icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            alpha = rnd.randint(14, 24)
+            alpha = rnd.randint(12, 20)
             color = (255, 255, 255, alpha)
             if kind in ("bolt", "plane", "star") and rnd.random() < 0.35:
-                color = (120, 170, 235, alpha + 4)
+                color = (110, 145, 235, alpha + 2)
             doodle(kind, size, ImageDraw.Draw(icon), color, 2)
             icon = icon.rotate(rnd.uniform(-28, 28), resample=Image.BICUBIC, expand=True)
             x = int(col * step + step / 2 - icon.width / 2 + rnd.uniform(-6, 6))
@@ -150,13 +150,13 @@ def main():
     print("sampled base:", base)
 
     canvas = Image.new("RGB", (W, H), BASE)
-    top, bottom = (25, 36, 48), (15, 22, 32)
+    top, bottom = (29, 29, 30), (17, 17, 18)
     for y in range(H):
         t = y / (H - 1)
         shade = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
         ImageDraw.Draw(canvas).line([(0, y), (W, y)], fill=shade)
     blue = Image.new("RGB", (W, H), base)
-    canvas = Image.blend(canvas, blue, 0.30)
+    canvas = Image.blend(canvas, blue, 0.10)
 
     tile = build_tile()
     pattern = Image.new("RGBA", (W, H), (0, 0, 0, 0))

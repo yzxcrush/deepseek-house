@@ -829,10 +829,29 @@
   var SCREEN_IDS = {
     login: 'screen-login',
     chats: 'screen-chats',
+    contacts: 'screen-contacts',
+    profile: 'screen-profile',
     chat: 'screen-chat',
     settings: 'screen-settings',
     plugins: 'screen-plugins'
   };
+
+  function syncBottomNav(name) {
+    var map = { chats: 'nav-chats', contacts: 'nav-contacts', profile: 'nav-profile' };
+    ['nav-chats', 'nav-contacts', 'nav-profile'].forEach(function (id) {
+      var node = r(id);
+      if (!node) return;
+      node.classList.toggle('is-active', map[name] === id);
+    });
+  }
+
+  function setNavBadge(count) {
+    var badge = r('nav-badge');
+    if (!badge) return;
+    var n = Math.max(0, parseInt(count, 10) || 0);
+    badge.hidden = n <= 0;
+    badge.textContent = n > 99 ? '99+' : String(n);
+  }
 
   function showScreenImpl(name) {
     if (!SCREEN_IDS[name]) return;
@@ -846,6 +865,7 @@
     });
     var app = r('app');
     if (app) app.setAttribute('data-screen', name);
+    syncBottomNav(name);
     closeMenu();
     if (name !== 'chat') closeDrawer();
     closeAllModals();
@@ -951,6 +971,8 @@
   function onChatSearchInput() {
     var input = r('chat-search-input');
     state.searchQuery = input ? String(input.value || '') : '';
+    var clearBtn = r('chat-search-clear');
+    if (clearBtn) clearBtn.hidden = !state.searchQuery;
     clearTimeout(state.searchTimer);
     state.searchTimer = setTimeout(function () {
       if (typeof state.cb.onSearch === 'function') invoke('onSearch', state.searchQuery);
@@ -1183,6 +1205,7 @@
 
     var unreadTotal = 0;
     items.forEach(function (chat) { unreadTotal += Math.max(0, parseInt(chat.unread, 10) || 0); });
+    setNavBadge(unreadTotal);
     var visible = state.chatTab === 'unread'
       ? items.filter(function (chat) { return (parseInt(chat.unread, 10) || 0) > 0; })
       : items;
@@ -2268,6 +2291,33 @@
       case 'back':
         handleHeaderBack();
         break;
+      case 'nav-chats':
+        closeDrawer();
+        invoke('onNavChats');
+        break;
+      case 'nav-contacts':
+        closeDrawer();
+        invoke('onNavContacts');
+        break;
+      case 'nav-profile':
+        closeDrawer();
+        invoke('onNavProfile');
+        break;
+      case 'clear-chat-search': {
+        var searchInput = r('chat-search-input');
+        if (searchInput) searchInput.value = '';
+        state.searchQuery = '';
+        var clearBtn2 = r('chat-search-clear');
+        if (clearBtn2) clearBtn2.hidden = true;
+        clearTimeout(state.searchTimer);
+        if (typeof state.cb.onSearch === 'function') invoke('onSearch', '');
+        else renderChatListImpl(state.chats, state.activeChatId);
+        break;
+      }
+      case 'dismiss-tip':
+        setTipVisible(false);
+        if (typeof state.cb.onDismissTip === 'function') invoke('onDismissTip');
+        break;
       case 'back-to-chats':
         closeEmojiPanel();
         showScreenImpl('chats');
@@ -2411,6 +2461,11 @@
 
     if (state.menuOpen && !target.closest('#longpress')) closeMenu();
 
+    var agentNode = target.closest('[data-agent-id]');
+    if (agentNode) {
+      invoke('onSelectAgent', agentNode.getAttribute('data-agent-id'));
+      return;
+    }
     var tabNode = target.closest('#chat-tabs [data-tab]');
     if (tabNode) {
       switchChatTab(tabNode.getAttribute('data-tab'));
@@ -2576,7 +2631,8 @@
     var ids = [
       'app', 'screens',
       'screen-login', 'screen-chats', 'screen-chat', 'screen-settings', 'screen-plugins',
-      'chats-list', 'chats-empty', 'chats-title', 'chat-tabs', 'chat-search-wrap', 'chat-search-input',
+      'chats-list', 'chats-empty', 'chats-title', 'chat-search-wrap', 'chat-search-input', 'chat-search-clear',
+      'contacts-list', 'profile-status', 'nav-badge', 'nav-chats', 'nav-contacts', 'nav-profile', 'tip-card',
       'chat-header', 'chat-head-avatar', 'emoji-panel', 'emoji-grid',
       'login-form', 'login-key', 'login-baseurl', 'login-error', 'login-submit', 'login-advanced',
       'header-title', 'header-subtitle',
@@ -2596,6 +2652,63 @@
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
     });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 联系人（智能体列表）/ 个人资料 / 提示卡
+   * ------------------------------------------------------------------ */
+  function contactInitial(model) {
+    var label = String((model && (model.label || model.id)) || 'D').trim();
+    var chars = Array.from(label);
+    return chars.length ? (/[a-z]/i.test(chars[0]) ? chars[0].toUpperCase() : chars[0]) : 'D';
+  }
+
+  function renderContacts(models) {
+    var list = r('contacts-list');
+    if (!list) return;
+    list.textContent = '';
+    var items = Array.isArray(models) ? models : [];
+    items.forEach(function (model) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'chat-item chat-item--contact';
+      item.setAttribute('data-agent-id', String(model.id));
+
+      var avatar = document.createElement('img');
+      avatar.className = 'chat-avatar';
+      avatar.src = 'img/agent-avatar.jpg';
+      avatar.alt = '';
+      avatar.setAttribute('aria-hidden', 'true');
+
+      var body = el('div', 'chat-item-body');
+      var top = el('div', 'chat-item-top');
+      top.appendChild(makeText('span', 'chat-item-title', model.label || model.id));
+      body.appendChild(top);
+      body.appendChild(makeText('span', 'chat-item-preview', 'DeepSeek 模型 · ' + String(model.id)));
+
+      var meta = el('div', 'chat-item-meta');
+      var tag = model.tag || (model.custom ? 'custom' : '');
+      if (tag) meta.appendChild(makeText('span', 'contact-tag', String(tag).toUpperCase()));
+
+      item.appendChild(avatar);
+      item.appendChild(body);
+      item.appendChild(meta);
+      list.appendChild(item);
+    });
+    if (!items.length) {
+      list.appendChild(makeText('div', 'contacts-empty', '暂无可用模型'));
+    }
+  }
+
+  function renderProfile(info) {
+    info = info || {};
+    var status = r('profile-status');
+    if (status) status.textContent = info.status == null ? '' : String(info.status);
+  }
+
+  function setTipVisible(visible) {
+    var tip = r('tip-card');
+    if (tip) tip.hidden = !visible;
   }
 
   /* ------------------------------------------------------------------ *
@@ -2904,6 +3017,11 @@
 
   /* 扩展辅助 API（非 SPEC 必需，提供给 app.js 做返回键/层级协作） */
   UI.getScreen = function () { return state.screen; };
+  UI.renderContacts = renderContacts;
+  UI.renderProfile = renderProfile;
+  UI.setNavBadge = setNavBadge;
+  UI.setTipVisible = setTipVisible;
+  UI.syncBottomNav = syncBottomNav;
   UI.setChatAvatar = function (chat) { applyChatHeadAvatar(chat); };
   UI.toggleEmoji = toggleEmojiPanel;
   UI.closeEmoji = closeEmojiPanel;
@@ -2927,5 +3045,5 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.0.4';
+  UI.version = '1.0.5';
 })();
