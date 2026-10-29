@@ -74,6 +74,7 @@
         </form>
 
         <p class="login-note">Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。</p>
+        <p class="login-mark" aria-hidden="true">@惜白.</p>
       </div>
     </section>
 
@@ -156,6 +157,7 @@
             <path d="M6 9l6 6 6-6"></path>
           </svg>
         </button>
+        <div class="chat-watermark" aria-hidden="true">@惜白.</div>
       </div>
 
       <footer class="composer" id="composer">
@@ -263,9 +265,10 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.0.0</span></div>
+          <div class="about-row"><span>版本</span><span>1.0.2</span></div>
+          <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
-          <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。</p>
+          <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
         </div>
 
         <div class="page-actions">
@@ -394,8 +397,8 @@
     <div class="drawer-list" id="chat-list"></div>
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
-      <span class="drawer-brand">DeepSeek House</span>
-      <span class="drawer-version">v1.0.0</span>
+      <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
+      <span class="drawer-version">v1.0.2</span>
     </div>
   </aside>
 

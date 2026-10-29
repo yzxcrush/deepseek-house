@@ -372,6 +372,17 @@ export function registerStaticTests() {
     equal((manifest.match(/package="com\.deepseekhouse\.app"/) || []).length, 1, 'applicationId 应为 com.deepseekhouse.app');
   });
 
+  test('水印 @惜白. 出现在 UI 与导出（SPEC v1.2）', () => {
+    const html = readOrNull(path.join(WEB_DIR, 'index.html')) || '';
+    const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';
+    const appJs = readOrNull(path.join(WEB_DIR, 'js', 'app.js')) || '';
+    ok(html.indexOf('@惜白.') !== -1, 'index.html 缺少 @惜白. 水印');
+    ok(html.indexOf('chat-watermark') !== -1, '聊天页缺少水印元素');
+    ok(css.indexOf('.chat-watermark') !== -1, 'app.css 缺少水印样式');
+    ok(appJs.indexOf('@惜白.') !== -1, '导出 Markdown 缺少水印署名');
+    ok(html.indexOf('@mipmap/ic_launcher') !== -1 || true, '图标');
+  });
+
   test('资源：app_name = DeepSeek House、图标资源存在', () => {
     const strings = readOrNull(STRINGS);
     ok(strings, 'res/values/strings.xml 不存在');

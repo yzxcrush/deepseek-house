@@ -1734,6 +1734,9 @@
     if (!chat) { toast('没有可导出的会话'); return; }
     var markdown = Store.exportChatMarkdown(chat.id);
     if (!markdown) { toast('导出失败：会话为空'); return; }
+    if (markdown.indexOf('@惜白.') === -1) {
+      markdown += '\n\n---\n\n*DeepSeek House · @惜白.*\n';
+    }
     var fileName = safeFileName(chat.title) + '-' + dateStamp() + '.md';
     var ok = false;
     try {

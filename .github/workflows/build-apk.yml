@@ -68,25 +68,25 @@ jobs:
       - name: Verify APK
         run: |
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
-          APK="dist/DeepSeekHouse-1.0.1.apk"
+          APK="dist/DeepSeekHouse-1.0.2.apk"
           "$BT/apksigner" verify --verbose "$APK"
           "$BT/aapt" dump badging "$APK" | head -12
-          sha256sum "$APK" | tee dist/DeepSeekHouse-1.0.1.apk.sha256
+          sha256sum "$APK" | tee dist/DeepSeekHouse-1.0.2.apk.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: DeepSeekHouse-apk
           path: |
-            dist/DeepSeekHouse-1.0.1.apk
-            dist/DeepSeekHouse-1.0.1.apk.sha256
+            dist/DeepSeekHouse-1.0.2.apk
+            dist/DeepSeekHouse-1.0.2.apk.sha256
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.1
-          name: DeepSeek House v1.0.1
+          tag_name: v1.0.2
+          name: DeepSeek House v1.0.2
           draft: false
           files: |
-            dist/DeepSeekHouse-1.0.1.apk
-            dist/DeepSeekHouse-1.0.1.apk.sha256
+            dist/DeepSeekHouse-1.0.2.apk
+            dist/DeepSeekHouse-1.0.2.apk.sha256

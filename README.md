@@ -22,7 +22,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-1.0.1.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-1.0.2.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -42,14 +42,14 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-1.0.1.apk`
+产物：`dist/DeepSeekHouse-1.0.2.apk`
 
 ### 云端构建（GitHub Actions）
 
 推 tag 或手动触发 `Build & Release APK` workflow 即可：
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v1.0.2 && git push origin v1.0.2
 ```
 
 CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → `apksigner verify` → 上传 artifact →
@@ -91,13 +91,21 @@ scripts/
 docs/               # 插件文档、QA 文档
 ```
 
+## 💧 水印 / 署名
+
+应用内多处以 **@惜白.** 作为水印署名：聊天界面右下角、登录页、侧边栏底部、设置「关于」、导出的 Markdown 结尾。
+本项目由 **@惜白.**（GitHub: [yzxcrush](https://github.com/yzxcrush)）定制并完全开源。
+
 ## 🔒 隐私与安全
 
 - API Key 仅存储在本机 `SharedPreferences`，仅用于请求 `Authorization: Bearer` 头，不写日志、不上传
 - 会话数据保存在应用私有目录（localStorage），不离开设备
 - 插件为用户主动安装的本地 JS，**只安装可信来源的插件**；插件网络请求默认仅允许 `https`
-- 仓库内的签名密钥仅用于本应用的个人构建，请勿复用
+- 仓库内的签名密钥仅用于本应用的个人构建（公开仓库中一并开源，便于任何人复现同签名构建）；
+  它**不是秘密**，只用于保证本项目的版本可覆盖升级，请勿复用到其它应用
+- 若你自行 fork 并发布，请务必重新生成自己的签名密钥（见 `scripts/build.sh`）
 
 ## 📄 License
 
-MIT（图标素材来自用户提供的照片，仅用于个人应用图标）
+MIT — 见 [LICENSE](LICENSE)。由 **@惜白.** 定制。
+图标素材来自作者本人提供的照片，仅用于本应用图标。
