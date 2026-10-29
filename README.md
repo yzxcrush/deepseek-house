@@ -25,7 +25,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-1.2.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.0.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -45,18 +45,30 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-1.2.0.apk`
+产物：`dist/DeepSeekHouse-2.0.0.apk`
 
 ### 云端构建（GitHub Actions）
 
 推 tag 或手动触发 `Build & Release APK` workflow 即可：
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+git tag v2.0.0 && git push origin v2.0.0
 ```
 
 CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → `apksigner verify` → 上传 artifact →
 创建 Release 并附上 APK 与 SHA256。手机上直接从 Release 下载安装即可。
+
+## 🤖 Agent 工作站（P1，v2.0.0）
+
+从「聊天客户端」升级为手机端本地 Agent 工作站的第一阶段，**纯 Java + 现有手工构建链，无 Gradle/AndroidX**：
+
+- **函数调用框架**：`ToolRegistry` 注册/注销工具，自动注入 `tools` 请求；5 个内置工具（`read_file` / `list_dir` / `write_file` / `run_shell` / `http_get`），风险分级 `low/mid/high`：low 直接执行、mid 会话内首次确认、high 每次确认（风险弹窗），拒绝也写审计
+- **安全与审计**：所有工具调用写入 SQLite 审计库（时间/工具/参数/结果/是否确认）；`PathPolicy` 路径白名单（工作区 canonical 前缀、拒绝 `..` 与 symlink 越界）；可选的 All-Files-Access 授权
+- **工作区**：默认 `Android/data/com.deepseekhouse.app/files/workspace`，可切换到 `/sdcard/house-workspace`；聊天页「文件」抽屉 = 目录树 + 文件预览；底部「终端」面板 = 输入命令 → `/system/bin/sh` 执行 → 实时输出
+- **工具调用可视化**：消息流里显示工具卡片（工具名/参数摘要/状态：等待确认/成功/失败/已拒绝/结果折叠）
+- **手机号登录（本地 OTP MVP）**：登录页「API Key / 手机号」双标签；验证码通过通知渠道展示（仅本机演示，5 分钟有效、60s 限频、错 3 次锁 5 分钟），token 本地保存可退出；预留 `SmsProvider` 接口，可切换为自建后端 + 阿里云/腾讯云短信
+
+路线图：P2 = MCP Client（JSON-RPC 2.0 / streamable-http）+ Termux 构建服务（pack_apk 等）；P3 = 插件系统（HousePlugin / 市场 / HMAC）+ 记忆与上下文压缩；P4 = 三栏 UI 与构建进度。
 
 ## 🧩 插件
 

@@ -40,6 +40,12 @@
         <h1 class="login-title">DeepSeek House</h1>
         <p class="login-sub">在手机上，与 DeepSeek 对话</p>
 
+        <!-- ARCH v2 P1：登录方式切换（API Key / 手机号登录） -->
+        <div class="login-tabs" id="login-tabs" role="tablist" aria-label="登录方式">
+          <button class="login-tab is-active" type="button" role="tab" aria-selected="true" data-login-tab="apikey">API Key</button>
+          <button class="login-tab" type="button" role="tab" aria-selected="false" data-login-tab="phone">手机号登录</button>
+        </div>
+
         <form class="login-form" id="login-form" novalidate>
           <label class="field" for="login-key">
             <span class="field-label">API Key</span>
@@ -70,6 +76,33 @@
             <button class="link" type="button" data-action="paste-key">从剪贴板粘贴</button>
             <span class="link-dot" aria-hidden="true">·</span>
             <button class="link" type="button" data-action="open-signup">获取 API Key</button>
+          </div>
+        </form>
+
+        <!-- ARCH v2 P1：手机号登录（本地 OTP MVP） -->
+        <form class="login-form login-phone-form" id="login-phone-form" novalidate hidden>
+          <label class="field" for="login-phone">
+            <span class="field-label">手机号</span>
+            <span class="field-input">
+              <input id="login-phone" type="tel" inputmode="tel" placeholder="+86 138 0000 0000" autocomplete="tel" autocapitalize="off" autocorrect="off" spellcheck="false">
+            </span>
+          </label>
+
+          <label class="field" for="login-otp">
+            <span class="field-label">验证码</span>
+            <span class="field-input">
+              <input id="login-otp" type="text" inputmode="numeric" maxlength="6" placeholder="6 位验证码" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false">
+              <button class="field-suffix login-otp-send" id="login-send-otp" type="button" data-action="send-otp">发送验证码</button>
+            </span>
+          </label>
+
+          <div class="login-otp-hint" id="login-otp-hint" hidden></div>
+          <div class="login-error" id="login-phone-error" role="alert" hidden></div>
+
+          <button class="login-submit" id="login-phone-submit" type="submit">登录</button>
+
+          <div class="login-links">
+            <button class="link" type="button" data-action="login-tab-apikey">使用 API Key 登录</button>
           </div>
         </form>
 
@@ -278,6 +311,16 @@
             <span class="menu-text">分享聊天记录</span>
             <span class="menu-arrow">›</span>
           </button>
+          <button class="menu-item" type="button" data-action="open-audit">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M9 4v4h6"/><path d="M8.5 12.5h7M8.5 16h7"/></svg></span>
+            <span class="menu-text">审计日志</span>
+            <span class="menu-arrow">›</span>
+          </button>
+          <button class="menu-item" type="button" data-action="open-backup">
+            <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg></span>
+            <span class="menu-text">备份与恢复</span>
+            <span class="menu-arrow">›</span>
+          </button>
           <button class="menu-item" type="button" data-action="clear-all">
             <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></span>
             <span class="menu-text">清空所有会话</span>
@@ -294,7 +337,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.2.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.0.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -311,6 +354,19 @@
           <div class="title" id="header-title">DeepSeek House</div>
           <button class="subtitle subtitle--action" id="header-subtitle" type="button" data-action="open-model-picker" aria-label="选择模型"></button>
         </div>
+        <button class="icon-btn icon-btn--compact" type="button" data-action="open-files" aria-label="工作区文件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h3.2l1.8 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-9Z"></path>
+            <path d="M3.5 10h17"></path>
+          </svg>
+        </button>
+        <button class="icon-btn icon-btn--compact" type="button" data-action="toggle-terminal" aria-label="终端">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
+            <path d="m7 9.5 3 2.5-3 2.5"></path>
+            <path d="M13 15h4"></path>
+          </svg>
+        </button>
         <button class="icon-btn" type="button" data-action="open-search" aria-label="搜索会话">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <circle cx="11" cy="11" r="7"></circle>
@@ -380,6 +436,31 @@
         </button>
         <div class="chat-watermark" aria-hidden="true">@惜白.</div>
       </div>
+
+      <!-- ARCH v2 P1：底部可折叠终端面板（等宽输出 + 命令输入） -->
+      <section class="terminal-panel" id="terminal-panel" aria-hidden="true" aria-label="终端">
+        <div class="terminal-head">
+          <span class="terminal-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
+              <path d="m7 9.5 3 2.5-3 2.5"></path>
+              <path d="M13 15h4"></path>
+            </svg>
+            终端
+          </span>
+          <span class="terminal-tools">
+            <button class="terminal-tool" type="button" data-action="terminal-clear">清空</button>
+            <button class="terminal-tool" type="button" data-action="terminal-copy">复制</button>
+            <button class="terminal-tool terminal-tool--close" type="button" data-action="terminal-close" aria-label="关闭终端">关闭</button>
+          </span>
+        </div>
+        <pre class="terminal-output" id="terminal-output" aria-live="polite"></pre>
+        <div class="terminal-input-row">
+          <span class="terminal-prompt" aria-hidden="true">$</span>
+          <input id="terminal-input" class="terminal-input" type="text" placeholder="输入命令并执行" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" aria-label="终端命令">
+          <button class="terminal-run" id="terminal-run" type="button" data-action="terminal-run">执行</button>
+        </div>
+      </section>
 
       <footer class="composer" id="composer">
         <button class="round-btn round-btn--attach" type="button" data-action="composer-plugins" aria-label="插件与附件">
@@ -474,6 +555,40 @@
           </div>
         </div>
 
+        <!-- ARCH v2 P1：工作区（文件树根目录 / 读写权限） -->
+        <div class="section-label">工作区</div>
+        <div class="section">
+          <button class="form-row form-row--button" id="set-workspace-row" type="button" data-action="set-workspace" aria-label="更改工作区目录">
+            <span class="form-label">工作区目录</span>
+            <span class="form-control form-control--value">
+              <span class="form-value form-value--path" id="set-workspace-value">未设置</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+          <div class="form-row">
+            <span class="form-label">读写权限</span>
+            <span class="form-control form-control--hint" id="set-workspace-writable">未知</span>
+          </div>
+          <div class="form-row">
+            <span class="form-label">存储权限</span>
+            <span class="form-control form-control--hint" id="set-workspace-access">未知</span>
+          </div>
+          <button class="form-row form-row--button" id="set-workspace-reset" type="button" data-action="reset-workspace" hidden>
+            <span class="form-label">恢复默认工作区</span>
+            <span class="form-control form-control--value">
+              <span class="form-value" id="set-workspace-reset-hint">受限存储目录</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+          <div class="form-row form-row--col">
+            <span class="form-hint">工具与终端只能访问该目录内的文件；写入前会再次确认。切换到 /sdcard 目录需要授予「所有文件访问权限」。</span>
+          </div>
+        </div>
+
         <div class="section-label">系统提示词</div>
         <div class="section">
           <div class="form-row form-row--col">
@@ -511,7 +626,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.2.0</span></div>
+          <div class="about-row"><span>版本</span><span>2.0.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -624,6 +739,43 @@
         </div>
       </div>
     </section>
+    <!-- ---------------------------- 审计日志（ARCH v2 P1） ---------------------------- -->
+    <section class="screen screen--page screen--audit" id="screen-audit" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title">审计日志</div>
+          <div class="subtitle" id="audit-count">工具调用记录</div>
+        </div>
+        <button class="icon-btn" type="button" data-action="refresh-audit" aria-label="刷新审计日志">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"></path>
+            <path d="M20.5 4v7h-7"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="page-scroll audit-scroll">
+        <div class="audit-list" id="audit-list"></div>
+        <div class="plugins-empty" id="audit-empty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 4h6l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"></path>
+            <path d="M9 4v4h6"></path>
+            <path d="M8.5 12.5h7M8.5 16h7"></path>
+          </svg>
+          <p>还没有工具调用记录</p>
+          <small>原生工具（读文件 / 写文件 / 执行命令等）每次执行都会记录在这里。</small>
+        </div>
+        <div class="plugins-tip">
+          <b>关于审计</b>
+          <p>审计记录保存在本机 SQLite（audit.db），包含时间、工具名、参数、结果与是否经过确认。被拒绝的调用也会记录。</p>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- ============================ 底部导航（聊天 / 联系人 / 个人资料） ============================ -->
@@ -717,8 +869,44 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v1.2.0</span>
+      <span class="drawer-version">v2.0.0</span>
     </div>
+  </aside>
+
+  <!-- ============================ 工作区文件树抽屉（ARCH v2 P1） ============================ -->
+  <div class="overlay file-overlay" id="file-overlay" data-action="close-files" aria-hidden="true"></div>
+
+  <aside class="file-drawer" id="file-drawer" aria-hidden="true" aria-label="工作区文件">
+    <div class="file-drawer-head">
+      <div class="file-head-main">
+        <div class="file-head-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h3.2l1.8 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-9Z"></path>
+            <path d="M3.5 10h17"></path>
+          </svg>
+          <span>工作区文件</span>
+        </div>
+        <div class="file-root" id="file-root">未设置工作区</div>
+      </div>
+      <div class="file-head-actions">
+        <button class="icon-btn file-refresh" id="file-refresh" type="button" data-action="files-refresh" aria-label="刷新文件列表">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"></path>
+            <path d="M20.5 4v7h-7"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" id="file-close" type="button" data-action="close-files" aria-label="关闭文件抽屉">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <nav class="file-crumbs" id="file-crumbs" aria-label="当前路径"></nav>
+    <div class="file-tree" id="file-tree" role="list">
+      <div class="file-empty" id="file-empty">点击刷新加载工作区文件</div>
+    </div>
+    <div class="file-foot" id="file-foot"></div>
   </aside>
 
   <!-- ============================ 安装插件弹窗 ============================ -->
@@ -768,6 +956,63 @@
       <div class="modal-actions">
         <button class="btn btn--ghost" type="button" data-action="rename-cancel">取消</button>
         <button class="btn btn--primary" type="button" data-action="rename-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 高危工具确认弹窗（ARCH v2 P1） ============================ -->
+  <div class="modal modal--center" id="risk-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="risk-title">
+    <div class="modal-panel modal-panel--small risk-panel">
+      <div class="risk-head">
+        <div class="modal-title" id="risk-title">工具调用确认</div>
+        <span class="risk-badge risk-badge--high" id="risk-badge">HIGH</span>
+      </div>
+      <div class="modal-body">
+        <div class="risk-tool" id="risk-tool">tool</div>
+        <p class="modal-hint" id="risk-hint">该工具可能修改或读取本机数据，确认后才执行：</p>
+        <pre class="risk-args" id="risk-args"></pre>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" id="risk-deny" data-action="risk-deny">拒绝</button>
+        <button class="btn btn--danger" type="button" id="risk-accept" data-action="risk-accept">允许执行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 备份与恢复弹窗（ARCH v2 P1） ============================ -->
+  <div class="modal modal--center" id="backup-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="backup-title">
+    <div class="modal-panel modal-panel--small">
+      <div class="modal-title" id="backup-title">备份与恢复</div>
+      <div class="modal-body">
+        <p class="modal-hint">导出会生成包含全部会话与设置的 JSON 文件；导入会整体替换本机数据，请谨慎操作。</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" id="backup-export" data-action="export-backup">导出备份</button>
+        <button class="btn btn--primary" type="button" id="backup-import" data-action="import-backup">导入备份</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 文件预览弹窗（ARCH v2 P1） ============================ -->
+  <div class="modal modal--center" id="file-preview-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="file-preview-name">
+    <div class="modal-panel file-preview-panel">
+      <div class="modal-head">
+        <div class="file-preview-head">
+          <div class="modal-title" id="file-preview-name">文件预览</div>
+          <div class="file-preview-path" id="file-preview-path"></div>
+        </div>
+        <button class="icon-btn" type="button" data-action="close-file-preview" aria-label="关闭文件预览">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body file-preview-body">
+        <pre class="file-preview-content" id="file-preview-content"></pre>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="copy-file-preview">复制内容</button>
+        <button class="btn btn--primary" type="button" data-action="close-file-preview">关闭</button>
       </div>
     </div>
   </div>

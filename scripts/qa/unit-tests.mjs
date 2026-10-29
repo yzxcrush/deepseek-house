@@ -5,7 +5,7 @@
 
 import { JSDOM } from 'jsdom';
 import { suite, test, ok, equal, deepEqual, includes, notIncludes, match, isString, isFunction, isArray, isObject } from './lib/harness.mjs';
-import { createUnitWindow, runWebScripts, sleep, waitFor } from './lib/env.mjs';
+import { createUnitWindow, runWebScripts, sleep, waitFor, createMockNative } from './lib/env.mjs';
 
 /** SPEC §2 顺序的前端逻辑模块（不含 ui/app，两者依赖真实 DOM） */
 const LOGIC_FILES = ['util.js', 'bridge.js', 'store.js', 'markdown.js', 'api.js', 'plugins.js', 'plugins_builtin.js'];
@@ -697,4 +697,112 @@ window.DSPlugins.register({id:'user.temp',name:'临时',version:'1.0.0',builtin:
       isFunction(P[name], `DSPlugins.${name} 缺失`);
     }
   });
+
+  /* ================================================================== *
+   * bridge.js · ARCH v2 P1 原生封装（DSNative 可用分支）
+   * ================================================================== */
+  suite('单元测试 · bridge.js P1 原生封装');
+
+  function p1BridgeWindow() {
+    const ctx = createUnitWindow();
+    const native = createMockNative({
+      p1: {
+        workspace: { root: '/sdcard/house-workspace', writable: true, allFilesAccess: true, defaultRoot: '/data/private/workspace', isDefault: false },
+        auth: { loggedIn: true, phone: '13800000000' },
+        audit: [{ id: 'a1', ts: 1700000000000, tool: 'list_dir', args: '{"path":""}', result: 'README.md', ok: true, confirmed: false }],
+      },
+    });
+    native.__bind(ctx.win);
+    ctx.win.DSNative = native;
+    runWebScripts(ctx, ['util.js', 'bridge.js']);
+    return { ...ctx, native };
+  }
+
+  test('P1 原生返回值归一化：toolSchemas / workspaceInfo / listDir / auditRecent / authState / getLastError', () => {
+    const { win, native } = p1BridgeWindow();
+    const B = win.Bridge;
+    equal(B.__isMock, false, '注入 DSNative 后不应处于 mock 模式');
+
+    const schemas = B.toolSchemas();
+    isArray(schemas, 'toolSchemas() 应返回数组');
+    includes(schemas.map((t) => t.function && t.function.name).join(','), 'read_file', 'toolSchemas 缺少 read_file');
+    includes(schemas.map((t) => t.function && t.function.name).join(','), 'run_shell', 'toolSchemas 缺少 run_shell');
+    ok(native.__calls.some((c) => c.method === 'toolSchemas'), 'Bridge.toolSchemas 未调用原生');
+
+    const ws = B.workspaceInfo();
+    isObject(ws, 'workspaceInfo() 应返回对象');
+    equal(ws.root, '/sdcard/house-workspace', 'workspaceInfo.root 不正确');
+    equal(ws.writable, true, 'workspaceInfo.writable 不正确');
+    equal(ws.allFilesAccess, true, 'workspaceInfo.allFilesAccess 不正确');
+    equal(ws.defaultRoot, '/data/private/workspace', 'workspaceInfo.defaultRoot 未透传');
+    equal(ws.isDefault, false, 'workspaceInfo.isDefault 不正确');
+
+    const entries = B.listDir('');
+    isArray(entries, 'listDir() 应返回数组');
+    equal(entries.length, 3, 'listDir 应返回 3 个默认条目');
+    ok(entries.some((e) => e.name === 'src' && e.isDir === true), 'listDir 结果缺少目录 src');
+
+    // 原生返回 {"error":...} → 归一化为 []，错误经 getLastError 取
+    native.__p1.listDirError = '权限被拒绝';
+    deepEqual(B.listDir('/sdcard/house-workspace'), [], 'listDir 错误应归一化为空数组');
+    equal(B.getLastError('listDir'), '权限被拒绝', 'getLastError(listDir) 未记录原生错误');
+    native.__p1.listDirError = '';
+    equal(B.listDir('').length, 3, '错误清除后 listDir 应恢复');
+
+    const audit = B.auditRecent(50);
+    isArray(audit, 'auditRecent() 应返回数组');
+    equal(audit.length, 1, 'auditRecent 数量不正确');
+    equal(audit[0].tool, 'list_dir', '审计 tool 字段不正确');
+    equal(audit[0].ok, true, '审计 ok 字段不正确');
+    equal(audit[0].confirmed, false, '审计 confirmed 字段不正确');
+
+    const auth = B.authState();
+    equal(auth.loggedIn, true, 'authState.loggedIn 不正确');
+    equal(auth.phone, '13800000000', 'authState.phone 不正确');
+  });
+
+  test('P1 方法转发：execTool/confirmTool/readFile/writeFile/runShell/setWorkspace/requestOtp/verifyOtp/logout', async () => {
+    const { win, native } = p1BridgeWindow();
+    const B = win.Bridge;
+
+    equal(B.execTool('rid_tool', 'write_file', '{"path":"a.txt"}'), true, 'execTool 应返回 true');
+    const exec = native.__calls.filter((c) => c.method === 'execTool').pop();
+    deepEqual(exec.args, ['rid_tool', 'write_file', '{"path":"a.txt"}'], 'execTool 参数未透传');
+    equal(B.confirmTool('rid_tool', true), true, 'confirmTool 应返回 true');
+    deepEqual(native.__calls.filter((c) => c.method === 'confirmTool').pop().args, ['rid_tool', true], 'confirmTool 参数未透传');
+
+    B.readFile('rid_read', 'README.md');
+    B.writeFile('rid_write', 'a.txt', 'hello');
+    B.runShell('rid_shell', 'echo hi');
+    deepEqual(native.__calls.filter((c) => c.method === 'readFile').pop().args, ['rid_read', 'README.md'], 'readFile 参数未透传');
+    deepEqual(native.__calls.filter((c) => c.method === 'writeFile').pop().args, ['rid_write', 'a.txt', 'hello'], 'writeFile 参数未透传');
+    deepEqual(native.__calls.filter((c) => c.method === 'runShell').pop().args, ['rid_shell', 'echo hi'], 'runShell 参数未透传');
+
+    equal(B.setWorkspace('/sdcard/qa-ws'), true, 'setWorkspace 应返回 true');
+    equal(native.__calls.filter((c) => c.method === 'setWorkspace').pop().args[0], '/sdcard/qa-ws', 'setWorkspace 参数未透传');
+
+    equal(B.requestOtp('138-0000-0001'), true, 'requestOtp 应返回 true 且手机号需去除分隔符');
+    equal(native.__calls.filter((c) => c.method === 'requestOtp').pop().args[0], '13800000001', 'requestOtp 手机号归一化不正确');
+
+    // verifyOtp + waitOtpVerified：事件由 __emit 注入
+    equal(B.verifyOtp('rid_otp', '13800000001', '123456'), true, 'verifyOtp 应返回 true');
+    deepEqual(native.__calls.filter((c) => c.method === 'verifyOtp').pop().args, ['rid_otp', '13800000001', '123456'], 'verifyOtp 参数未透传');
+    const otpWaiter = B.waitOtpVerified('rid_otp', 1000);
+    native.__emit({ type: 'otp-verified', requestId: 'rid_otp', ok: true, message: '' });
+    const otpEvt = await otpWaiter;
+    equal(otpEvt && otpEvt.ok, true, 'waitOtpVerified 未收到 otp-verified');
+
+    // tool-result 的 Promise 通道
+    const toolWaiter = B.waitToolResult('rid_tool', 1000);
+    native.__emit({ type: 'tool-result', requestId: 'rid_tool', tool: 'write_file', ok: true, result: 'ok', confirmed: true });
+    const toolEvt = await toolWaiter;
+    equal(toolEvt && toolEvt.result, 'ok', 'waitToolResult 未收到 tool-result');
+
+    equal(B.logout(), true, 'logout 应返回 true');
+    ok(native.__calls.some((c) => c.method === 'logout'), 'Bridge.logout 未调用原生');
+    const after = B.authState();
+    equal(after.loggedIn, false, 'logout 后 authState.loggedIn 应为 false');
+    equal(after.phone, '13800000000', 'logout 后应保留绑定手机号');
+  });
+
 }

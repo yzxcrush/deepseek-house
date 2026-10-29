@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.deepseekhouse.app"
-    android:versionCode="14"
-    android:versionName="1.2.0">
+    android:versionCode="15"
+    android:versionName="2.0.0">
 
     <uses-sdk
         android:minSdkVersion="24"
@@ -16,6 +16,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- F6 相机：只调用系统相机 App（ACTION_IMAGE_CAPTURE），不需要 CAMERA 权限 -->
+    <!-- ARCH v2 P1 工作区：切换到 /sdcard/house-workspace 等公共目录需要「所有文件访问权限」
+         （Android 11+ 的系统设置页要求 Manifest 声明该权限；默认工作区为 App 私有外部目录，不需要它） -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
     <queries>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />

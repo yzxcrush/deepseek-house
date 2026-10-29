@@ -23,4 +23,10 @@
     <string name="app_lock_subtitle">请使用锁屏密码 / 图案 / 指纹验证身份</string>
     <string name="app_lock_unavailable">设备未设置锁屏密码，无法验证应用锁</string>
     <string name="app_lock_verify_failed">身份验证未通过，已退出</string>
+
+    <!-- ARCH v2 P1 手机号登录（本地 OTP 演示：验证码通过通知展示） -->
+    <string name="notify_channel_otp">登录验证码</string>
+    <string name="notify_channel_otp_desc">手机号登录验证码通知（本地演示，非真实短信）</string>
+    <string name="login_code_title">DeepSeek House 登录验证码</string>
+    <string name="login_code_text">验证码：%1$s（5 分钟内有效）</string>
 </resources>

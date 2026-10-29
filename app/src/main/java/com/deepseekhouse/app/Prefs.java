@@ -26,6 +26,12 @@ public final class Prefs {
     public static final String KEY_BACK_DEPTH = "backDepth";
     /** F9 应用锁开关（只存原生 SharedPreferences，JS 通过 isAppLockEnabled() 查询）。 */
     public static final String KEY_APP_LOCK = "appLock";
+    /** ARCH v2 P1：工作区根目录（空字符串 = 使用默认 getExternalFilesDir("workspace")）。 */
+    public static final String KEY_WORKSPACE_ROOT = "workspaceRoot";
+    /** ARCH v2 P1：手机号登录 token（32 位 hex，绝不进入 getPrefs() 的 JS 载荷）。 */
+    public static final String KEY_AUTH_TOKEN = "authToken";
+    /** ARCH v2 P1：最近一次绑定的手机号（登出后保留，用于识别“已绑定未登录”）。 */
+    public static final String KEY_AUTH_PHONE = "authPhone";
 
     public static final String DEFAULT_BASE_URL = "https://api.deepseek.com";
     public static final String DEFAULT_MODEL = "deepseek-chat";
@@ -105,6 +111,38 @@ public final class Prefs {
         } catch (Throwable ignored) {
             // 忽略
         }
+    }
+
+    // ---------------------------------------------------------------- ARCH v2 P1 工作区 / 登录态
+
+    /** 已持久化的工作区根；空字符串表示使用默认目录。 */
+    public String getWorkspaceRoot() {
+        String value = sp.getString(KEY_WORKSPACE_ROOT, "");
+        return value == null ? "" : value;
+    }
+
+    public void setWorkspaceRoot(String path) {
+        sp.edit().putString(KEY_WORKSPACE_ROOT, path == null ? "" : path.trim()).apply();
+    }
+
+    /** 手机号登录 token（空 = 未登录）。只给 AuthManager/原生层使用，不暴露给 JS。 */
+    public String getAuthToken() {
+        String value = sp.getString(KEY_AUTH_TOKEN, "");
+        return value == null ? "" : value;
+    }
+
+    public void setAuthToken(String token) {
+        sp.edit().putString(KEY_AUTH_TOKEN, token == null ? "" : token.trim()).apply();
+    }
+
+    /** 已绑定手机号（登出后保留）。 */
+    public String getAuthPhone() {
+        String value = sp.getString(KEY_AUTH_PHONE, "");
+        return value == null ? "" : value;
+    }
+
+    public void setAuthPhone(String phone) {
+        sp.edit().putString(KEY_AUTH_PHONE, phone == null ? "" : phone.trim()).apply();
     }
 
     // ---------------------------------------------------------------- 写

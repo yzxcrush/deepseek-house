@@ -11,6 +11,11 @@
  *   F4 会话分支（Store.forkChat + handlers.onForkMessage）
  *   F5 web_search 工具结果 → assistant 消息 citations（最多 5 条，仅 https）
  *
+ * ARCH v2 P1 追加（本地 Agent 工作站）：
+ *   L1 原生工具循环（插件 tools + native toolSchemas；execTool/confirmTool/tool-result，最多 5 轮）
+ *   手机号登录（requestOtp/verifyOtp/authState/logout，API Key 模式保留）
+ *   工作区文件树（listDir/readFile）、终端（runShell）、审计（auditRecent）、备份/恢复/fork 回调接线
+ *
  * 约束：只通过 window.UI 改 DOM；不操作 index.html 中的节点。
  * 依赖：window.Util / Bridge / Store / Markdown / Api / DSPlugins / UI
  */
@@ -67,7 +72,8 @@
   var MODEL_TAG_ORDER = ['free', 'pro', 'flash', 'reasoner', 'chat', 'vision'];
 
   var MAX_INPUT = 8000;
-  var MAX_TOOL_ROUNDS = 3;
+  /* ARCH v2 P1：工具调用最多 5 轮（插件工具 + 原生工具混合） */
+  var MAX_TOOL_ROUNDS = 5;
   var AUTO_TITLE = false; /* 会话名=智能体名，默认「DeepSeek + 模型型号」，不随首条消息自动改名 */
   var FLUSH_INTERVAL = 50;
   var TOAST_THROTTLE = 700;
@@ -99,7 +105,17 @@
     nav: { screen: 'login', drawerOpen: false },
     pluginsBound: false,
     presets: [], /* v2.0 F1：智能体预设（Store.presets 快照） */
-    pendingAgentChatId: null /* v2.0 F1：新建会话时先创建、等待智能体选择的占位会话 */
+    pendingAgentChatId: null, /* v2.0 F1：新建会话时先创建、等待智能体选择的占位会话 */
+    /* ARCH v2 P1：原生 Agent / 认证 / 工作区 / 终端 / 审计 */
+    auth: { loggedIn: false, phone: '' },
+    nativeTools: {}, /* 原生工具 schema：name -> {risk, def}（native 名称优先） */
+    workspace: null,
+    filePreview: null,
+    pendingShell: {}, /* runShell requestId -> {command, at}（区分终端与工具循环） */
+    pendingConfirm: null, /* UI 以 handler 方式确认时使用：allow => void */
+    confirmChain: Promise.resolve(),
+    loginPhone: '', /* 登录页手机号 tab 当前手机号 */
+    loginOtpSent: false
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -329,12 +345,32 @@
     try { if (global.Bridge && global.Bridge.setStatusBar) global.Bridge.setStatusBar('#17212B', false); } catch (e3) { /* ignore */ }
 
     state.ready = true;
+    /* ARCH v2 P1：初始化工作区信息（设置页文件树头部显示 root；旧原生会得到空值） */
+    try { refreshWorkspaceInfo(); } catch (e4) { warn('初始化工作区失败：' + errText(e4)); }
+
+    /* ARCH v2 P1：启动时读取原生 authState（手机号登录态）。API Key 仍然是聊天的必要条件。 */
+    state.auth = readAuthState();
+    state.loginPhone = state.auth.phone || '';
 
     if (!state.apiKey) {
-      state.nav = { screen: 'login', drawerOpen: false };
-      setBackDepth(0);
-      ui('showScreen', 'login');
-      ui('renderLogin', { hasKey: false, busy: false });
+      if (state.auth.loggedIn) {
+        /* 已登录手机号但还没有 API Key：不强制登录页，进入会话列表并提示配置 Key */
+        enterChats();
+        toast('已通过手机号登录，请在设置中配置 API Key 后开始聊天', true);
+      } else {
+        state.nav = { screen: 'login', drawerOpen: false };
+        setBackDepth(0);
+        ui('showScreen', 'login');
+        /* SPEC L1：已绑定手机号但未登录 → 登录页直接展示手机号 tab；否则默认 API Key tab */
+        var boundPhone = state.auth.phone || '';
+        ui('renderLogin', {
+          hasKey: false,
+          busy: false,
+          phone: boundPhone,
+          phoneLogin: !!boundPhone,
+          loggedIn: false
+        });
+      }
     } else {
       enterChats();
     }
@@ -613,7 +649,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '1.2.0' }
+      { label: '版本', value: '2.0.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -722,6 +758,18 @@
 
   function onBack() {
     var screen = state.nav.screen;
+    /* ARCH v2 P1：审计日志是 UI 内部屏幕（state.nav 仍是 profile）—— 硬件返回键先回个人资料，
+       与 UI 顶栏返回/ESC 行为保持一致（arch-ui 契约）。 */
+    var U = getUI();
+    if (U && typeof U.getScreen === 'function') {
+      var uiScreen = '';
+      try { uiScreen = String(U.getScreen() || ''); } catch (e) { uiScreen = ''; }
+      if (uiScreen === 'audit') {
+        closeDrawer();
+        showProfile();
+        return;
+      }
+    }
     if (screen === 'chats') {
       closeDrawer();
       try { if (global.Bridge && global.Bridge.finishApp) global.Bridge.finishApp(); } catch (e) { /* ignore */ }
@@ -771,6 +819,22 @@
     B.onEvent('back', function () { onBack(); });
     /* v2.0 F3：备份文件导入事件（{name, content}；取消时 content 为空 / error:'cancelled'，静默） */
     B.onEvent('file-imported', function (evt) { onFileImported(evt); });
+    /* ARCH v2 P1：手机号验证码 / 登录态 / 终端输出（工具循环的 tool-confirm / tool-result 由各请求自行消费） */
+    B.onEvent('otp-sent', function (evt) { onOtpSent(evt); });
+    B.onEvent('auth-changed', function (evt) {
+      if (!evt) return;
+      state.auth = { loggedIn: !!evt.loggedIn, phone: evt.phone ? String(evt.phone) : '' };
+      if (evt.phone) state.loginPhone = String(evt.phone);
+    });
+    B.onEvent('tool-result', function (evt) {
+      if (!evt || !evt.requestId) return;
+      var pending = state.pendingShell[evt.requestId];
+      if (!pending) return; /* 不是终端请求：交给工具循环的 per-request 监听 */
+      delete state.pendingShell[evt.requestId];
+      appendTerminalResult(evt, pending);
+    });
+    /* 原生 setWorkspace 异步完成后的补充事件 {ok,root,message,allFilesAccess} */
+    B.onEvent('workspace-changed', function (evt) { onWorkspaceChanged(evt); });
   }
 
   function bindPluginFileFallback() {
@@ -890,7 +954,25 @@
         Store.updateChat(chat.id, { pinned: next });
         refreshChatList();
         toast(next ? '已置顶' : '已取消置顶');
-      }, 'onTogglePin')
+      }, 'onTogglePin'),
+      /* ARCH v2 P1：手机号登录 */
+      onSendOtp: safe(function (phone) { return sendOtp(phone); }, 'onSendOtp'),
+      onPhoneLogin: safe(function (phone, code) { phoneLogin(phone, code); return true; }, 'onPhoneLogin'),
+      /* ARCH v2 P1：工作区文件树 / 终端 / 审计 / 工作区切换 */
+      onOpenFile: safe(function (path, isDir) { return onOpenFile(path, isDir); }, 'onOpenFile'),
+      onListDir: safe(function (path) { return loadWorkspaceDir(path); }, 'onListDir'),
+      onOpenWorkspace: safe(function () { refreshWorkspaceInfo(); return loadWorkspaceDir(''); }, 'onOpenWorkspace'),
+      onRefreshWorkspace: safe(function () { return loadWorkspaceDir(''); }, 'onRefreshWorkspace'),
+      onRunShell: safe(function (command) { return runShellCommand(command); }, 'onRunShell'),
+      onOpenAudit: safe(function () { return openAudit(); }, 'onOpenAudit'),
+      onSetWorkspace: safe(function (path) { return setWorkspace(path); }, 'onSetWorkspace'),
+      /* 恢复默认工作区（UI 设置页「恢复默认工作区」按钮；无 defaultRoot 时返回 false 由 UI 兜底） */
+      onResetWorkspace: safe(function () { return resetWorkspace(); }, 'onResetWorkspace'),
+      /* UI 以 handler 方式确认高危工具时（UI.confirmRisk 存在则优先用 Promise 版本） */
+      onToolConfirm: safe(function (allow) {
+        if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }
+        return false;
+      }, 'onToolConfirm')
     };
   }
 
@@ -949,10 +1031,14 @@
     var doLogout = function () {
       if (state.busy) stopGeneration();
       try { if (global.Bridge && global.Bridge.setPrefs) global.Bridge.setPrefs({ apiKey: '' }); } catch (e) { /* ignore */ }
+      /* ARCH v2 P1：退出手机号登录态（原生侧清除 token；mock 模式清除内存态） */
+      try { if (global.Bridge && typeof global.Bridge.logout === 'function') global.Bridge.logout(); } catch (e1) { /* ignore */ }
+      var wasPhone = (state.auth && state.auth.phone) || state.loginPhone || '';
+      state.auth = { loggedIn: false, phone: '' };
       state.apiKey = '';
       state.nav = { screen: 'login', drawerOpen: false };
       ui('showScreen', 'login');
-      ui('renderLogin', { hasKey: false, busy: false });
+      ui('renderLogin', { hasKey: false, busy: false, loggedIn: false, phone: wasPhone, phoneLogin: !!wasPhone });
       setBackDepth(0);
     };
     if (skipConfirm) { doLogout(); return; }
@@ -1333,11 +1419,128 @@
     return true;
   }
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P1：工具循环（插件工具 + 原生工具，native 名称优先）
+   * ------------------------------------------------------------------ */
+
+  var requestSeq = 0;
+
+  function genAgentRequestId(prefix) {
+    requestSeq++;
+    return (prefix || 'p1') + '_' + Date.now().toString(36) + '_' + requestSeq + '_' +
+      Math.random().toString(36).slice(2, 7);
+  }
+
+  function toolSchemaName(schema) {
+    if (!schema || typeof schema !== 'object') return '';
+    var fn = schema.function || schema;
+    var name = schema.name !== undefined && schema.name !== null ? schema.name : fn.name;
+    return name === null || name === undefined ? '' : String(name);
+  }
+
+  function toolSchemaRisk(schema) {
+    if (!schema || typeof schema !== 'object') return 'high';
+    var risk = schema.risk || (schema.function && schema.function.risk) || '';
+    var s = String(risk).toLowerCase();
+    return s === 'low' || s === 'mid' || s === 'high' ? s : 'high';
+  }
+
+  function isNativeTool(name) {
+    return !!(state.nativeTools && Object.prototype.hasOwnProperty.call(state.nativeTools, String(name || '')));
+  }
+
+  /**
+   * 请求 tools = 已启用插件 toolSchemas() + Bridge.toolSchemas()（原生工具）。
+   * 去重：native 名称优先；同名插件工具被忽略并 console.warn。
+   * 同时刷新 state.nativeTools（execOneTool 用它判定走原生还是插件路径）。
+   */
+  function getToolSchemas() {
+    var pluginTools = [];
+    try {
+      if (global.DSPlugins && typeof global.DSPlugins.toolSchemas === 'function') {
+        var list = global.DSPlugins.toolSchemas();
+        if (Array.isArray(list)) pluginTools = list;
+      }
+    } catch (e) {
+      warn('获取插件工具列表失败：' + errText(e));
+    }
+    var nativeTools = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.toolSchemas === 'function') {
+        var nlist = global.Bridge.toolSchemas();
+        if (Array.isArray(nlist)) nativeTools = nlist;
+      }
+    } catch (e2) {
+      warn('获取原生工具列表失败：' + errText(e2));
+    }
+    var nativeMap = {};
+    var i;
+    for (i = 0; i < nativeTools.length; i++) {
+      var n = toolSchemaName(nativeTools[i]);
+      if (!n) continue;
+      nativeMap[n] = { risk: toolSchemaRisk(nativeTools[i]), def: nativeTools[i] };
+    }
+    state.nativeTools = nativeMap;
+
+    var out = [];
+    var seen = {};
+    for (i = 0; i < pluginTools.length; i++) {
+      var pn = toolSchemaName(pluginTools[i]);
+      if (!pn) continue;
+      if (nativeMap[pn]) {
+        warn('工具名冲突：' + pn + '（native 优先，已忽略同名插件工具）');
+        continue;
+      }
+      if (seen[pn]) continue;
+      seen[pn] = true;
+      out.push(pluginTools[i]);
+    }
+    for (i = 0; i < nativeTools.length; i++) {
+      var kn = toolSchemaName(nativeTools[i]);
+      if (!kn || seen[kn]) continue;
+      seen[kn] = true;
+      out.push(nativeTools[i]);
+    }
+    return out;
+  }
+
+  /** 追加 role:'tool' 消息（P1 字段：toolName/args/result/ok/confirmState/confirmed） */
+  function appendToolResultMessage(chat, name, args, toolCallId, content, ok, confirmState, confirmed) {
+    var text = content === null || content === undefined || content === '' ? (ok ? '（工具未返回内容）' : '工具执行失败') : String(content);
+    var toolMsg = Store.appendMessage(chat.id, {
+      role: 'tool',
+      content: text,
+      toolName: name,
+      toolCallId: toolCallId,
+      args: args === undefined || args === null ? {} : args,
+      result: text,
+      ok: !!ok,
+      confirmState: confirmState || (ok ? 'success' : 'error'),
+      confirmed: !!confirmed
+    });
+    if (toolMsg) {
+      ui('appendMessage', toolMsg);
+      ui('scrollBottom');
+    }
+    /* v2.0 F5：web_search 结果 JSON → 当前 assistant 消息 citations */
+    captureCitations(name, text);
+    return toolMsg;
+  }
+
   function execOneTool(chat, toolCall, ctx, index) {
+    var name = toolCall && (toolCall.name || (toolCall.function && toolCall.function.name)) || 'unknown';
+    var rawArgs = toolCall
+      ? (toolCall.arguments !== undefined ? toolCall.arguments : (toolCall.function ? toolCall.function.arguments : ''))
+      : '';
+    var args = parseToolArgs(rawArgs);
+    var toolCallId = (toolCall && toolCall.id) || ('call_' + index);
+    if (isNativeTool(name)) return execNativeTool(chat, name, args, toolCallId);
+    return execPluginTool(chat, name, args, toolCallId, ctx);
+  }
+
+  /** 插件工具：保持原有 DSPlugins.runTool 路径 */
+  function execPluginTool(chat, name, args, toolCallId, ctx) {
     return new Promise(function (resolve) {
-      var name = toolCall && (toolCall.name || 'unknown') || 'unknown';
-      var args = parseToolArgs(toolCall ? toolCall.arguments : '');
-      var toolCallId = (toolCall && toolCall.id) || ('call_' + index);
       var resultPromise;
       try {
         if (global.DSPlugins && typeof global.DSPlugins.runTool === 'function') {
@@ -1353,33 +1556,109 @@
         if (typeof result === 'string') content = result;
         else content = safeStringify(result);
         if (!content) content = '（工具未返回内容）';
-        var toolMsg = Store.appendMessage(chat.id, {
-          role: 'tool',
-          content: content,
-          toolName: name,
-          toolCallId: toolCallId
-        });
-        if (toolMsg) {
-          ui('appendMessage', toolMsg);
-          ui('scrollBottom');
-        }
-        /* v2.0 F5：web_search 结果 JSON → 当前 assistant 消息 citations */
-        captureCitations(name, content);
-        resolve(toolMsg);
-      }).catch(function (e2) {
-        var content = '工具执行失败：' + errText(e2);
-        var toolMsg = Store.appendMessage(chat.id, {
-          role: 'tool',
-          content: content,
-          toolName: name,
-          toolCallId: toolCallId
-        });
-        if (toolMsg) {
-          ui('appendMessage', toolMsg);
-          ui('scrollBottom');
-        }
-        resolve(toolMsg);
+        resolve(appendToolResultMessage(chat, name, args, toolCallId, content, true, 'success', false));
+      }, function (e2) {
+        resolve(appendToolResultMessage(chat, name, args, toolCallId, '工具执行失败：' + errText(e2), false, 'error', false));
       });
+    });
+  }
+
+  /** 把高危工具确认串行化（多个工具同时返回 tool-confirm 时避免弹窗叠层） */
+  function askToolConfirm(tool, args, risk) {
+    var run = function () { return promptToolRisk(tool, args, risk); };
+    var next = state.confirmChain.then(run, run);
+    state.confirmChain = next.then(function () { }, function () { });
+    return next;
+  }
+
+  function promptToolRisk(tool, args, risk) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(allow) {
+        if (done) return;
+        done = true;
+        state.pendingConfirm = null;
+        resolve(!!allow);
+      }
+      state.pendingConfirm = finish;
+      var U = getUI();
+      if (U && typeof U.confirmRisk === 'function') {
+        try {
+          var work = U.confirmRisk(String(tool || 'unknown'), args && typeof args === 'object' ? args : String(args || ''), String(risk || 'high'));
+          Promise.resolve(work).then(function (v) { finish(!!v); }, function () { finish(false); });
+          return;
+        } catch (e) {
+          warn('UI.confirmRisk 异常：' + errText(e));
+        }
+      }
+      confirmAsync('高危操作确认', '工具：' + tool + '\n风险：' + String(risk || 'high').toUpperCase() + '\n参数：' + safeStringify(args || {})).then(finish);
+    });
+  }
+
+  /** 原生工具：Bridge.execTool → (tool-confirm → UI.confirmRisk → Bridge.confirmTool) → tool-result */
+  function execNativeTool(chat, name, args, toolCallId) {
+    return new Promise(function (resolve) {
+      var B = global.Bridge;
+      var requestId = genAgentRequestId('tool');
+      var settled = false;
+      var confirmAsked = false;
+      var offs = [];
+      var timer = null;
+
+      function cleanup() {
+        if (timer) { clearTimeout(timer); timer = null; }
+        for (var i = 0; i < offs.length; i++) {
+          try { offs[i](); } catch (e) { /* ignore */ }
+        }
+        offs = [];
+      }
+
+      function finish(evt, forcedOk, forcedResult) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        var ok = evt ? evt.ok !== false : !!forcedOk;
+        var resultText = '';
+        if (evt && evt.result !== undefined && evt.result !== null) resultText = String(evt.result);
+        else if (forcedResult !== undefined && forcedResult !== null) resultText = String(forcedResult);
+        if (!resultText) resultText = ok ? '（工具未返回内容）' : '工具执行失败';
+        var confirmed = evt ? !!evt.confirmed : false;
+        var stateText = ok ? 'success' : (String(resultText).indexOf('用户拒绝') !== -1 ? 'rejected' : 'error');
+        resolve(appendToolResultMessage(chat, name, args, toolCallId, resultText, ok, stateText, confirmed));
+      }
+
+      offs.push(B.onEvent('tool-result', function (evt) {
+        if (!evt || String(evt.requestId) !== requestId) return;
+        finish(evt);
+      }));
+      offs.push(B.onEvent('tool-confirm', function (evt) {
+        if (!evt || String(evt.requestId) !== requestId) return;
+        if (confirmAsked) return;
+        confirmAsked = true;
+        var tool = evt.tool ? String(evt.tool) : name;
+        var eArgs = evt.args && typeof evt.args === 'object' ? evt.args : args;
+        var risk = evt.risk ? String(evt.risk).toLowerCase() : (state.nativeTools[name] ? state.nativeTools[name].risk : 'high');
+        askToolConfirm(tool, eArgs, risk).then(function (allow) {
+          try { B.confirmTool(requestId, !!allow); } catch (e) { warn('confirmTool 失败：' + errText(e)); }
+          if (!allow) {
+            /* 兜底：原生拒绝后必须回 tool-result；300ms 内未回则本地结束，避免卡住 */
+            setTimeout(function () {
+              if (!settled) finish(null, false, '用户拒绝执行');
+            }, 300);
+          }
+        });
+      }));
+      timer = setTimeout(function () {
+        if (!settled) finish(null, false, '工具执行超时（120 秒）');
+      }, 120000);
+
+      var started = false;
+      try {
+        started = B.execTool(requestId, name, JSON.stringify(args || {}));
+      } catch (e) {
+        started = false;
+      }
+      if (started === false) finish(null, false, '原生工具执行不可用');
     });
   }
 
@@ -1402,18 +1681,6 @@
       finishBusy();
       refreshChatList();
     });
-  }
-
-  function getToolSchemas() {
-    try {
-      if (global.DSPlugins && typeof global.DSPlugins.toolSchemas === 'function') {
-        var tools = global.DSPlugins.toolSchemas();
-        return Array.isArray(tools) ? tools : [];
-      }
-    } catch (e) {
-      warn('获取工具列表失败：' + errText(e));
-    }
-    return [];
   }
 
   function pluginCtx(chat) {
@@ -2944,6 +3211,405 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2 P1：手机号登录（本地 OTP MVP，API Key 模式保留）
+   * ------------------------------------------------------------------ */
+
+  function readAuthState() {
+    var raw = null;
+    try {
+      if (global.Bridge && typeof global.Bridge.authState === 'function') raw = global.Bridge.authState();
+    } catch (e) {
+      warn('读取 authState 失败：' + errText(e));
+    }
+    if (!raw || typeof raw !== 'object') return { loggedIn: false, phone: '' };
+    return { loggedIn: !!raw.loggedIn, phone: raw.phone ? String(raw.phone) : '' };
+  }
+
+  function normalizePhone(phone) {
+    var p = String(phone === null || phone === undefined ? '' : phone).replace(/[\s-]/g, '');
+    return /^\+?\d{6,20}$/.test(p) ? p : '';
+  }
+
+  function renderPhoneLogin(patch) {
+    var base = {
+      hasKey: !!state.apiKey,
+      phoneLogin: true,
+      phone: state.loginPhone || '',
+      busy: false,
+      error: '',
+      otpSent: !!state.loginOtpSent
+    };
+    var keys = Object.keys(patch || {});
+    for (var i = 0; i < keys.length; i++) base[keys[i]] = patch[keys[i]];
+    ui('renderLogin', base);
+  }
+
+  /** handlers.onSendOtp(phone)：发送验证码；结果由 otp-sent 事件回填倒计时/demoCode */
+  function sendOtp(phone) {
+    var p = normalizePhone(phone);
+    state.loginPhone = p || state.loginPhone;
+    if (!p) {
+      renderPhoneLogin({ error: '请输入正确的手机号' });
+      return false;
+    }
+    if (!(global.Bridge && typeof global.Bridge.requestOtp === 'function')) {
+      renderPhoneLogin({ error: '当前环境不支持手机号登录' });
+      return false;
+    }
+    renderPhoneLogin({ phone: p, busy: false, error: '' });
+    var ok = false;
+    try { ok = global.Bridge.requestOtp(p) !== false; } catch (e) {
+      warn('requestOtp 失败：' + errText(e));
+      ok = false;
+    }
+    if (!ok) {
+      renderPhoneLogin({ phone: p, error: '验证码发送失败，请稍后重试' });
+      return false;
+    }
+    return true;
+  }
+
+  /** otp-sent 事件：转发 UI.onOtpSent（倒计时 + demoCode 提示），UI 未实现时退化为 renderLogin/toast */
+  function onOtpSent(evt) {
+    if (!evt) return;
+    var phone = evt.phone ? String(evt.phone) : (state.loginPhone || '');
+    var ttl = Number(evt.ttlSeconds) || 300;
+    var demo = evt.demoCode ? String(evt.demoCode) : '';
+    var message = evt.message ? String(evt.message) : '';
+    state.loginPhone = phone;
+    state.loginOtpSent = !message;
+    var payload = { phone: phone, ttlSeconds: ttl, demoCode: demo, message: message, ok: evt.ok !== false };
+    if (evt.ok === false) state.loginOtpSent = false;
+    var U = getUI();
+    var handled = false;
+    if (U && typeof U.onOtpSent === 'function') {
+      try { U.onOtpSent(payload); handled = true; } catch (e) { warn('UI.onOtpSent 异常：' + errText(e)); }
+    }
+    if (!handled) {
+      if (evt.ok === false) {
+        if (message) toast(message, true);
+        renderPhoneLogin({ phone: phone, otpSent: false, demoCode: '', error: message });
+      } else if (demo) {
+        toast('验证码已发送（本地演示码 ' + demo + '）', true);
+      } else if (message) {
+        toast(message, true);
+      }
+    }
+  }
+
+  function renderPhoneLoginError(message, patch) {
+    renderPhoneLogin(Object.assign({}, patch || {}, { error: String(message || '') }));
+  }
+
+  /** handlers.onPhoneLogin(phone, code)：Bridge.verifyOtp → otp-verified(ok) → 进入会话列表 */
+  function phoneLogin(phone, code) {
+    if (state.loginBusy) return;
+    var p = normalizePhone(phone) || state.loginPhone;
+    var c = String(code === null || code === undefined ? '' : code).replace(/\s/g, '');
+    if (!p) { renderPhoneLoginError('请输入手机号'); return; }
+    if (!c) { renderPhoneLoginError('请输入验证码'); return; }
+    if (!(global.Bridge && typeof global.Bridge.verifyOtp === 'function')) {
+      renderPhoneLoginError('当前环境不支持手机号登录');
+      return;
+    }
+    state.loginBusy = true;
+    renderPhoneLogin({ phone: p, busy: true, error: '', otpSent: true });
+    var requestId = genAgentRequestId('otp');
+    var wait = null;
+    try {
+      wait = global.Bridge.waitOtpVerified(requestId, 30000);
+    } catch (e) {
+      warn('waitOtpVerified 失败：' + errText(e));
+    }
+    var started = false;
+    try { started = global.Bridge.verifyOtp(requestId, p, c) !== false; } catch (e2) {
+      warn('verifyOtp 失败：' + errText(e2));
+      started = false;
+    }
+    if (!started) {
+      state.loginBusy = false;
+      renderPhoneLoginError('验证码校验不可用，请检查原生版本');
+      return;
+    }
+    if (!wait || typeof wait.then !== 'function') {
+      state.loginBusy = false;
+      renderPhoneLoginError('验证超时，请重试');
+      return;
+    }
+    wait.then(function (evt) {
+      state.loginBusy = false;
+      /* UI.onOtpVerified：清理倒计时/提示（失败时展示错误；成功时清理演示码） */
+      var U = getUI();
+      if (U && typeof U.onOtpVerified === 'function') {
+        try { U.onOtpVerified(evt || { ok: false, message: '验证超时，请重试' }); } catch (e3) { warn('UI.onOtpVerified 异常：' + errText(e3)); }
+      }
+      if (!evt) { renderPhoneLoginError('验证超时，请重试'); return; }
+      if (evt.ok) { onPhoneLoginSuccess(p); return; }
+      renderPhoneLoginError(evt.message || '验证码错误');
+    });
+  }
+
+  function onPhoneLoginSuccess(phone) {
+    state.auth = { loggedIn: true, phone: String(phone || '') };
+    state.loginPhone = String(phone || '');
+    state.loginOtpSent = false;
+    ui('renderLogin', { hasKey: !!state.apiKey, phoneLogin: true, phone: state.loginPhone, busy: false, error: '', loggedIn: true });
+    enterChats();
+    toast('登录成功', true);
+    if (!state.apiKey) {
+      setTimeout(function () { toast('请在设置中配置 API Key 后开始聊天', true); }, 700);
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P1：工作区 / 文件树 / 终端 / 审计
+   * ------------------------------------------------------------------ */
+
+  function refreshWorkspaceInfo() {
+    var info = null;
+    try {
+      if (global.Bridge && typeof global.Bridge.workspaceInfo === 'function') info = global.Bridge.workspaceInfo();
+    } catch (e) {
+      warn('读取 workspaceInfo 失败：' + errText(e));
+    }
+    if (!info || typeof info !== 'object') info = { root: '', writable: false, allFilesAccess: false };
+    var normalized = {
+      root: info.root === null || info.root === undefined ? '' : String(info.root),
+      writable: !!info.writable,
+      allFilesAccess: !!info.allFilesAccess
+    };
+    /* 原生补充字段透传（设置页「恢复默认工作区」/权限提示需要） */
+    if (info.defaultRoot !== undefined && info.defaultRoot !== null) normalized.defaultRoot = String(info.defaultRoot);
+    if (info.isDefault !== undefined) normalized.isDefault = !!info.isDefault;
+    else if (normalized.defaultRoot) normalized.isDefault = normalized.root === normalized.defaultRoot;
+    state.workspace = normalized;
+    ui('setWorkspaceInfo', normalized);
+    return normalized;
+  }
+
+  /** 加载目录并交给 UI.renderFileTree(entries, {root, path}) */
+  function loadWorkspaceDir(path) {
+    var info = state.workspace || refreshWorkspaceInfo();
+    var p = path === null || path === undefined || path === '' ? (info.root || '') : String(path);
+    var entries = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.listDir === 'function') entries = global.Bridge.listDir(p);
+    } catch (e) {
+      warn('listDir 失败：' + errText(e));
+    }
+    if (!Array.isArray(entries)) entries = [];
+    var listErr = '';
+    try {
+      if (global.Bridge && typeof global.Bridge.getLastError === 'function') listErr = global.Bridge.getLastError('listDir') || '';
+    } catch (e1) { /* ignore */ }
+    var U = getUI();
+    if (U && typeof U.renderFileTree === 'function') {
+      try {
+        /* UI 支持非数组 entries：{error} → 抽屉内显示「目录读取失败」行 */
+        U.renderFileTree(listErr ? { error: listErr } : entries, { root: info.root || '', path: p });
+      } catch (e2) { warn('UI.renderFileTree 异常：' + errText(e2)); }
+    } else if (listErr) {
+      toast('无法列出目录：' + listErr, true);
+    } else {
+      toast('目录 ' + (p || info.root || '/') + '：' + entries.length + ' 项');
+    }
+    if (listErr) toast('无法列出目录：' + listErr, true);
+    return entries;
+  }
+
+  /**
+   * handlers.onOpenFile(path, isDir)：UI 文件树回调。
+   * 无参 → 列工作区根目录；isDir=true → 列目录；isDir=false/null → readFile 预览。
+   */
+  function onOpenFile(path, isDir) {
+    refreshWorkspaceInfo();
+    var hasPath = !(path === undefined || path === null || String(path) === '');
+    if (!hasPath) return loadWorkspaceDir('');
+    var target = String(path);
+    if (isDir === true) return loadWorkspaceDir(target);
+    return openWorkspaceFile(target);
+  }
+
+  function openWorkspaceFile(path) {
+    var B = global.Bridge;
+    if (!B || typeof B.readFileAsync !== 'function') {
+      toast('当前环境不支持读取文件', true);
+      return false;
+    }
+    B.readFileAsync(path, 30000).then(function (evt) {
+      evt = evt || {};
+      if (evt.ok === false) {
+        toast('读取失败：' + (evt.result || '未知错误'), true);
+        return;
+      }
+      var content = evt.result === undefined || evt.result === null ? '' : String(evt.result);
+      state.filePreview = { path: path, content: content };
+      showFilePreview(path, content);
+    }).catch(function (e) {
+      warn('读取文件失败：' + errText(e));
+      toast('读取失败：' + errText(e), true);
+    });
+    return true;
+  }
+
+  function showFilePreview(path, content) {
+    var text = String(content === null || content === undefined ? '' : content);
+    var U = getUI();
+    if (U) {
+      var names = ['renderFilePreview', 'showFilePreview', 'previewFile'];
+      for (var i = 0; i < names.length; i++) {
+        if (typeof U[names[i]] !== 'function') continue;
+        try { U[names[i]]({ path: path, content: text }); return; } catch (e) { warn('文件预览渲染失败：' + errText(e)); }
+      }
+    }
+    var name = String(path || '').split('/').pop() || String(path || '文件');
+    if (!text) { toast('📄 ' + name + '（空文件）', true); return; }
+    var head = text.length > 160 ? (text.slice(0, 160) + '…') : text;
+    toast('📄 ' + name + '：' + head.replace(/\s+/g, ' '), true);
+  }
+
+  function appendTerminal(text, opts) {
+    var value = String(text === null || text === undefined ? '' : text);
+    var U = getUI();
+    if (U && typeof U.appendTerminal === 'function') {
+      try { U.appendTerminal(value, opts || {}); return; } catch (e) { warn('UI.appendTerminal 异常：' + errText(e)); }
+    }
+    toast('终端：' + (value || '（无输出）'));
+  }
+
+  /** runShell 的 tool-result（按 requestId 区分，不发聊天消息，只进终端面板） */
+  function appendTerminalResult(evt, pending) {
+    var ok = evt.ok !== false;
+    var text = evt.result === undefined || evt.result === null ? '' : String(evt.result);
+    if (!text) text = ok ? '（无输出）' : '命令执行失败';
+    var command = pending && pending.command ? String(pending.command) : '';
+    appendTerminal(text, { requestId: evt.requestId, ok: ok, command: command });
+  }
+
+  /** handlers.onRunShell(command) */
+  function runShellCommand(command) {
+    var cmd = String(command === null || command === undefined ? '' : command).replace(/^\s+|\s+$/g, '');
+    if (!cmd) return false;
+    var B = global.Bridge;
+    if (!B || typeof B.runShell !== 'function') {
+      toast('当前环境不支持终端', true);
+      return false;
+    }
+    var requestId = genAgentRequestId('shell');
+    state.pendingShell[requestId] = { command: cmd, at: Date.now() };
+    setTimeout(function () {
+      var pending = state.pendingShell[requestId];
+      if (!pending) return;
+      delete state.pendingShell[requestId];
+      appendTerminal('（命令执行超时）', { requestId: requestId, ok: false, command: pending.command });
+    }, 60000);
+    var started = false;
+    try { started = B.runShell(requestId, cmd) !== false; } catch (e) {
+      warn('runShell 失败：' + errText(e));
+      started = false;
+    }
+    if (!started) {
+      delete state.pendingShell[requestId];
+      appendTerminal('（无法执行命令：原生不可用）', { requestId: requestId, ok: false, command: cmd });
+      return false;
+    }
+    return true;
+  }
+
+  /** handlers.onOpenAudit()：Bridge.auditRecent(50) → UI.renderAudit(items) */
+  function openAudit() {
+    var items = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.auditRecent === 'function') items = global.Bridge.auditRecent(50);
+    } catch (e) {
+      warn('读取审计日志失败：' + errText(e));
+    }
+    if (!Array.isArray(items)) items = [];
+    var U = getUI();
+    if (U && typeof U.renderAudit === 'function') {
+      try { U.renderAudit(items); } catch (e2) { warn('UI.renderAudit 异常：' + errText(e2)); }
+    } else {
+      toast('审计日志：' + items.length + ' 条', true);
+    }
+    return items;
+  }
+
+  /** handlers.onSetWorkspace([path])：可传路径；无参时先用 UI.prompt 收集，成功后刷新 workspaceInfo */
+  /** 原生 setWorkspace 异步完成：更新 workspaceInfo + 刷新文件树（由 bindBridgeEvents 调用） */
+  function onWorkspaceChanged(evt) {
+    if (!evt || typeof evt !== 'object') return;
+    if (evt.ok === false) {
+      toast('更改工作区失败：' + (evt.message || '路径无效或缺少存储权限'), true);
+      refreshWorkspaceInfo();
+      return;
+    }
+    refreshWorkspaceInfo(); /* 原生 setRoot 已完成，重新读取完整 workspaceInfo（含 defaultRoot/isDefault） */
+    loadWorkspaceDir('');
+  }
+
+  /**
+   * 应用新工作区：Bridge.setWorkspace → 等待 workspace-changed（原生异步 setRoot）
+   * → 刷新 workspaceInfo/文件树；旧原生无该事件时用 900ms 兜底刷新。
+   */
+  function applyWorkspacePath(path) {
+    var p = String(path === null || path === undefined ? '' : path).replace(/^\s+|\s+$/g, '');
+    if (!p) { toast('路径不能为空'); return false; }
+    var B = global.Bridge;
+    if (!B || typeof B.setWorkspace !== 'function') { toast('当前环境不支持更改工作区', true); return false; }
+    var ok = false;
+    try { ok = B.setWorkspace(p) !== false; } catch (e) {
+      warn('setWorkspace 失败：' + errText(e));
+      ok = false;
+    }
+    if (!ok) { toast('更改工作区失败（路径无效或缺少存储权限）', true); return false; }
+    var settled = false;
+    var fallbackTimer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      var info = refreshWorkspaceInfo();
+      toast('工作区已切换：' + (info.root || p), true);
+      loadWorkspaceDir('');
+    }, 900);
+    if (typeof B.waitForEvent === 'function') {
+      B.waitForEvent('workspace-changed', function (evt) { return !evt || evt.ok !== false; }, 3000).then(function (evt) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallbackTimer);
+        if (evt && evt.ok === false) {
+          toast('更改工作区失败：' + (evt.message || p), true);
+          refreshWorkspaceInfo();
+          return;
+        }
+        var info = refreshWorkspaceInfo();
+        var root = (info && info.root) || (evt && evt.root ? String(evt.root) : p);
+        toast('工作区已切换：' + root, true);
+        loadWorkspaceDir('');
+      });
+    }
+    return true;
+  }
+
+  function setWorkspace(path) {
+    if (path !== undefined && path !== null && String(path) !== '') return applyWorkspacePath(path);
+    var current = state.workspace && state.workspace.root ? state.workspace.root : '';
+    return promptAsync('更改工作区', current, '例如 /sdcard/house-workspace').then(function (value) {
+      if (value === null || value === undefined) return false;
+      return applyWorkspacePath(value);
+    });
+  }
+
+  /** handlers.onResetWorkspace()：从 workspaceInfo.defaultRoot 恢复默认工作区 */
+  function resetWorkspace() {
+    var info = refreshWorkspaceInfo();
+    var def = info && info.defaultRoot ? String(info.defaultRoot) : '';
+    if (!def) {
+      toast('当前原生未返回默认工作区路径', true);
+      return false;
+    }
+    return applyWorkspacePath(def);
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -3005,6 +3671,28 @@
   App.onFileImported = safe(function (evt) { return onFileImported(evt); }, 'App.onFileImported');
   App.extractSearchCitations = function (text) { return extractSearchCitations(text); };
   App.captureCitations = safe(function (name, text) { return captureCitations(name, text); }, 'App.captureCitations');
+
+  /* ARCH v2 P1 对外接口（UI 回调 / QA 可直接调用） */
+  App.getAuthState = function () { return { loggedIn: !!(state.auth && state.auth.loggedIn), phone: (state.auth && state.auth.phone) || '' }; };
+  App.refreshAuthState = safe(function () { state.auth = readAuthState(); return state.auth; }, 'App.refreshAuthState');
+  App.sendOtp = safe(function (phone) { return sendOtp(phone); }, 'App.sendOtp');
+  App.phoneLogin = safe(function (phone, code) { phoneLogin(phone, code); return true; }, 'App.phoneLogin');
+  App.getToolSchemas = function () { return getToolSchemas(); };
+  App.isNativeTool = function (name) { return isNativeTool(name); };
+  App.getNativeTools = function () { return state.nativeTools; };
+  App.getWorkspaceInfo = function () { return state.workspace; };
+  App.refreshWorkspaceInfo = safe(function () { return refreshWorkspaceInfo(); }, 'App.refreshWorkspaceInfo');
+  App.listDir = safe(function (path) { return loadWorkspaceDir(path); }, 'App.listDir');
+  App.openFile = safe(function (path, isDir) { return onOpenFile(path, isDir); }, 'App.openFile');
+  App.runShell = safe(function (command) { return runShellCommand(command); }, 'App.runShell');
+  App.openAudit = safe(function () { return openAudit(); }, 'App.openAudit');
+  App.setWorkspace = safe(function (path) { return setWorkspace(path); }, 'App.setWorkspace');
+  App.resetWorkspace = safe(function () { return resetWorkspace(); }, 'App.resetWorkspace');
+  App.getFilePreview = function () { return state.filePreview; };
+  App.confirmTool = safe(function (allow) {
+    if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }
+    return false;
+  }, 'App.confirmTool');
 
   global.App = App;
 

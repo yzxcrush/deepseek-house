@@ -34,6 +34,15 @@ try {
   process.exitCode = 1;
 }
 
+// ARCH v2 P1 集成用例（原生工具循环 / 文件树 / 终端 / 审计 / 手机号登录 / 工作区）
+try {
+  const p1 = await import('./p1-integration-tests.mjs');
+  p1.registerP1IntegrationTests();
+} catch (err) {
+  console.error('\n⚠ 无法加载 P1 集成测试模块 p1-integration-tests.mjs：', err && err.message);
+  process.exitCode = 1;
+}
+
 const results = await runAll({ filter, defaultTimeout: 30000 });
 const code = printSummary(results);
 const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);

@@ -16,14 +16,30 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.widget.Toast;
 
+import com.deepseekhouse.app.agent.AuditDb;
+import com.deepseekhouse.app.agent.AuthManager;
+import com.deepseekhouse.app.agent.ToolDef;
+import com.deepseekhouse.app.agent.ToolExecutor;
+import com.deepseekhouse.app.agent.ToolRegistry;
+import com.deepseekhouse.app.agent.Workspace;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,6 +53,13 @@ import java.util.regex.Pattern;
  * （image-picked / image-error）、F7 {@link #setForeground(boolean, String)} + {@link #notify(String, String)}
  * + app-state、F8 分享进入（shared）、F9 {@link #setAppLock(boolean)} / {@link #isAppLockEnabled()} /
  * {@link #getStorageSecret()}。</p>
+ *
+ * <p>ARCH v2 P1 追加：本地 Agent 工具框架 {@link #execTool(String, String, String)} /
+ * {@link #confirmTool(String, boolean)} / {@link #toolSchemas()}（tool-confirm / tool-result）、
+ * 工作区 {@link #workspaceInfo()} / {@link #listDir(String)} / {@link #readFile(String, String)} /
+ * {@link #writeFile(String, String, String)} / {@link #runShell(String, String)} / {@link #setWorkspace(String)}、
+ * 审计 {@link #auditRecent(int)}、手机号 OTP 登录 {@link #requestOtp(String)} / {@link #verifyOtp(String, String, String)} /
+ * {@link #authState()} / {@link #logout()}（otp-sent / otp-verified / auth-changed）。</p>
  */
 public final class JsBridge {
 
@@ -51,6 +74,33 @@ public final class JsBridge {
     private final PluginStore plugins;
     private final ApiClient api;
     private final Handler main;
+
+    // ARCH v2 P1：工作区 / 审计 / 内置工具 / 手机号登录
+    private final Workspace workspace;
+    private final AuditDb auditDb;
+    private final ToolExecutor toolExecutor;
+    private final AuthManager auth;
+    private final ExecutorService toolPool;
+    /** requestId → 等待确认的工具调用（confirmTool 消费）。 */
+    private final Map<String, PendingTool> pendingTools = new ConcurrentHashMap<>();
+    /** 本 App 会话内已经确认过的 MID 工具（同一工具只确认一次）。 */
+    private final Set<String> sessionConfirmedTools =
+            Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+
+    private static final int MAX_PENDING_TOOLS = 64;
+
+    /** 一次“已发起、等待 confirmTool”的工具调用。 */
+    private static final class PendingTool {
+        final String requestId;
+        final ToolDef def;
+        final JSONObject args;
+
+        PendingTool(String requestId, ToolDef def, JSONObject args) {
+            this.requestId = requestId;
+            this.def = def;
+            this.args = args == null ? new JSONObject() : args;
+        }
+    }
 
     private volatile String pendingExportName = "";
     private volatile String pendingExportContent = "";
@@ -74,12 +124,37 @@ public final class JsBridge {
                 emitEvent(json);
             }
         });
+        // ARCH v2 P1：工作区 > 审计库 > 工具执行器（构造时幂等注册 5 个内置工具）
+        this.workspace = new Workspace(activity);
+        this.auditDb = new AuditDb(activity);
+        this.toolExecutor = new ToolExecutor(workspace, auditDb);
+        this.auth = new AuthManager(activity, prefs);
+        this.toolPool = Executors.newCachedThreadPool(new ThreadFactory() {
+            private final AtomicInteger seq = new AtomicInteger(1);
+
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "dsh-tool-" + seq.getAndIncrement());
+                t.setDaemon(true);
+                return t;
+            }
+        });
     }
 
     /** Activity 销毁时释放网络线程池与事件通道。 */
     public void release() {
         released = true;
         api.shutdown();
+        try {
+            toolPool.shutdownNow();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        try {
+            auditDb.close();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
     }
 
     // ============================================================ §3.1 同步方法
@@ -355,6 +430,359 @@ public final class JsBridge {
         } catch (Throwable t) {
             return "";
         }
+    }
+
+    // ============================================================ ARCH v2 P1 本地 Agent 工具框架
+
+    /** SPEC N1 {@code toolSchemas()}：OpenAI tools 数组（内置 5 个工具）。 */
+    @JavascriptInterface
+    public String toolSchemas() {
+        try {
+            return ToolRegistry.getInstance().schemasJson();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /**
+     * SPEC N1 {@code execTool}：执行模型发起的工具调用。
+     *
+     * <p>风险策略：LOW 直接执行；MID 同一工具本 App 会话内首次确认；HIGH 每次确认。
+     * 需要确认时先发 {@code tool-confirm} 并保存调用，等待 {@link #confirmTool}；
+     * 不需要确认时进后台线程执行并回 {@code tool-result}。</p>
+     */
+    @JavascriptInterface
+    public void execTool(final String requestId, final String name, final String argsJson) {
+        final String rid = requestId == null ? "" : requestId;
+        if (rid.isEmpty()) {
+            return;
+        }
+        final String toolName = name == null ? "" : name.trim();
+        JSONObject args;
+        try {
+            String raw = argsJson == null ? "" : argsJson.trim();
+            args = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable t) {
+            auditTool(toolName, argsJson == null ? "" : argsJson, "参数不是合法 JSON", false, false);
+            emitToolResult(rid, toolName, false, "参数不是合法 JSON：" + describe(t), false);
+            return;
+        }
+        ToolDef def = ToolRegistry.getInstance().find(toolName);
+        if (def == null) {
+            auditTool(toolName, args.toString(), "未知工具", false, false);
+            emitToolResult(rid, toolName, false, "未知工具：" + toolName, false);
+            return;
+        }
+        if (requiresConfirmation(def)) {
+            prunePendingTools();
+            pendingTools.put(rid, new PendingTool(rid, def, args));
+            emitToolConfirm(rid, def, args);
+            return;
+        }
+        // LOW 风险工具直接执行；MID/HIGH 若走到这里说明已获会话内确认
+        executeToolAsync(rid, def, args, def.risk() != ToolDef.Risk.LOW);
+    }
+
+    /**
+     * SPEC N1 {@code confirmTool}：确认/拒绝一次待确认的工具调用。
+     * 拒绝时回 {@code tool-result ok:false,result:"用户拒绝执行"} 并写审计。
+     */
+    @JavascriptInterface
+    public void confirmTool(final String requestId, final boolean allow) {
+        final String rid = requestId == null ? "" : requestId;
+        if (rid.isEmpty()) {
+            return;
+        }
+        PendingTool pending = pendingTools.remove(rid);
+        if (pending == null) {
+            emitToolResult(rid, "", false, "没有待确认的工具调用", false);
+            return;
+        }
+        if (!allow) {
+            auditTool(pending.def.name(), pending.args.toString(), "用户拒绝执行", false, false);
+            emitToolResult(rid, pending.def.name(), false, "用户拒绝执行", false);
+            return;
+        }
+        if (pending.def.risk() == ToolDef.Risk.MID) {
+            sessionConfirmedTools.add(pending.def.name());
+        }
+        executeToolAsync(rid, pending.def, pending.args, true);
+    }
+
+    /**
+     * SPEC 风险策略（权威）：LOW 永不确认；MID 本 App 会话内首次确认；HIGH 每次确认。
+     * {@link ToolDef#needConfirm()} 只是工具元数据（供 UI/未来策略使用），不改变这里的判定。
+     */
+    private boolean requiresConfirmation(ToolDef def) {
+        if (def == null) {
+            return true;
+        }
+        if (def.risk() == ToolDef.Risk.HIGH) {
+            return true;
+        }
+        if (def.risk() == ToolDef.Risk.MID) {
+            return !sessionConfirmedTools.contains(def.name());
+        }
+        return false;
+    }
+
+    private void executeToolAsync(final String requestId, final ToolDef def,
+                                  final JSONObject args, final boolean confirmed) {
+        submitTool(new Runnable() {
+            @Override
+            public void run() {
+                ToolExecutor.Outcome outcome = toolExecutor.execute(def.name(), args, confirmed);
+                emitToolResult(requestId, def.name(), outcome.ok, outcome.result, confirmed);
+            }
+        });
+    }
+
+    /** 用户直接操作的桥接方法（文件树/终端/预览）：后台执行 + 直接回 tool-result，同时写审计。 */
+    private void runDirectTool(final String requestId, final String toolName, final JSONObject args) {
+        final String rid = requestId == null ? "" : requestId;
+        if (rid.isEmpty()) {
+            return;
+        }
+        submitTool(new Runnable() {
+            @Override
+            public void run() {
+                ToolExecutor.Outcome outcome = toolExecutor.execute(toolName, args, true);
+                emitToolResult(rid, toolName, outcome.ok, outcome.result, true);
+            }
+        });
+    }
+
+    /** SPEC N1 {@code workspaceInfo()}：{@code {"root","writable","allFilesAccess"}}。 */
+    @JavascriptInterface
+    public String workspaceInfo() {
+        try {
+            return workspace.infoJson();
+        } catch (Throwable t) {
+            return errorJson("workspaceInfo 失败：" + describe(t));
+        }
+    }
+
+    /** SPEC N1 {@code listDir(path)}：同步返回 JSON 数组；失败返回 {@code {"error"}}。 */
+    @JavascriptInterface
+    public String listDir(String path) {
+        try {
+            return workspace.listDirJson(path);
+        } catch (SecurityException e) {
+            return errorJson(e.getMessage() == null ? "路径被拒绝" : e.getMessage());
+        } catch (Throwable t) {
+            return errorJson("listDir 失败：" + describe(t));
+        }
+    }
+
+    /** SPEC N1 {@code readFile(requestId,path)}：后台读工作区文本，回 {@code tool-result}（tool=read_file）。 */
+    @JavascriptInterface
+    public void readFile(final String requestId, final String path) {
+        final String rid = requestId == null ? "" : requestId;
+        if (rid.isEmpty()) {
+            return;
+        }
+        final String safePath = path == null ? "" : path;
+        submitTool(new Runnable() {
+            @Override
+            public void run() {
+                ToolExecutor.Outcome outcome = toolExecutor.readFileForPreview(safePath);
+                emitToolResult(rid, "read_file", outcome.ok, outcome.result, true);
+            }
+        });
+    }
+
+    /** SPEC N1 {@code writeFile(requestId,path,content)}：后台写工作区文件，回 {@code tool-result}（tool=write_file）。 */
+    @JavascriptInterface
+    public void writeFile(final String requestId, final String path, final String content) {
+        final String rid = requestId == null ? "" : requestId;
+        if (rid.isEmpty()) {
+            return;
+        }
+        final String safePath = path == null ? "" : path;
+        final String safeContent = content == null ? "" : content;
+        submitTool(new Runnable() {
+            @Override
+            public void run() {
+                ToolExecutor.Outcome outcome = toolExecutor.writeFileDirect(safePath, safeContent);
+                emitToolResult(rid, "write_file", outcome.ok, outcome.result, true);
+            }
+        });
+    }
+
+    /** SPEC N1 {@code runShell(requestId,command)}：用户手动终端命令（不经确认弹窗，但写审计）。 */
+    @JavascriptInterface
+    public void runShell(final String requestId, final String command) {
+        runDirectTool(requestId, "run_shell", args("command", command == null ? "" : command));
+    }
+
+    /** SPEC N1 {@code auditRecent(limit)}：最近审计记录 JSON 数组（新的在前）。 */
+    @JavascriptInterface
+    public String auditRecent(int limit) {
+        try {
+            return auditDb.recent(limit);
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /**
+     * SPEC N1 {@code setWorkspace(path)}：切换工作区（空串恢复默认）。
+     * 结果通过 {@code workspace-changed} 事件回传（SPEC 未定义事件名，属本层补充）。
+     */
+    @JavascriptInterface
+    public void setWorkspace(final String path) {
+        submitTool(new Runnable() {
+            @Override
+            public void run() {
+                boolean ok;
+                try {
+                    ok = workspace.setRoot(path);
+                } catch (Throwable t) {
+                    ok = false;
+                }
+                String message = ok
+                        ? "工作区已切换"
+                        : (workspace.lastError() == null ? "工作区切换失败" : workspace.lastError());
+                emitWorkspaceChanged(ok, workspaceRootSafe(), message);
+            }
+        });
+    }
+
+    /** 补充：当前是否已授予「所有文件访问权限」（UI 可据此提示）。 */
+    @JavascriptInterface
+    public String allFilesAccess() {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("granted", workspace.hasAllFilesAccess());
+            o.put("root", workspaceRootSafe());
+        } catch (JSONException e) {
+            return "{\"granted\":false}";
+        }
+        return o.toString();
+    }
+
+    /** 补充：打开系统「所有文件访问权限」页（Android 11+）。 */
+    @JavascriptInterface
+    public void openAllFilesAccessSettings() {
+        try {
+            workspace.openAllFilesAccessSettings();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    // ------------------------------------------------------------ 手机号 OTP 登录（本地演示）
+
+    /** SPEC N1 {@code requestOtp(phone)}：生成 6 位码（5 分钟有效、60s 限频），发 {@code otp-sent}。 */
+    @JavascriptInterface
+    public void requestOtp(String phone) {
+        try {
+            AuthManager.OtpResult result = auth.requestOtp(phone);
+            emitOtpSent(result);
+        } catch (Throwable t) {
+            emitOtpSent(new AuthManager.OtpResult(false, AuthManager.normalizePhone(phone),
+                    0, "", "验证码发送失败：" + describe(t)));
+        }
+    }
+
+    /** SPEC N1 {@code verifyOtp(requestId,phone,code)}：校验验证码，成功发 {@code otp-verified} + {@code auth-changed}。 */
+    @JavascriptInterface
+    public void verifyOtp(String requestId, String phone, String code) {
+        String rid = requestId == null ? "" : requestId;
+        try {
+            AuthManager.VerifyResult result = auth.verifyOtp(phone, code);
+            emitOtpVerified(rid, result.ok, result.message);
+            if (result.ok) {
+                emitAuthChanged(true, result.phone);
+            }
+        } catch (Throwable t) {
+            emitOtpVerified(rid, false, "登录失败：" + describe(t));
+        }
+    }
+
+    /** SPEC N1 {@code authState()}：{@code {"loggedIn":bool,"phone":".."}}。 */
+    @JavascriptInterface
+    public String authState() {
+        try {
+            return auth.authStateJson();
+        } catch (Throwable t) {
+            return "{\"loggedIn\":false,\"phone\":\"\"}";
+        }
+    }
+
+    /** SPEC N1 {@code logout()}：清 token（保留绑定手机号），发 {@code auth-changed}。 */
+    @JavascriptInterface
+    public void logout() {
+        try {
+            auth.logout();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        emitAuthChanged(false, auth.phone());
+    }
+
+    // ------------------------------------------------------------ P1 内部工具
+
+    private void submitTool(final Runnable task) {
+        if (task == null || released) {
+            return;
+        }
+        try {
+            toolPool.execute(task);
+        } catch (Throwable t) {
+            Thread thread = new Thread(task, "dsh-tool-fallback");
+            thread.setDaemon(true);
+            thread.start();
+        }
+    }
+
+    /** 控制待确认队列规模：超过上限时丢弃最老的一半。 */
+    private void prunePendingTools() {
+        if (pendingTools.size() < MAX_PENDING_TOOLS) {
+            return;
+        }
+        Iterator<Map.Entry<String, PendingTool>> iterator = pendingTools.entrySet().iterator();
+        while (iterator.hasNext() && pendingTools.size() > MAX_PENDING_TOOLS / 2) {
+            iterator.next();
+            iterator.remove();
+        }
+    }
+
+    /** 工作区根（初始化极端失败时返回空串而不是抛异常）。 */
+    private String workspaceRootSafe() {
+        try {
+            return workspace.rootPath();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private void auditTool(String tool, String args, String result, boolean ok, boolean confirmed) {
+        try {
+            auditDb.append(tool, args, result, ok, confirmed);
+        } catch (Throwable ignored) {
+            // 审计失败不影响工具返回
+        }
+    }
+
+    private static JSONObject args(String key, String value) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put(key, value == null ? "" : value);
+        } catch (JSONException ignored) {
+            // 不可能失败：key 非 null
+        }
+        return o;
+    }
+
+    private static JSONObject args(String key1, String value1, String key2, String value2) {
+        JSONObject o = args(key1, value1);
+        try {
+            o.put(key2, value2 == null ? "" : value2);
+        } catch (JSONException ignored) {
+            // 忽略
+        }
+        return o;
     }
 
     // ============================================================ §3.2 异步方法
@@ -868,6 +1296,100 @@ public final class JsBridge {
         try {
             o.put("type", "app-state");
             o.put("foreground", foreground);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    // ------------------------------------------------------------ ARCH v2 P1 事件
+
+    /** {@code {"type":"tool-confirm","requestId":..,"tool":..,"args":{..},"risk":"high"}} */
+    private void emitToolConfirm(String requestId, ToolDef def, JSONObject args) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "tool-confirm");
+            o.put("requestId", requestId == null ? "" : requestId);
+            o.put("tool", def == null ? "" : def.name());
+            o.put("args", args == null ? new JSONObject() : args);
+            o.put("risk", def == null ? "high" : def.risk().wireName());
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** {@code {"type":"tool-result","requestId":..,"tool":..,"ok":true,"result":"..","confirmed":true}} */
+    private void emitToolResult(String requestId, String tool, boolean ok,
+                                String result, boolean confirmed) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "tool-result");
+            o.put("requestId", requestId == null ? "" : requestId);
+            o.put("tool", tool == null ? "" : tool);
+            o.put("ok", ok);
+            o.put("result", result == null ? "" : result);
+            o.put("confirmed", confirmed);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** {@code {"type":"otp-sent","phone":"..","ttlSeconds":300,"demoCode":"123456"}}（失败时 ttl=0/demoCode=""）。 */
+    private void emitOtpSent(AuthManager.OtpResult result) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "otp-sent");
+            o.put("phone", result == null ? "" : result.phone);
+            o.put("ttlSeconds", result == null ? 0 : result.ttlSeconds);
+            o.put("demoCode", result == null ? "" : result.demoCode);
+            o.put("ok", result != null && result.ok);
+            if (result != null && result.message != null && !result.message.isEmpty()) {
+                o.put("message", result.message);
+            }
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** {@code {"type":"otp-verified","requestId":..,"ok":true,"message":".."}} */
+    private void emitOtpVerified(String requestId, boolean ok, String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "otp-verified");
+            o.put("requestId", requestId == null ? "" : requestId);
+            o.put("ok", ok);
+            o.put("message", message == null ? "" : message);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** {@code {"type":"auth-changed","loggedIn":true,"phone":".."}} */
+    private void emitAuthChanged(boolean loggedIn, String phone) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "auth-changed");
+            o.put("loggedIn", loggedIn);
+            o.put("phone", phone == null ? "" : phone);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
+    /** 补充事件：{@code {"type":"workspace-changed","ok":true,"root":"..","message":".."}} */
+    private void emitWorkspaceChanged(boolean ok, String root, String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "workspace-changed");
+            o.put("ok", ok);
+            o.put("root", root == null ? "" : root);
+            o.put("message", message == null ? "" : message);
+            o.put("allFilesAccess", workspace.hasAllFilesAccess());
         } catch (JSONException ignored) {
             return;
         }

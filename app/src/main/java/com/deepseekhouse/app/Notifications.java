@@ -25,11 +25,14 @@ public final class Notifications {
 
     public static final String CHANNEL_GENERATING = "dsh_generating";
     public static final String CHANNEL_MESSAGES = "dsh_messages";
+    /** ARCH v2 P1：手机号登录验证码（本地 OTP 演示，验证码直接展示在通知里）。 */
+    public static final String CHANNEL_OTP = "dsh_otp";
 
     /** 前台服务通知 id（固定，重复 startForeground 会复用同一条）。 */
     public static final int GENERATING_ID = 1001;
 
     private static final int MESSAGE_ID_BASE = 2001;
+    private static final int LOGIN_CODE_ID = 3001;
 
     private Notifications() {
     }
@@ -58,6 +61,13 @@ public final class Notifications {
                     NotificationManager.IMPORTANCE_DEFAULT);
             messages.setDescription(context.getString(R.string.notify_channel_messages_desc));
             manager.createNotificationChannel(messages);
+
+            NotificationChannel otp = new NotificationChannel(
+                    CHANNEL_OTP,
+                    context.getString(R.string.notify_channel_otp),
+                    NotificationManager.IMPORTANCE_HIGH);
+            otp.setDescription(context.getString(R.string.notify_channel_otp_desc));
+            manager.createNotificationChannel(otp);
         } catch (Throwable ignored) {
             // 渠道创建失败（个别 ROM）不影响主流程
         }
@@ -106,6 +116,39 @@ public final class Notifications {
         }
         try {
             manager.notify(id, builder.build());
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /**
+     * ARCH v2 P1：登录验证码通知（本地 OTP 演示：验证码直接展示，不真的发短信）。
+     * API 33+ 未授予通知权限时静默丢弃，验证码仍会随 {@code otp-sent} 事件的 demoCode 下发。
+     */
+    public static void showLoginCode(Context context, String phone, String code) {
+        if (context == null || !canNotify(context)) {
+            return;
+        }
+        ensureChannels(context);
+        String digits = code == null ? "" : code;
+        String text = context.getString(R.string.login_code_text, digits);
+        if (phone != null && !phone.isEmpty()) {
+            text = text + "（手机号 " + phone + "）";
+        }
+        Notification.Builder builder = newBuilder(context, CHANNEL_OTP);
+        builder.setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setContentTitle(context.getString(R.string.login_code_title))
+                .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .setShowWhen(true)
+                .setContentIntent(openAppIntent(context, LOGIN_CODE_ID));
+        NotificationManager manager = manager(context);
+        if (manager == null) {
+            return;
+        }
+        try {
+            manager.notify(LOGIN_CODE_ID, builder.build());
         } catch (Throwable ignored) {
             // 忽略
         }

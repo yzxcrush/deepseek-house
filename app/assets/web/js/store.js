@@ -264,6 +264,15 @@
     if (raw.reasoning) msg.reasoning = String(raw.reasoning);
     if (raw.toolName) msg.toolName = String(raw.toolName);
     if (raw.toolCallId) msg.toolCallId = String(raw.toolCallId);
+    /* ARCH v2 P1：工具调用卡片字段（args/result/ok/confirmState/confirmed） */
+    if (raw.args !== undefined && raw.args !== null) {
+      msg.args = typeof raw.args === 'object' ? clone(raw.args) : String(raw.args);
+    }
+    if (raw.result !== undefined && raw.result !== null) msg.result = String(raw.result);
+    if (raw.ok !== undefined) msg.ok = !!raw.ok;
+    if (raw.confirmState) msg.confirmState = String(raw.confirmState);
+    if (raw.confirmed !== undefined) msg.confirmed = !!raw.confirmed;
+    if (raw.toolRisk) msg.toolRisk = String(raw.toolRisk);
     if (raw.error) msg.error = String(raw.error);
     if (raw.streaming) msg.streaming = true;
     if (raw.stopped) msg.stopped = true;

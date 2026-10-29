@@ -28,7 +28,13 @@
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>',
     puzzle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
-    x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>'
+    x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>',
+    folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h3.2l1.8 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-9Z"></path><path d="M3.5 10h17"></path></svg>',
+    file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V8h4"></path><path d="M8.5 12.5h7M8.5 16h5"></path></svg>',
+    terminal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect><path d="m7 9.5 3 2.5-3 2.5"></path><path d="M13 15h4"></path></svg>',
+    fork: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2.2"></circle><circle cx="18" cy="5" r="2.2"></circle><circle cx="12" cy="19" r="2.2"></circle><path d="M6 7.2v2.3a2.5 2.5 0 0 0 2.5 2.5h7A2.5 2.5 0 0 0 18 9.5V7.2"></path><path d="M12 12v4.8"></path></svg>',
+    audit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"></path><path d="M9 4v4h6"></path><path d="M8.5 12.5h7M8.5 16h7"></path></svg>',
+    backup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11"></path><path d="m8 10 4 4 4-4"></path><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"></path></svg>'
   };
 
   var MODEL_LABELS = {
@@ -122,7 +128,38 @@
     menuItems: [],
     pressTimer: 0,
     pressStart: null,
-    pressFired: false
+    pressFired: false,
+
+    /* ARCH v2 P1：文件树抽屉 / 工作区 / 终端 / 高危确认 / 手机号登录 / 审计 */
+    fileDrawer: {
+      open: false,
+      entries: [],
+      root: '',
+      path: '',
+      writable: true,
+      loading: false,
+      dragX: 0
+    },
+    workspace: {
+      root: '',
+      writable: false,
+      allFilesAccess: false,
+      loaded: false
+    },
+    terminal: {
+      open: false,
+      running: false,
+      timer: 0
+    },
+    riskResolve: null,
+    loginTab: 'apikey',
+    otp: {
+      timer: 0,
+      left: 0,
+      demoCode: '',
+      sent: false
+    },
+    audit: []
   };
 
   var UI = {};
@@ -1124,11 +1161,13 @@
     var base;
     if (state.screen === 'chats') base = 0;
     else if (state.screen === 'chat') base = 1;
-    else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents') base = 2;
+    else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents' ||
+             state.screen === 'audit') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
-      state.agentPicker.open ||
-      isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal'));
+      state.agentPicker.open || state.fileDrawer.open ||
+      isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) ||
+      isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1159,7 +1198,8 @@
   function closeAllModals() {
     if (isModalOpen(r('confirm-modal'))) resolveConfirm(false);
     if (isModalOpen(r('rename-modal'))) resolveRename(null);
-    ['install-modal', 'confirm-modal', 'rename-modal'].forEach(function (id) {
+    if (isModalOpen(r('risk-modal'))) resolveRisk(false);
+    ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -1230,6 +1270,941 @@
     resolveRename(title);
   }
 
+  /* ================================================================== *
+   * ARCH v2 P1：工作区文件树抽屉
+   * ================================================================== */
+  function updateWorkspaceDom() {
+    var ws = state.workspace;
+    var root = ws.root || '';
+    var rootEl = r('file-root');
+    if (rootEl) {
+      rootEl.textContent = root || '未设置工作区';
+      rootEl.title = root;
+    }
+    var valueEl = r('set-workspace-value');
+    if (valueEl) {
+      valueEl.textContent = root || '未设置';
+      valueEl.title = root;
+    }
+    var writableEl = r('set-workspace-writable');
+    if (writableEl) {
+      var text = '未知';
+      if (root) {
+        if (!ws.writable) text = '只读';
+        else text = ws.allFilesAccess ? '可读写 · 全部文件访问' : '可读写';
+      }
+      writableEl.textContent = text;
+      writableEl.classList.toggle('is-readonly', !!root && !ws.writable);
+    }
+    var accessEl = r('set-workspace-access');
+    if (accessEl) {
+      var accessText = '未知';
+      if (root) {
+        if (ws.allFilesAccess) accessText = '已授权（可访问所有文件）';
+        else if (ws.isDefault === false) accessText = '需要授予所有文件访问权限';
+        else accessText = '应用私有目录（无需额外权限）';
+      }
+      accessEl.textContent = accessText;
+      accessEl.classList.toggle('is-warn', !!root && ws.isDefault === false && !ws.allFilesAccess);
+    }
+    /* 非默认工作区时提供「恢复默认工作区」入口 */
+    var resetRow = r('set-workspace-reset');
+    if (resetRow) {
+      var canReset = !!root && ws.isDefault === false;
+      resetRow.hidden = !canReset;
+      var resetHint = r('set-workspace-reset-hint');
+      if (resetHint && ws.defaultRoot) resetHint.textContent = ws.defaultRoot;
+    }
+  }
+
+  function setWorkspaceInfo(info) {
+    var data = info && typeof info === 'object' ? info : {};
+    var ws = state.workspace;
+    if (data.root != null) {
+      ws.root = String(data.root);
+      state.fileDrawer.root = ws.root;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'writable')) ws.writable = !!data.writable;
+    if (Object.prototype.hasOwnProperty.call(data, 'allFilesAccess')) ws.allFilesAccess = !!data.allFilesAccess;
+    if (Object.prototype.hasOwnProperty.call(data, 'defaultRoot')) ws.defaultRoot = data.defaultRoot == null ? '' : String(data.defaultRoot);
+    if (Object.prototype.hasOwnProperty.call(data, 'isDefault')) ws.isDefault = !!data.isDefault;
+    ws.loaded = true;
+    updateWorkspaceDom();
+    return {
+      root: ws.root,
+      writable: ws.writable,
+      allFilesAccess: ws.allFilesAccess,
+      defaultRoot: ws.defaultRoot || '',
+      isDefault: ws.isDefault === true
+    };
+  }
+
+  function normalizeFileEntries(entries) {
+    var out = [];
+    (Array.isArray(entries) ? entries : []).forEach(function (item) {
+      if (!item || typeof item !== 'object') return;
+      var path = item.path == null ? '' : String(item.path);
+      var name = item.name == null ? '' : String(item.name);
+      if (!name && path) {
+        var parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+        name = parts.length ? parts[parts.length - 1] : path;
+      }
+      if (!name) return;
+      out.push({
+        name: name,
+        path: path,
+        isDir: item.isDir === true || item.isDir === 'true' || item.dir === true,
+        size: Number(item.size) || 0,
+        depth: typeof item.depth === 'number' && isFinite(item.depth) ? item.depth : null
+      });
+    });
+    out.sort(function (a, b) {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return String(a.name).localeCompare(String(b.name), 'zh-Hans-CN');
+    });
+    return out;
+  }
+
+  function fileDepth(entry) {
+    if (entry.depth != null) return Math.max(0, entry.depth);
+    var base = String(state.fileDrawer.path || state.fileDrawer.root || '');
+    var path = String(entry.path || '');
+    var rel = path;
+    if (base && path.indexOf(base) === 0) rel = path.slice(base.length);
+    rel = rel.replace(/^[\\/]+/, '');
+    if (!rel) return 0;
+    var parts = rel.split(/[\\/]+/).filter(Boolean);
+    return Math.max(0, parts.length - 1);
+  }
+
+  function fileSizeText(size) {
+    var value = Number(size) || 0;
+    if (value <= 0) return '';
+    if (value < 1024) return value + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10240 ? 1 : 0) + ' KB';
+    return (value / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function joinPath(base, name) {
+    var root = String(base || '');
+    var leaf = String(name || '');
+    if (!root) return leaf;
+    if (root.charAt(root.length - 1) === '/') return root + leaf;
+    return root + '/' + leaf;
+  }
+
+  function renderFileCrumbs() {
+    var box = r('file-crumbs');
+    if (!box) return;
+    box.textContent = '';
+    var data = state.fileDrawer;
+    var root = String(data.root || state.workspace.root || '');
+    var current = String(data.path || root || '');
+    var parts = root ? root.replace(/\\/g, '/').split('/').filter(Boolean) : [];
+
+    function addCrumb(label, path, isCurrent) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'file-crumb' + (isCurrent ? ' is-current' : '');
+      btn.setAttribute('data-action', 'file-crumb');
+      btn.setAttribute('data-path', String(path));
+      btn.setAttribute('aria-current', isCurrent ? 'true' : 'false');
+      btn.textContent = label;
+      box.appendChild(btn);
+    }
+
+    function addSeparator() {
+      box.appendChild(makeText('span', 'file-crumb-sep', '/'));
+    }
+
+    if (!root) {
+      addCrumb('工作区', '', true);
+      return;
+    }
+
+    addCrumb(parts.length ? parts[parts.length - 1] : '工作区', root, current === root);
+    if (current && current !== root && current.indexOf(root) === 0) {
+      var rel = current.slice(root.length).replace(/^[\\/]+/, '');
+      var segs = rel.split(/[\\/]+/).filter(Boolean);
+      var acc = root;
+      segs.forEach(function (seg) {
+        acc = joinPath(acc, seg);
+        addSeparator();
+        addCrumb(seg, acc, acc === current);
+      });
+    }
+  }
+
+  function renderFileTree(entries, opts) {
+    var data = state.fileDrawer;
+    var options = {};
+    if (typeof opts === 'string') options.path = opts;
+    else if (opts && typeof opts === 'object') options = opts;
+
+    /* listDir 失败时原生返回 {"error":".."}：渲染为错误行 */
+    var errorText = '';
+    if (!Array.isArray(entries)) {
+      if (entries && typeof entries === 'object' && !Array.isArray(entries)) {
+        errorText = entries.error == null ? '' : String(entries.error);
+        if (!errorText && entries.message != null) errorText = String(entries.message);
+      } else if (typeof entries === 'string' && entries) {
+        errorText = entries;
+      }
+    }
+
+    if (options.root != null && String(options.root) !== '') {
+      state.workspace.root = String(options.root);
+      data.root = state.workspace.root;
+      updateWorkspaceDom();
+    }
+    if (options.path != null) data.path = String(options.path);
+    data.entries = normalizeFileEntries(Array.isArray(entries) ? entries : []);
+    data.loading = false;
+
+    var box = r('file-tree');
+    if (box) {
+      box.textContent = '';
+      if (errorText) {
+        var errorRow = el('div', 'file-empty file-empty--error');
+        errorRow.id = 'file-empty';
+        errorRow.textContent = '目录读取失败：' + errorText;
+        state.refs['file-empty'] = errorRow;
+        box.appendChild(errorRow);
+      } else if (!data.entries.length) {
+        var empty = el('div', 'file-empty');
+        empty.id = 'file-empty';
+        empty.textContent = '空目录';
+        state.refs['file-empty'] = empty;
+        box.appendChild(empty);
+      } else {
+        data.entries.forEach(function (entry) {
+          var node = document.createElement('button');
+          node.type = 'button';
+          node.className = 'file-node ' + (entry.isDir ? 'file-node--dir' : 'file-node--file');
+          node.setAttribute('data-action', 'file-node');
+          node.setAttribute('data-path', entry.path);
+          node.setAttribute('data-dir', entry.isDir ? '1' : '0');
+          node.setAttribute('role', 'listitem');
+          node.style.paddingLeft = (10 + Math.min(fileDepth(entry), 6) * 14) + 'px';
+
+          var icon = el('span', 'file-node-icon');
+          icon.innerHTML = entry.isDir ? ICON.folder : ICON.file;
+          node.appendChild(icon);
+          node.appendChild(makeText('span', 'file-node-name', entry.name));
+          var size = fileSizeText(entry.size);
+          if (!entry.isDir && size) node.appendChild(makeText('span', 'file-node-size', size));
+          box.appendChild(node);
+        });
+      }
+    }
+
+    renderFileCrumbs();
+    var foot = r('file-foot');
+    if (foot) {
+      if (errorText) foot.textContent = '目录读取失败';
+      else if (data.entries.length) foot.textContent = data.entries.length + ' 项 · 点击目录进入，点击文件打开';
+      else foot.textContent = '工作区目录为空';
+    }
+    return data.entries;
+  }
+
+  function showFilePlaceholder(text) {
+    var box = r('file-tree');
+    if (!box) return;
+    box.textContent = '';
+    var empty = el('div', 'file-empty');
+    empty.id = 'file-empty';
+    empty.textContent = text;
+    state.refs['file-empty'] = empty;
+    box.appendChild(empty);
+  }
+
+  function requestFilePath(path, isDir) {
+    var value = path == null ? '' : String(path);
+    if (!isDir) {
+      if (!invoke('onOpenFile', value, false)) UI.toast('打开文件服务尚未就绪');
+      return;
+    }
+    state.fileDrawer.path = value;
+    renderFileCrumbs();
+    var handled = invoke('onOpenFile', value, true);
+    if (!handled) {
+      var listed = invoke('onListDir', value);
+      if (!listed) showFilePlaceholder('文件服务尚未就绪');
+    }
+  }
+
+  function refreshFileTree() {
+    var path = state.fileDrawer.path || state.workspace.root || '';
+    var handled = invoke('onOpenFile', path, true);
+    if (!handled) {
+      var listed = invoke('onListDir', path);
+      if (!listed) showFilePlaceholder('文件服务尚未就绪');
+    }
+  }
+
+  function openFileDrawer() {
+    if (state.fileDrawer.open) return;
+    state.fileDrawer.open = true;
+    var drawer = r('file-drawer');
+    var overlay = r('file-overlay');
+    if (drawer) {
+      drawer.style.transform = '';
+      drawer.classList.remove('is-dragging');
+      drawer.classList.add('is-open');
+      drawer.setAttribute('aria-hidden', 'false');
+    }
+    if (overlay) {
+      overlay.classList.add('is-open');
+      overlay.setAttribute('aria-hidden', 'false');
+    }
+    updateWorkspaceDom();
+    renderFileCrumbs();
+    syncDepth();
+    var handled = invoke('onOpenFile');
+    if (!handled) {
+      var listed = invoke('onListDir', state.fileDrawer.path || state.workspace.root || '');
+      if (!listed) showFilePlaceholder('文件服务尚未就绪');
+    }
+  }
+
+  function closeFileDrawer() {
+    if (!state.fileDrawer.open) return;
+    state.fileDrawer.open = false;
+    state.fileDrawer.dragX = 0;
+    var drawer = r('file-drawer');
+    var overlay = r('file-overlay');
+    if (drawer) {
+      drawer.classList.remove('is-open');
+      drawer.classList.remove('is-dragging');
+      drawer.style.transform = '';
+      drawer.setAttribute('aria-hidden', 'true');
+    }
+    if (overlay) {
+      overlay.classList.remove('is-open');
+      overlay.setAttribute('aria-hidden', 'true');
+    }
+    syncDepth();
+  }
+
+  /* 文件抽屉左滑关闭（移动端手势） */
+  var fileDrag = { active: false, startX: 0, dx: 0, pointerId: null };
+
+  function onFileDrawerDragStart(event) {
+    if (!state.fileDrawer.open) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (event.target && event.target.closest && event.target.closest('button, input')) return;
+    fileDrag.active = true;
+    fileDrag.startX = event.clientX;
+    fileDrag.dx = 0;
+    fileDrag.pointerId = event.pointerId;
+    var drawer = r('file-drawer');
+    if (drawer) drawer.classList.add('is-dragging');
+  }
+
+  function onFileDrawerDragMove(event) {
+    if (!fileDrag.active) return;
+    var dx = event.clientX - fileDrag.startX;
+    if (dx > 0) dx = 0;
+    fileDrag.dx = dx;
+    var drawer = r('file-drawer');
+    if (!drawer) return;
+    var width = drawer.offsetWidth || window.innerWidth || 360;
+    var offset = Math.max(dx, -width);
+    drawer.style.transform = 'translateX(' + offset + 'px)';
+  }
+
+  function onFileDrawerDragEnd() {
+    if (!fileDrag.active) return;
+    fileDrag.active = false;
+    var drawer = r('file-drawer');
+    var dx = fileDrag.dx;
+    fileDrag.dx = 0;
+    if (!drawer) return;
+    drawer.classList.remove('is-dragging');
+    drawer.style.transform = '';
+    var width = drawer.offsetWidth || window.innerWidth || 360;
+    if (dx < -72 || (width > 0 && dx / width < -0.22)) closeFileDrawer();
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P1：底部终端面板
+   * ================================================================== */
+  function setTerminalOpen(open) {
+    state.terminal.open = !!open;
+    var panel = r('terminal-panel');
+    if (panel) {
+      panel.hidden = !state.terminal.open;
+      panel.setAttribute('aria-hidden', state.terminal.open ? 'false' : 'true');
+    }
+    var app = r('app');
+    if (app) app.classList.toggle('is-terminal-open', state.terminal.open);
+    if (state.terminal.open) {
+      var output = r('terminal-output');
+      if (output) output.scrollTop = output.scrollHeight;
+      var input = r('terminal-input');
+      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+      scrollToBottom();
+    }
+  }
+
+  function toggleTerminal(force) {
+    var open = force === undefined ? !state.terminal.open : !!force;
+    if (open === state.terminal.open) return state.terminal.open;
+    setTerminalOpen(open);
+    return state.terminal.open;
+  }
+
+  function terminalOutputEl() {
+    return r('terminal-output');
+  }
+
+  function setTerminalBusy(busy) {
+    state.terminal.running = !!busy;
+    if (state.terminal.timer) {
+      clearTimeout(state.terminal.timer);
+      state.terminal.timer = 0;
+    }
+    var input = r('terminal-input');
+    var runBtn = r('terminal-run');
+    if (input) input.disabled = state.terminal.running;
+    if (runBtn) {
+      runBtn.disabled = state.terminal.running;
+      runBtn.textContent = state.terminal.running ? '执行中…' : '执行';
+    }
+    if (state.terminal.running) {
+      /* 兜底 65s 解除（与原生 run_shell 30s 超时 + 事件回传错开） */
+      state.terminal.timer = setTimeout(function () {
+        state.terminal.timer = 0;
+        setTerminalBusy(false);
+      }, 65000);
+    }
+  }
+
+  function appendTerminal(text, opts) {
+    var output = terminalOutputEl();
+    if (!output) return;
+    var options = opts && typeof opts === 'object' ? opts : {};
+    if (options.command != null && String(options.command) !== '') {
+      output.appendChild(document.createTextNode('$ ' + String(options.command) + '\n'));
+    }
+    var value = text == null ? '' : String(text);
+    if (!value) {
+      if (options.command != null) output.scrollTop = output.scrollHeight;
+      return;
+    }
+    output.appendChild(document.createTextNode(value));
+    if (options.raw !== true && !/\n$/.test(value)) output.appendChild(document.createTextNode('\n'));
+    output.scrollTop = output.scrollHeight;
+    /* 收到执行结果 → 恢复终端输入 */
+    if (state.terminal.running) setTerminalBusy(false);
+  }
+
+  function clearTerminal() {
+    var output = terminalOutputEl();
+    if (output) output.textContent = '';
+  }
+
+  function copyTerminal() {
+    var output = terminalOutputEl();
+    var text = output ? String(output.textContent || '') : '';
+    if (!text) {
+      UI.toast('终端没有内容');
+      return;
+    }
+    copyText(text);
+  }
+
+  function runTerminalCommand() {
+    var input = r('terminal-input');
+    if (!input) return;
+    var command = String(input.value || '').trim();
+    if (!command) {
+      try { input.focus(); } catch (err) { /* 静默 */ }
+      return;
+    }
+    input.value = '';
+    if (!invoke('onRunShell', command)) {
+      appendTerminal('', { command: command });
+      appendTerminal('[系统] 终端服务尚未就绪');
+      return;
+    }
+    /* 执行期间禁用输入，结果回填（appendTerminal）或 65s 兜底后恢复 */
+    setTerminalBusy(true);
+    try { input.focus(); } catch (err) { /* 静默 */ }
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P1：工具调用卡片（role:'tool'）
+   * ================================================================== */
+  function toolArgsText(args) {
+    if (args == null || args === '') return '';
+    if (typeof args === 'string') {
+      var raw = args;
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch (err) {
+        return raw;
+      }
+    }
+    try {
+      return JSON.stringify(args, null, 2);
+    } catch (err) {
+      try { return String(args); } catch (err2) { return ''; }
+    }
+  }
+
+  function toolResultText(msg) {
+    if (!msg) return '';
+    var value = msg.result != null ? msg.result : msg.content;
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (err) {
+      try { return String(value); } catch (err2) { return ''; }
+    }
+  }
+
+  function toolStatusOf(msg) {
+    var source = msg || {};
+    var cs = String(source.confirmState == null ? '' : source.confirmState).toLowerCase();
+    var hasResult = (source.result != null && String(source.result) !== '') ||
+      (source.content != null && String(source.content) !== '');
+    if ((cs === 'pending' || cs === 'waiting' || cs === 'confirm' || cs === 'confirming' || source.pending === true) &&
+        source.ok !== true && source.ok !== false && !hasResult) {
+      return { key: 'pending', label: '等待确认' };
+    }
+    /* 用户拒绝执行：优先级高于 ok=false，显示「已拒绝」而不是笼统失败 */
+    if (cs === 'rejected' || cs === 'denied' || source.rejected === true) {
+      return { key: 'rejected', label: '已拒绝' };
+    }
+    if (source.ok === false || cs === 'error' || cs === 'failed' || cs === 'fail') {
+      return { key: 'error', label: '失败' };
+    }
+    /* 结果 / ok 为权威状态，避免执行阶段写入的 running 残留 */
+    if (source.ok === true || cs === 'success' || cs === 'ok' || cs === 'done' || cs === 'confirmed' || hasResult) {
+      return { key: 'success', label: '成功' };
+    }
+    if (cs === 'running' || cs === 'executing' || source.running === true) {
+      return { key: 'running', label: '运行中' };
+    }
+    return { key: 'running', label: '运行中' };
+  }
+
+  function applyToolCardFields(msg, refs) {
+    var card = refs.toolCard;
+    if (!card) return;
+    var name = msg.toolName || msg.name || 'tool';
+    var nameText = String(name);
+    if (card.name.textContent !== nameText) card.name.textContent = nameText;
+
+    var status = toolStatusOf(msg);
+    if (refs.lastToolStatus !== status.key) {
+      card.badge.className = 'tool-badge tool-badge--' + status.key;
+      card.badge.textContent = status.label;
+      refs.lastToolStatus = status.key;
+    }
+
+    var argsFullText = toolArgsText(msg.args);
+    if (refs.lastToolArgs !== argsFullText) {
+      if (argsFullText) {
+        card.args.hidden = false;
+        var flat = argsFullText.replace(/\s+/g, ' ').trim();
+        card.argsSummary.textContent = truncate(flat, 120);
+        card.argsSummary.title = flat;
+        card.argsFull.textContent = argsFullText;
+      } else {
+        card.args.hidden = true;
+        card.args.open = false;
+        card.argsSummary.textContent = '';
+        card.argsFull.textContent = '';
+      }
+      refs.lastToolArgs = argsFullText;
+    }
+
+    var resultText = toolResultText(msg);
+    if (refs.lastToolResult !== resultText) {
+      var hasResult = resultText !== '';
+      card.result.hidden = !hasResult;
+      card.resultBody.textContent = resultText;
+      card.resultSummary.textContent = hasResult
+        ? truncate(resultText.replace(/\s+/g, ' ').trim(), 48)
+        : '暂无输出';
+      card.resultSummary.title = hasResult ? resultText.replace(/\s+/g, ' ').trim() : '';
+      refs.lastToolResult = resultText;
+    }
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P1：高危工具确认弹窗
+   * ================================================================== */
+  function normalizeRiskLevel(risk) {
+    var value = String(risk == null ? '' : risk).trim().toLowerCase();
+    if (value === 'high' || value === 'mid' || value === 'low') return value;
+    return 'mid';
+  }
+
+  function resolveRisk(value) {
+    closeModal(r('risk-modal'));
+    var resolve = state.riskResolve;
+    state.riskResolve = null;
+    if (typeof resolve === 'function') resolve(!!value);
+  }
+
+  function confirmRisk(tool, args, risk) {
+    if (state.riskResolve) resolveRisk(false);
+    var level = normalizeRiskLevel(risk);
+    var badge = r('risk-badge');
+    if (badge) {
+      badge.className = 'risk-badge risk-badge--' + level;
+      badge.textContent = level.toUpperCase();
+    }
+    var toolEl = r('risk-tool');
+    if (toolEl) toolEl.textContent = tool == null ? 'tool' : String(tool);
+    var hint = r('risk-hint');
+    if (hint) {
+      hint.textContent = level === 'high'
+        ? '该工具风险较高，可能修改或删除本机文件、执行任意命令，请确认参数后再允许执行：'
+        : '该工具会访问本机数据，确认参数后才会执行：';
+    }
+    var argsEl = r('risk-args');
+    if (argsEl) argsEl.textContent = toolArgsText(args);
+    openModal(r('risk-modal'));
+    return new Promise(function (resolve) {
+      state.riskResolve = resolve;
+    });
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P1：手机号登录（API Key / 手机号 tab）
+   * ================================================================== */
+  function activeLoginTab() {
+    return state.loginTab === 'phone' ? 'phone' : 'apikey';
+  }
+
+  function switchLoginTab(tab) {
+    state.loginTab = tab === 'phone' ? 'phone' : 'apikey';
+    var tabs = document.querySelectorAll('#login-tabs [data-login-tab]');
+    Array.prototype.forEach.call(tabs, function (btn) {
+      var on = btn.getAttribute('data-login-tab') === state.loginTab;
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    var apiForm = r('login-form');
+    if (apiForm) apiForm.hidden = state.loginTab !== 'apikey';
+    var phoneForm = r('login-phone-form');
+    if (phoneForm) phoneForm.hidden = state.loginTab !== 'phone';
+    var note = document.querySelector('.login-note');
+    if (note) {
+      note.textContent = state.loginTab === 'phone'
+        ? '验证码只在本机校验。开启通知权限后，验证码会显示在「登录验证码」通知中。'
+        : (state.login.hasKey
+          ? '已检测到本机保存的 Key。输入新的 Key 可替换，直接重新登录即可验证。'
+          : 'Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。');
+    }
+    var error = state.login.error || '';
+    var apiError = r('login-error');
+    var phoneError = r('login-phone-error');
+    if (apiError) {
+      apiError.textContent = state.loginTab === 'apikey' ? error : '';
+      apiError.hidden = state.loginTab !== 'apikey' || !error;
+    }
+    if (phoneError) {
+      phoneError.textContent = state.loginTab === 'phone' ? error : '';
+      phoneError.hidden = state.loginTab !== 'phone' || !error;
+    }
+  }
+
+  function updateOtpButton() {
+    var btn = r('login-send-otp');
+    if (!btn) return;
+    if (state.otp.left > 0) {
+      btn.disabled = true;
+      btn.textContent = state.otp.left + 's 后重发';
+    } else {
+      btn.disabled = !!state.login.busy;
+      btn.textContent = '发送验证码';
+    }
+  }
+
+  function stopOtpCountdown() {
+    if (state.otp.timer) {
+      clearInterval(state.otp.timer);
+      state.otp.timer = 0;
+    }
+    state.otp.left = 0;
+    state.otp.sent = false;
+    updateOtpButton();
+  }
+
+  function startOtpCountdown(seconds) {
+    stopOtpCountdown();
+    var total = parseInt(seconds, 10);
+    if (!isFinite(total) || total <= 0) total = 60;
+    total = Math.max(1, Math.min(600, total));
+    state.otp.left = total;
+    state.otp.sent = true;
+    updateOtpButton();
+    state.otp.timer = setInterval(function () {
+      state.otp.left -= 1;
+      if (state.otp.left <= 0) {
+        stopOtpCountdown();
+        return;
+      }
+      updateOtpButton();
+    }, 1000);
+  }
+
+  function showOtpHint(text) {
+    var hint = r('login-otp-hint');
+    if (!hint) return;
+    var message = text == null ? '' : String(text);
+    if (state.otp.demoCode) {
+      message += (message ? '\n' : '') + '演示验证码：' + state.otp.demoCode + '（仅本机模拟）';
+    }
+    hint.textContent = message;
+    hint.hidden = !message;
+  }
+
+  function showLoginErrorInTab(text) {
+    var message = text == null ? '' : String(text);
+    state.login.error = message;
+    var apiError = r('login-error');
+    var phoneError = r('login-phone-error');
+    if (activeLoginTab() === 'phone') {
+      if (phoneError) {
+        phoneError.textContent = message;
+        phoneError.hidden = !message;
+      }
+      if (apiError) {
+        apiError.textContent = '';
+        apiError.hidden = true;
+      }
+    } else {
+      if (apiError) {
+        apiError.textContent = message;
+        apiError.hidden = !message;
+      }
+      if (phoneError) {
+        phoneError.textContent = '';
+        phoneError.hidden = true;
+      }
+    }
+  }
+
+  function doSendOtp() {
+    var input = r('login-phone');
+    var phone = input ? String(input.value || '') : '';
+    var normalized = phone.replace(/[\s-]/g, '');
+    if (!normalized) {
+      showLoginErrorInTab('请输入手机号');
+      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+      return;
+    }
+    if (!/^\+?\d{5,20}$/.test(normalized)) {
+      showLoginErrorInTab('手机号格式不正确');
+      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+      return;
+    }
+    if (state.otp.left > 0) return;
+    showLoginErrorInTab('');
+    if (!invoke('onSendOtp', normalized)) {
+      showLoginErrorInTab('登录服务尚未就绪');
+      return;
+    }
+    startOtpCountdown(60);
+    showOtpHint('验证码已发送，请查看系统通知。');
+    var otpInput = r('login-otp');
+    if (otpInput) { try { otpInput.focus(); } catch (err) { /* 静默 */ } }
+  }
+
+  function doPhoneLogin() {
+    var phoneInput = r('login-phone');
+    var otpInput = r('login-otp');
+    var phone = phoneInput ? String(phoneInput.value || '') : '';
+    var normalized = phone.replace(/[\s-]/g, '');
+    var code = otpInput ? String(otpInput.value || '').replace(/\s/g, '') : '';
+    if (!normalized) {
+      showLoginErrorInTab('请输入手机号');
+      if (phoneInput) { try { phoneInput.focus(); } catch (err) { /* 静默 */ } }
+      return;
+    }
+    if (!code) {
+      showLoginErrorInTab('请输入验证码');
+      if (otpInput) { try { otpInput.focus(); } catch (err) { /* 静默 */ } }
+      return;
+    }
+    showLoginErrorInTab('');
+    if (!invoke('onPhoneLogin', normalized, code)) {
+      showLoginErrorInTab('登录服务尚未就绪');
+    }
+  }
+
+  function onOtpSent(evt) {
+    var data = evt && typeof evt === 'object' ? evt : {};
+    if (data.phone) {
+      var input = r('login-phone');
+      if (input && !String(input.value || '').trim()) input.value = String(data.phone);
+    }
+    state.otp.demoCode = data.demoCode ? String(data.demoCode) : '';
+    if (state.loginTab !== 'phone') switchLoginTab('phone');
+
+    /* 失败事件（限频 / 手机号格式错误）带 message：显示在错误位，不当作“已发送” */
+    var failed = !!data.message && !data.demoCode;
+    if (failed) {
+      showLoginErrorInTab(String(data.message));
+      showOtpHint('');
+      if (!state.otp.timer) {
+        startOtpCountdown(data.resendSeconds != null ? data.resendSeconds : 60);
+      }
+      return;
+    }
+
+    var resend = data.resendSeconds != null ? data.resendSeconds : 60;
+    startOtpCountdown(resend);
+    showLoginErrorInTab('');
+    showOtpHint(data.message ? String(data.message) : '验证码已发送，请查看系统通知。');
+  }
+
+  function onOtpVerified(evt) {
+    var data = evt && typeof evt === 'object' ? evt : {};
+    if (data.ok === false) {
+      showLoginErrorInTab(data.message ? String(data.message) : '验证码不正确或已过期');
+      return;
+    }
+    stopOtpCountdown();
+    state.otp.demoCode = '';
+    showOtpHint('');
+    showLoginErrorInTab('');
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P1：审计日志页
+   * ================================================================== */
+  function formatAuditTime(ts) {
+    var date = toDate(ts);
+    if (!date) return ts == null ? '' : String(ts);
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()) +
+      ' ' + pad2(date.getHours()) + ':' + pad2(date.getMinutes()) + ':' + pad2(date.getSeconds());
+  }
+
+  function normalizeAuditItems(items) {
+    var out = [];
+    (Array.isArray(items) ? items : []).forEach(function (item) {
+      if (!item || typeof item !== 'object') return;
+      out.push({
+        ts: item.ts,
+        tool: item.tool == null ? '' : String(item.tool),
+        args: item.args,
+        result: item.result,
+        ok: item.ok,
+        confirmed: item.confirmed
+      });
+    });
+    return out;
+  }
+
+  function renderAudit(items) {
+    state.audit = normalizeAuditItems(items);
+    var box = r('audit-list');
+    if (box) {
+      box.textContent = '';
+      state.audit.forEach(function (item) {
+        var row = el('div', 'audit-row');
+        var head = el('div', 'audit-row-head');
+        head.appendChild(makeText('span', 'audit-time', formatAuditTime(item.ts)));
+        head.appendChild(makeText('span', 'audit-tool', item.tool || 'tool'));
+        var failed = item.ok === false || item.ok === 0 || item.ok === '0' || item.ok === 'false';
+        var okFlag = makeText('span', 'audit-flag ' + (failed ? 'audit-flag--fail' : 'audit-flag--ok'),
+          failed ? '失败' : '成功');
+        head.appendChild(okFlag);
+        var confirmed = item.confirmed === true || item.confirmed === 1 || item.confirmed === '1';
+        var confirmFlag;
+        if (failed && !confirmed) {
+          /* 被拒绝 / 未确认的失败调用单独标记 */
+          confirmFlag = makeText('span', 'audit-flag audit-flag--unconfirmed', '未确认/拒绝');
+        } else {
+          confirmFlag = makeText('span', 'audit-flag ' + (confirmed ? 'audit-flag--confirmed' : 'audit-flag--auto'),
+            confirmed ? '已确认' : '免确认');
+        }
+        head.appendChild(confirmFlag);
+        row.appendChild(head);
+
+        var argsText = toolArgsText(item.args);
+        if (argsText) {
+          var argsNode = makeText('div', 'audit-code', '参数 ' + argsText.replace(/\s+/g, ' '));
+          argsNode.title = argsText;
+          row.appendChild(argsNode);
+        }
+        var resultText = toolResultText(item);
+        if (resultText) {
+          var resultNode = makeText('div', 'audit-code audit-code--result', '结果 ' + resultText.replace(/\s+/g, ' '));
+          resultNode.title = resultText;
+          row.appendChild(resultNode);
+        }
+        box.appendChild(row);
+      });
+    }
+    var empty = r('audit-empty');
+    if (empty) empty.hidden = state.audit.length > 0;
+    var count = r('audit-count');
+    if (count) {
+      count.textContent = state.audit.length ? state.audit.length + ' 条记录' : '工具调用记录';
+    }
+    return state.audit;
+  }
+
+  function openAudit() {
+    showScreenImpl('audit');
+    if (!invoke('onOpenAudit')) {
+      renderAudit(state.audit);
+      UI.toast('审计服务尚未就绪');
+    }
+  }
+
+  function refreshAudit() {
+    if (!invoke('onOpenAudit')) {
+      renderAudit(state.audit);
+      UI.toast('审计服务尚未就绪');
+    }
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P1：工作区文件预览弹窗（app.js 的 onOpenFile → readFile 后调用）
+   * ================================================================== */
+  function openFilePreview(info) {
+    var data = info && typeof info === 'object' ? info : { content: info };
+    var path = data.path == null ? '' : String(data.path);
+    var content = data.content == null ? '' : String(data.content);
+    var parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+    var nameEl = r('file-preview-name');
+    if (nameEl) nameEl.textContent = parts.length ? parts[parts.length - 1] : '文件预览';
+    var pathEl = r('file-preview-path');
+    if (pathEl) {
+      pathEl.textContent = path;
+      pathEl.title = path;
+    }
+    var contentEl = r('file-preview-content');
+    if (contentEl) contentEl.textContent = content || '（空文件）';
+    openModal(r('file-preview-modal'));
+    return true;
+  }
+
+  function closeFilePreview() {
+    closeModal(r('file-preview-modal'));
+  }
+
+  function copyFilePreview() {
+    var contentEl = r('file-preview-content');
+    var text = contentEl ? String(contentEl.textContent || '') : '';
+    if (!text || text === '（空文件）') {
+      UI.toast('文件为空');
+      return;
+    }
+    copyText(text);
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -1241,7 +2216,8 @@
     chat: 'screen-chat',
     settings: 'screen-settings',
     plugins: 'screen-plugins',
-    agents: 'screen-agents'
+    agents: 'screen-agents',
+    audit: 'screen-audit'
   };
 
   function syncBottomNav(name) {
@@ -1276,6 +2252,8 @@
     syncBottomNav(name);
     closeMenu();
     if (name !== 'chat') closeDrawer();
+    if (name !== 'chat') closeFileDrawer();
+    if (name !== 'login') stopOtpCountdown();
     closeAllModals();
     closeModelPickerPanel(true);
     closeAgentPickerPanel(true);
@@ -1773,16 +2751,64 @@
       refs.content = plain;
       refs.textMode = true;
     } else if (role === 'tool') {
-      var toolChips = el('div', 'tool-chips');
-      toolChips.hidden = true;
-      bubble.appendChild(toolChips);
-      refs.tools = toolChips;
-      refs.toolRole = true;
+      /* ARCH v2 P1：工具调用卡片（状态徽章 + 参数折叠 + 结果折叠） */
+      var toolCard = el('div', 'tool-card');
+      var cardHead = el('div', 'tool-card-head');
+      var cardIcon = el('span', 'tool-card-icon');
+      cardIcon.innerHTML = ICON.wrench;
+      var cardName = makeText('span', 'tool-card-name', 'tool');
+      var cardBadge = makeText('span', 'tool-badge tool-badge--running', '运行中');
+      cardHead.appendChild(cardIcon);
+      cardHead.appendChild(cardName);
+      cardHead.appendChild(cardBadge);
 
-      var toolContent = el('div', 'msg-content msg-content--tool');
-      toolContent.textContent = msg.content == null ? '' : String(msg.content);
-      bubble.appendChild(toolContent);
-      refs.content = toolContent;
+      var argsDetails = document.createElement('details');
+      argsDetails.className = 'tool-details tool-args';
+      argsDetails.hidden = true;
+      var argsSummary = document.createElement('summary');
+      argsSummary.appendChild(makeText('span', 'tool-details-label', '参数'));
+      var argsTextEl = makeText('span', 'tool-args-summary', '');
+      argsSummary.appendChild(argsTextEl);
+      var argsCaret = el('span', 'tool-details-caret');
+      argsCaret.innerHTML = ICON.chevronDown;
+      argsSummary.appendChild(argsCaret);
+      var argsFull = el('pre', 'tool-code');
+      argsDetails.appendChild(argsSummary);
+      argsDetails.appendChild(argsFull);
+
+      var resultDetails = document.createElement('details');
+      resultDetails.className = 'tool-details tool-result';
+      var resultSummary = document.createElement('summary');
+      resultSummary.appendChild(makeText('span', 'tool-details-label', '结果'));
+      var resultTextEl = makeText('span', 'tool-args-summary', '暂无输出');
+      resultSummary.appendChild(resultTextEl);
+      var resultCaret = el('span', 'tool-details-caret');
+      resultCaret.innerHTML = ICON.chevronDown;
+      resultSummary.appendChild(resultCaret);
+      var resultBody = el('div', 'msg-content msg-content--tool');
+      resultDetails.appendChild(resultSummary);
+      resultDetails.appendChild(resultBody);
+
+      toolCard.appendChild(cardHead);
+      toolCard.appendChild(argsDetails);
+      toolCard.appendChild(resultDetails);
+      bubble.appendChild(toolCard);
+
+      refs.toolCard = {
+        card: toolCard,
+        name: cardName,
+        badge: cardBadge,
+        args: argsDetails,
+        argsSummary: argsTextEl,
+        argsFull: argsFull,
+        result: resultDetails,
+        resultSummary: resultTextEl,
+        resultBody: resultBody
+      };
+      refs.lastToolStatus = '';
+      refs.lastToolArgs = null;
+      refs.lastToolResult = null;
+      refs.content = resultBody;
       refs.textMode = true;
     } else {
       /* assistant：推理折叠块 + 工具 chip + markdown 内容 + 错误块 */
@@ -1958,9 +2984,14 @@
     var role = refs.role || msg.role || 'assistant';
     var id = String(msg.id);
 
+    /* ARCH v2 P1：工具调用卡片字段（状态/参数/结果） */
+    if (refs.toolCard) applyToolCardFields(msg, refs);
+
     /* 正文 */
     if (refs.textMode) {
-      var text = msg.content == null ? '' : String(msg.content);
+      var text = role === 'tool'
+        ? toolResultText(msg)
+        : (msg.content == null ? '' : String(msg.content));
       if (refs.lastText !== text) {
         refs.content.textContent = text;
         refs.lastText = text;
@@ -2267,7 +3298,6 @@
       error.hidden = !message;
     }
   }
-
   function doLogin() {
     var keyInput = r('login-key');
     var baseInput = r('login-baseurl');
@@ -2363,6 +3393,22 @@
     }
     var toggle = document.querySelector('[data-action="toggle-key"]');
     if (toggle) toggle.classList.remove('is-on');
+
+    /* ARCH v2 P1：手机号登录表单 / 验证码倒计时复位 */
+    stopOtpCountdown();
+    state.otp.demoCode = '';
+    state.otp.sent = false;
+    var phoneInput = r('login-phone');
+    if (phoneInput) phoneInput.value = '';
+    var otpInput = r('login-otp');
+    if (otpInput) otpInput.value = '';
+    var phoneError = r('login-phone-error');
+    if (phoneError) {
+      phoneError.textContent = '';
+      phoneError.hidden = true;
+    }
+    showOtpHint('');
+    switchLoginTab('apikey');
   }
 
   /* ------------------------------------------------------------------ *
@@ -2609,6 +3655,14 @@
           run: function () { copyText(content); }
         });
       }
+      /* SPEC v2.0 F4：从此消息创建分支（ARCH v2 P1 接入长按菜单） */
+      if (typeof state.cb.onForkMessage === 'function') {
+        items.push({
+          label: '从此处新建分支',
+          icon: ICON.fork,
+          run: function () { invoke('onForkMessage', origMsgId(context.id)); }
+        });
+      }
       if ((data.role || 'assistant') === 'assistant') {
         items.push({
           label: '重新生成',
@@ -2795,6 +3849,11 @@
    * 动作分发（#app 事件委托）
    * ------------------------------------------------------------------ */
   function handleHeaderBack() {
+    /* ARCH v2 P1：审计页返回个人资料（不经过 app.js 的导航栈） */
+    if (state.screen === 'audit') {
+      showScreenImpl('profile');
+      return;
+    }
     /* 智能体预设管理页：优先用 onCloseAgents 恢复导航，否则交给 app.js 的 onBack */
     if (state.screen === 'agents' && typeof state.cb.onCloseAgents === 'function') {
       invoke('onCloseAgents');
@@ -2808,10 +3867,16 @@
     if (isModalOpen(r('install-modal'))) { closeModal(r('install-modal')); return true; }
     if (isModalOpen(r('rename-modal'))) { resolveRename(null); return true; }
     if (isModalOpen(r('confirm-modal'))) { resolveConfirm(false); return true; }
+    if (isModalOpen(r('risk-modal'))) { resolveRisk(false); return true; }
+    if (isModalOpen(r('backup-modal'))) { closeModal(r('backup-modal')); return true; }
+    if (isModalOpen(r('file-preview-modal'))) { closeFilePreview(); return true; }
+    if (state.fileDrawer.open) { closeFileDrawer(); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
     if (state.agentPicker.open) { closeAgentPickerPanel(true); return true; }
     if (state.drawerOpen) { closeDrawer(); return true; }
     if (state.emojiOpen) { closeEmojiPanel(); return true; }
+    if (state.terminal.open) { toggleTerminal(false); return true; }
+    if (state.screen === 'audit') { showScreenImpl('profile'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -2911,6 +3976,89 @@
       case 'about':
         invoke('onAbout');
         break;
+      /* -------- ARCH v2 P1：文件树 / 终端 / 高危确认 / 登录 / 工作区 / 审计 / 备份 -------- */
+      case 'open-files':
+        openFileDrawer();
+        break;
+      case 'close-files':
+        closeFileDrawer();
+        break;
+      case 'files-refresh':
+        refreshFileTree();
+        break;
+      case 'file-crumb':
+        requestFilePath(node.getAttribute('data-path'), true);
+        break;
+      case 'file-node':
+        requestFilePath(node.getAttribute('data-path'), node.getAttribute('data-dir') === '1');
+        break;
+      case 'toggle-terminal':
+        toggleTerminal();
+        break;
+      case 'terminal-close':
+        toggleTerminal(false);
+        break;
+      case 'terminal-clear':
+        clearTerminal();
+        break;
+      case 'terminal-copy':
+        copyTerminal();
+        break;
+      case 'terminal-run':
+        runTerminalCommand();
+        break;
+      case 'risk-accept':
+        resolveRisk(true);
+        break;
+      case 'risk-deny':
+        resolveRisk(false);
+        break;
+      case 'login-tab-apikey':
+        switchLoginTab('apikey');
+        break;
+      case 'send-otp':
+        doSendOtp();
+        break;
+      case 'set-workspace':
+        if (!invoke('onSetWorkspace')) UI.toast('工作区服务尚未就绪');
+        break;
+      case 'reset-workspace': {
+        /* 优先 onResetWorkspace；旧逻辑层没有时用 defaultRoot 调 onSetWorkspace(defaultRoot) */
+        if (typeof state.cb.onResetWorkspace === 'function') {
+          invoke('onResetWorkspace');
+        } else if (state.workspace.defaultRoot) {
+          if (!invoke('onSetWorkspace', state.workspace.defaultRoot)) UI.toast('工作区服务尚未就绪');
+        } else {
+          UI.toast('没有可用的默认工作区');
+        }
+        break;
+      }
+      case 'open-audit':
+        openAudit();
+        break;
+      case 'refresh-audit':
+        refreshAudit();
+        break;
+      case 'open-backup':
+        openModal(r('backup-modal'));
+        break;
+      case 'close-backup':
+        closeModal(r('backup-modal'));
+        break;
+      case 'export-backup':
+        closeModal(r('backup-modal'));
+        if (!invoke('onExportBackup')) UI.toast('备份服务尚未就绪');
+        break;
+      case 'import-backup':
+        closeModal(r('backup-modal'));
+        if (!invoke('onImportBackup')) UI.toast('备份服务尚未就绪');
+        break;
+      case 'close-file-preview':
+        closeFilePreview();
+        break;
+      case 'copy-file-preview':
+        copyFilePreview();
+        break;
       case 'dismiss-tip':
         setTipVisible(false);
         if (typeof state.cb.onDismissTip === 'function') invoke('onDismissTip');
@@ -2946,7 +4094,12 @@
       case 'copy-msg': {
         var msgId = node.getAttribute('data-id');
         var data = state.msgData[msgId];
-        if (data && data.content != null) copyText(data.content);
+        if (data) {
+          var copyValue = data.role === 'tool'
+            ? toolResultText(data)
+            : (data.content == null ? '' : String(data.content));
+          if (copyValue) copyText(copyValue);
+        }
         break;
       }
       case 'retry-msg': {
@@ -3073,6 +4226,12 @@
 
     if (state.menuOpen && !target.closest('#longpress')) closeMenu();
 
+    var loginTabNode = target.closest('[data-login-tab]');
+    if (loginTabNode) {
+      switchLoginTab(loginTabNode.getAttribute('data-login-tab'));
+      return;
+    }
+
     var shareNode = target.closest('[data-share-id]');
     if (shareNode) {
       invoke('onShareChat', shareNode.getAttribute('data-share-id'));
@@ -3185,6 +4344,20 @@
       }
       return;
     }
+    if (target.id === 'terminal-input') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        runTerminalCommand();
+      }
+      return;
+    }
+    if (target.id === 'login-phone' || target.id === 'login-otp') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        doPhoneLogin();
+      }
+      return;
+    }
     if (target.id === 'model-picker-custom-input') {
       if (key === 'Enter') {
         event.preventDefault();
@@ -3212,6 +4385,11 @@
     if (form && form.id === 'login-form') {
       event.preventDefault();
       doLogin();
+      return;
+    }
+    if (form && form.id === 'login-phone-form') {
+      event.preventDefault();
+      doPhoneLogin();
     }
   }
 
@@ -3248,8 +4426,21 @@
     bindModalBackdrop(r('install-modal'), function () { closeModal(r('install-modal')); });
     bindModalBackdrop(r('confirm-modal'), function () { resolveConfirm(false); });
     bindModalBackdrop(r('rename-modal'), function () { resolveRename(null); });
+    bindModalBackdrop(r('risk-modal'), function () { resolveRisk(false); });
+    bindModalBackdrop(r('backup-modal'), function () { closeModal(r('backup-modal')); });
+    bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
     bindModelPickerEvents();
     bindAgentPickerEvents();
+    bindFileDrawerDrag();
+  }
+
+  function bindFileDrawerDrag() {
+    var drawer = r('file-drawer');
+    if (!drawer) return;
+    drawer.addEventListener('pointerdown', onFileDrawerDragStart, { passive: true });
+    window.addEventListener('pointermove', onFileDrawerDragMove, { passive: true });
+    window.addEventListener('pointerup', onFileDrawerDragEnd);
+    window.addEventListener('pointercancel', onFileDrawerDragEnd);
   }
 
   function cacheRefs() {
@@ -3279,7 +4470,19 @@
       'rename-modal', 'rename-input', 'rename-title',
       'agent-picker', 'agent-picker-list', 'agent-picker-handle', 'agent-picker-title',
       'agents-list', 'agents-empty', 'agents-count', 'set-agents-label',
-      'longpress', 'toasts', 'overlay', 'drawer'
+      'longpress', 'toasts', 'overlay', 'drawer',
+      /* ARCH v2 P1：文件树 / 终端 / 高危确认 / 备份 / 登录 tab / 工作区 / 审计 */
+      'file-overlay', 'file-drawer', 'file-root', 'file-crumbs', 'file-tree', 'file-empty',
+      'file-refresh', 'file-close', 'file-foot',
+      'terminal-panel', 'terminal-output', 'terminal-input', 'terminal-run',
+      'risk-modal', 'risk-tool', 'risk-badge', 'risk-args', 'risk-hint', 'risk-deny', 'risk-accept',
+      'backup-modal', 'backup-export', 'backup-import',
+      'file-preview-modal', 'file-preview-name', 'file-preview-path', 'file-preview-content',
+      'login-tabs', 'login-phone-form', 'login-phone', 'login-otp', 'login-send-otp',
+      'login-phone-submit', 'login-phone-error', 'login-otp-hint',
+      'set-workspace-row', 'set-workspace-value', 'set-workspace-writable',
+      'set-workspace-access', 'set-workspace-reset', 'set-workspace-reset-hint',
+      'screen-audit', 'audit-list', 'audit-empty', 'audit-count'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -3410,6 +4613,7 @@
     bindEvents();
     showScreenImpl('chats');
     buildEmojiPanel();
+    setTerminalOpen(false);
     syncSendButton();
     autosize();
     updateEmptyState();
@@ -3658,26 +4862,56 @@
     /* busy 未传视为“当前不在验证中”，避免上一轮 busy 状态残留 */
     state.login.busy = Object.prototype.hasOwnProperty.call(data, 'busy') ? !!data.busy : false;
 
-    var error = r('login-error');
-    if (error) {
-      error.textContent = state.login.error;
-      error.hidden = !state.login.error;
+    if (Object.prototype.hasOwnProperty.call(data, 'phoneLogin')) {
+      switchLoginTab(data.phoneLogin ? 'phone' : 'apikey');
     }
+    if (Object.prototype.hasOwnProperty.call(data, 'phone')) {
+      var phoneInputEl = r('login-phone');
+      if (phoneInputEl && data.phone != null) phoneInputEl.value = String(data.phone);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'demoCode')) {
+      state.otp.demoCode = data.demoCode ? String(data.demoCode) : '';
+    }
+
+    var error = r('login-error');
+    var phoneError = r('login-phone-error');
+    var showingPhone = activeLoginTab() === 'phone';
+    if (error) {
+      error.textContent = showingPhone ? '' : state.login.error;
+      error.hidden = showingPhone || !state.login.error;
+    }
+    if (phoneError) {
+      phoneError.textContent = showingPhone ? state.login.error : '';
+      phoneError.hidden = !showingPhone || !state.login.error;
+    }
+
     var submit = r('login-submit');
     if (submit) {
       submit.disabled = state.login.busy;
       submit.textContent = state.login.busy ? '验证中…' : (state.login.hasKey ? '进入' : '登录');
     }
+    var phoneSubmit = r('login-phone-submit');
+    if (phoneSubmit) {
+      phoneSubmit.disabled = state.login.busy;
+      phoneSubmit.textContent = state.login.busy ? '验证中…' : '登录';
+    }
     var keyInput = r('login-key');
     if (keyInput) keyInput.disabled = state.login.busy;
     var baseInput = r('login-baseurl');
     if (baseInput) baseInput.disabled = state.login.busy;
+    var loginPhone = r('login-phone');
+    if (loginPhone) loginPhone.disabled = state.login.busy;
+    var loginOtp = r('login-otp');
+    if (loginOtp) loginOtp.disabled = state.login.busy;
+    updateOtpButton();
 
     var note = document.querySelector('.login-note');
     if (note) {
-      note.textContent = state.login.hasKey
-        ? '已检测到本机保存的 Key。输入新的 Key 可替换，直接重新登录即可验证。'
-        : 'Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。';
+      note.textContent = showingPhone
+        ? '验证码只在本机校验。开启通知权限后，验证码会显示在「登录验证码」通知中。'
+        : (state.login.hasKey
+          ? '已检测到本机保存的 Key。输入新的 Key 可替换，直接重新登录即可验证。'
+          : 'Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。');
     }
   };
 
@@ -3759,5 +4993,27 @@
     return state.chatTab;
   };
 
-  UI.version = '1.2.0';
+  /* ARCH v2 P1：本地 Agent 工作站 UI API */
+  UI.renderFileTree = function (entries, opts) { return renderFileTree(entries, opts); };
+  UI.openFileDrawer = openFileDrawer;
+  UI.closeFileDrawer = closeFileDrawer;
+  UI.isFileDrawerOpen = function () { return state.fileDrawer.open; };
+  UI.setWorkspaceInfo = setWorkspaceInfo;
+  UI.appendTerminal = function (text, opts) { appendTerminal(text, opts); };
+  UI.clearTerminal = clearTerminal;
+  UI.toggleTerminal = function (open) { return toggleTerminal(open); };
+  UI.isTerminalOpen = function () { return state.terminal.open; };
+  UI.confirmRisk = function (tool, args, risk) { return confirmRisk(tool, args, risk); };
+  UI.renderAudit = function (items) { return renderAudit(items); };
+  UI.openAudit = openAudit;
+  UI.onOtpSent = onOtpSent;
+  UI.onOtpVerified = onOtpVerified;
+  UI.switchLoginTab = switchLoginTab;
+  UI.getLoginTab = activeLoginTab;
+  UI.renderFilePreview = openFilePreview;
+  UI.showFilePreview = openFilePreview;
+  UI.previewFile = openFilePreview;
+  UI.closeFilePreview = closeFilePreview;
+
+  UI.version = '2.0.0';
 })();

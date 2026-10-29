@@ -179,6 +179,174 @@ export function createMockNative(opts = {}) {
   let winRef = null;
   const auto = Object.assign({ validateKey: true, startChat: false }, opts.auto || {});
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P1：mock 原生 Agent 工具 / 工作区 / 审计 / 手机号登录（OTP）
+   *
+   * 契约与 JsBridge.java 保持一致：
+   *   toolSchemas()/workspaceInfo()/listDir()/auditRecent()/authState()
+   *   同步返回 **JSON 字符串**（Bridge 会 JSON.parse）；
+   *   execTool/confirmTool/readFile/writeFile/runShell/setWorkspace/
+   *   requestOtp/verifyOtp/logout 只记录调用，**事件（tool-confirm / tool-result /
+   *   otp-sent / otp-verified / workspace-changed / auth-changed）默认由测试通过
+   *   app.native.__emit(evt) 主动注入**，保证用例可精确控制时序。
+   *   例外：setWorkspace 默认自动回 workspace-changed（原生异步 setRoot 的等价物），
+   *        logout 默认自动回 auth-changed；均可用 opts.p1.auto* 关闭。
+   *
+   * 可通过 opts.p1 配置（测试里也可直接修改 app.native.__p1 运行时状态）：
+   *   { tools, workspace:{root,writable,allFilesAccess,defaultRoot,isDefault},
+   *     dirs:{path:[entries]}, files:{path:content}, audit:[...],
+   *     auth:{loggedIn,phone}, otp:{ttlSeconds,demoCode},
+   *     listDirError, workspaceInfoError,
+   *     autoWorkspaceChanged:true, autoAuthChanged:true,
+   *     autoToolEvents:false, autoDirectResults:false }
+   * ------------------------------------------------------------------ */
+  const P1_DEFAULT_ROOT = '/sdcard/house-workspace';
+  const P1_PRIVATE_ROOT = '/data/user/0/com.deepseekhouse.app/files/workspace';
+  const p1cfg = opts.p1 && typeof opts.p1 === 'object' ? opts.p1 : {};
+
+  function p1DefaultToolSchemas() {
+    const fn = (name, description, properties, required, risk) => ({
+      type: 'function',
+      risk,
+      function: { name, description, parameters: { type: 'object', properties, required } },
+    });
+    return [
+      fn('read_file', '读取工作区内的文本文件（≤256KB）', { path: { type: 'string', description: '工作区内文件路径' } }, ['path'], 'low'),
+      fn('list_dir', '列出工作区目录内容', { path: { type: 'string', description: '目录路径，缺省为工作区根' } }, [], 'low'),
+      fn('write_file', '写入工作区内的文本文件（仅限工作区）', { path: { type: 'string' }, content: { type: 'string' } }, ['path', 'content'], 'mid'),
+      fn('run_shell', '在工作区执行 shell 命令（超时 30s）', { command: { type: 'string' } }, ['command'], 'high'),
+      fn('http_get', '发起受限 https GET 请求（≤1MB）', { url: { type: 'string' } }, ['url'], 'low'),
+    ];
+  }
+
+  const p1 = {
+    tools: Array.isArray(p1cfg.tools) ? p1cfg.tools.map((t) => JSON.parse(JSON.stringify(t))) : p1DefaultToolSchemas(),
+    workspace: Object.assign(
+      { root: P1_DEFAULT_ROOT, writable: true, allFilesAccess: false, defaultRoot: P1_PRIVATE_ROOT },
+      p1cfg.workspace && typeof p1cfg.workspace === 'object' ? p1cfg.workspace : {}
+    ),
+    dirs: p1cfg.dirs && typeof p1cfg.dirs === 'object' ? p1cfg.dirs : {},
+    files: p1cfg.files && typeof p1cfg.files === 'object' ? p1cfg.files : {},
+    audit: Array.isArray(p1cfg.audit) ? p1cfg.audit.slice() : [],
+    auth: Object.assign({ loggedIn: false, phone: '' }, p1cfg.auth && typeof p1cfg.auth === 'object' ? p1cfg.auth : {}),
+    otp: Object.assign({ ttlSeconds: 300, demoCode: '123456' }, p1cfg.otp && typeof p1cfg.otp === 'object' ? p1cfg.otp : {}),
+    listDirError: p1cfg.listDirError ? String(p1cfg.listDirError) : '',
+    workspaceInfoError: p1cfg.workspaceInfoError ? String(p1cfg.workspaceInfoError) : '',
+    autoWorkspaceChanged: p1cfg.autoWorkspaceChanged !== false,
+    autoAuthChanged: p1cfg.autoAuthChanged !== false,
+    autoToolEvents: !!p1cfg.autoToolEvents,
+    autoDirectResults: !!p1cfg.autoDirectResults,
+    pendingTools: [], // execTool 记录（等待 tool-confirm / tool-result）
+    confirmations: [], // confirmTool 记录
+    fileRequests: [], // readFile 记录
+    shellRequests: [], // runShell 记录
+    writeRequests: [], // writeFile 记录
+    otpRequests: [], // requestOtp 记录
+    verifyRequests: [], // verifyOtp 记录
+  };
+
+  function p1ResolvePath(p) {
+    const raw = p === null || p === undefined ? '' : String(p).trim();
+    if (!raw) return String(p1.workspace.root || '');
+    const abs = raw.charAt(0) === '/' ? raw : String(p1.workspace.root || '') + '/' + raw;
+    return abs.replace(/\/+$/, '') || '/';
+  }
+
+  function p1DefaultEntries(dir) {
+    const root = String(p1.workspace.root || '');
+    const readme = p1DefaultFile(root + '/README.md');
+    const notes = 'mock 工作区笔记\n';
+    const appjs = '// mock 源文件\nconsole.log("hello from mock workspace");\n';
+    if (dir === root) {
+      return [
+        { name: 'README.md', path: root + '/README.md', isDir: false, size: readme.length },
+        { name: 'notes.txt', path: root + '/notes.txt', isDir: false, size: notes.length },
+        { name: 'src', path: root + '/src', isDir: true, size: 0 },
+      ];
+    }
+    if (dir === root + '/src') {
+      return [{ name: 'app.js', path: root + '/src/app.js', isDir: false, size: appjs.length }];
+    }
+    return [];
+  }
+
+  function p1DefaultFile(path) {
+    const root = String(p1.workspace.root || '');
+    if (path === root + '/README.md') {
+      return '# house-workspace（mock）\n\nBridge mock 模式下的工作区示例文件。\n\n- read_file / list_dir：只读\n- write_file：MID，首次确认\n- run_shell：HIGH，每次确认\n';
+    }
+    if (path === root + '/notes.txt') return 'mock 工作区笔记\n';
+    if (path === root + '/src/app.js') return '// mock 源文件\nconsole.log("hello from mock workspace");\n';
+    return '';
+  }
+
+  function p1ListEntries(path) {
+    const dir = p1ResolvePath(path);
+    if (Object.prototype.hasOwnProperty.call(p1.dirs, dir)) {
+      const list = Array.isArray(p1.dirs[dir]) ? p1.dirs[dir] : [];
+      return list.map((item) => ({
+        name: item && item.name != null ? String(item.name) : '',
+        path: item && item.path != null ? String(item.path) : '',
+        isDir: !!(item && item.isDir),
+        size: Number(item && item.size) || 0,
+      }));
+    }
+    return p1DefaultEntries(dir);
+  }
+
+  function p1ReadText(path) {
+    const file = p1ResolvePath(path);
+    if (Object.prototype.hasOwnProperty.call(p1.files, file)) return String(p1.files[file]);
+    return p1DefaultFile(file);
+  }
+
+  function p1RiskOf(name) {
+    const tool = String(name === null || name === undefined ? '' : name);
+    for (const schema of p1.tools) {
+      const fn = (schema && schema.function) || schema || {};
+      if (String(fn.name || '') !== tool) continue;
+      const risk = String((schema && schema.risk) || fn.risk || 'high').toLowerCase();
+      if (risk === 'low' || risk === 'mid' || risk === 'high') return risk;
+    }
+    return 'high';
+  }
+
+  function p1ExtractArgs(argsJson) {
+    if (argsJson && typeof argsJson === 'object') return argsJson;
+    try {
+      const parsed = JSON.parse(String(argsJson == null ? '' : argsJson));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function p1ToolResult(name, args) {
+    const tool = String(name === null || name === undefined ? '' : name);
+    const a = args && typeof args === 'object' ? args : {};
+    if (tool === 'list_dir') return JSON.stringify(p1ListEntries(a.path === undefined || a.path === null ? '' : a.path));
+    if (tool === 'read_file') return p1ReadText(a.path);
+    if (tool === 'write_file') return '已写入 ' + String(a.path === undefined || a.path === null ? '' : a.path);
+    if (tool === 'run_shell') {
+      const m = /^\s*echo\s+([\s\S]*)$/.exec(String(a.command === undefined || a.command === null ? '' : a.command));
+      return m ? m[1] : '（mock）' + String(a.command || '');
+    }
+    if (tool === 'http_get') return '{"status":200,"body":"(mock)"}';
+    return '（mock）' + tool + ' 执行完成';
+  }
+
+  function p1WorkspaceJson() {
+    const root = String(p1.workspace.root || '');
+    const body = {
+      root,
+      writable: !!p1.workspace.writable,
+      allFilesAccess: !!p1.workspace.allFilesAccess,
+      defaultRoot: p1.workspace.defaultRoot == null ? '' : String(p1.workspace.defaultRoot),
+    };
+    body.isDefault = p1.workspace.isDefault !== undefined ? !!p1.workspace.isDefault : root === body.defaultRoot;
+    return body;
+  }
+
   function record(method, args) {
     calls.push({ method, args, at: Date.now() });
   }
@@ -317,10 +485,132 @@ export function createMockNative(opts = {}) {
       pending.save.push({ name, content });
       setTimeout(() => emit({ type: 'saved', ok: true, name }), 5);
     },
+
+    /* ---------------- ARCH v2 P1：原生 Agent 工具框架（JsBridge 契约） ---------------- */
+    toolSchemas() {
+      record('toolSchemas', []);
+      return JSON.stringify(p1.tools);
+    },
+    execTool(requestId, name, argsJson) {
+      record('execTool', [requestId, name, argsJson]);
+      const entry = {
+        requestId: String(requestId == null ? '' : requestId),
+        name: String(name == null ? '' : name),
+        args: p1ExtractArgs(argsJson),
+        argsJson: typeof argsJson === 'string' ? argsJson : JSON.stringify(argsJson || {}),
+      };
+      p1.pendingTools.push(entry);
+      if (!p1.autoToolEvents) return;
+      const risk = p1RiskOf(entry.name);
+      if (risk === 'low') {
+        const result = p1ToolResult(entry.name, entry.args);
+        setTimeout(() => emit({ type: 'tool-result', requestId: entry.requestId, tool: entry.name, ok: true, result, confirmed: false }), 5);
+        return;
+      }
+      setTimeout(() => emit({ type: 'tool-confirm', requestId: entry.requestId, tool: entry.name, args: entry.args, risk, needConfirm: true }), 5);
+    },
+    confirmTool(requestId, allow) {
+      record('confirmTool', [requestId, !!allow]);
+      const rid = String(requestId == null ? '' : requestId);
+      const entry = p1.pendingTools.find((x) => x.requestId === rid) || null;
+      p1.confirmations.push({ requestId: rid, allow: !!allow });
+      if (!p1.autoToolEvents || !entry) return;
+      const result = allow ? p1ToolResult(entry.name, entry.args) : '用户拒绝执行';
+      setTimeout(() => emit({
+        type: 'tool-result', requestId: rid, tool: entry.name, ok: !!allow, result, confirmed: !!allow,
+      }), 5);
+    },
+
+    /* ---------------- ARCH v2 P1：工作区 / 文件 / 终端 / 审计 ---------------- */
+    workspaceInfo() {
+      record('workspaceInfo', []);
+      if (p1.workspaceInfoError) return JSON.stringify({ error: p1.workspaceInfoError });
+      return JSON.stringify(p1WorkspaceJson());
+    },
+    listDir(path) {
+      record('listDir', [path]);
+      if (p1.listDirError) return JSON.stringify({ error: p1.listDirError });
+      return JSON.stringify(p1ListEntries(path));
+    },
+    readFile(requestId, path) {
+      record('readFile', [requestId, path]);
+      p1.fileRequests.push({ requestId: String(requestId == null ? '' : requestId), path: String(path == null ? '' : path) });
+      if (!p1.autoDirectResults) return;
+      const text = p1ReadText(path);
+      setTimeout(() => emit({
+        type: 'tool-result', requestId: String(requestId), tool: 'read_file', ok: true, result: text, confirmed: true,
+      }), 5);
+    },
+    writeFile(requestId, path, content) {
+      record('writeFile', [requestId, path, content]);
+      p1.writeRequests.push({ requestId: String(requestId == null ? '' : requestId), path: String(path == null ? '' : path), content: String(content == null ? '' : content) });
+      if (!p1.autoDirectResults) return;
+      setTimeout(() => emit({
+        type: 'tool-result', requestId: String(requestId), tool: 'write_file', ok: true,
+        result: '已写入 ' + String(path == null ? '' : path), confirmed: true,
+      }), 5);
+    },
+    runShell(requestId, command) {
+      record('runShell', [requestId, command]);
+      p1.shellRequests.push({ requestId: String(requestId == null ? '' : requestId), command: String(command == null ? '' : command) });
+      if (!p1.autoDirectResults) return;
+      setTimeout(() => emit({
+        type: 'tool-result', requestId: String(requestId), tool: 'run_shell', ok: true,
+        result: p1ToolResult('run_shell', { command }), confirmed: false,
+      }), 5);
+    },
+    auditRecent(limit) {
+      record('auditRecent', [limit]);
+      const n = Number(limit) > 0 ? Number(limit) : 50;
+      return JSON.stringify(p1.audit.slice(0, n));
+    },
+    setWorkspace(path) {
+      record('setWorkspace', [path]);
+      const root = p1ResolvePath(path);
+      p1.workspace.root = root;
+      p1.workspace.writable = true;
+      p1.workspace.isDefault = root === String(p1.workspace.defaultRoot || '');
+      if (p1.autoWorkspaceChanged) {
+        setTimeout(() => emit({
+          type: 'workspace-changed', ok: true, root,
+          message: '工作区已切换', allFilesAccess: !!p1.workspace.allFilesAccess,
+        }), 5);
+      }
+    },
+
+    /* ---------------- ARCH v2 P1：手机号登录（本地 OTP MVP） ---------------- */
+    requestOtp(phone) {
+      record('requestOtp', [phone]);
+      const p = String(phone == null ? '' : phone).replace(/[\s-]/g, '');
+      p1.otpRequests.push({ phone: p, at: Date.now() });
+      p1.otp.phone = p;
+      p1.otp.sentAt = Date.now();
+    },
+    verifyOtp(requestId, phone, code) {
+      record('verifyOtp', [requestId, phone, code]);
+      p1.verifyRequests.push({
+        requestId: String(requestId == null ? '' : requestId),
+        phone: String(phone == null ? '' : phone),
+        code: String(code == null ? '' : code),
+      });
+    },
+    authState() {
+      record('authState', []);
+      return JSON.stringify({ loggedIn: !!p1.auth.loggedIn, phone: p1.auth.phone == null ? '' : String(p1.auth.phone) });
+    },
+    logout() {
+      record('logout', []);
+      const phone = p1.auth.phone == null ? '' : String(p1.auth.phone);
+      p1.auth = { loggedIn: false, phone };
+      if (p1.autoAuthChanged) setTimeout(() => emit({ type: 'auth-changed', loggedIn: false, phone }), 5);
+    },
+
     __calls: calls,
     __pending: pending,
     __prefs: prefs,
     __plugins: plugins,
+    /** P1 mock 运行时状态（测试可读写：listDirError / dirs / files / audit / auth / workspace ...） */
+    __p1: p1,
     __setClipboard: (t) => {
       clipboard = String(t);
     },
