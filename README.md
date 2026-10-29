@@ -25,7 +25,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-1.0.5.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-1.0.6.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -45,14 +45,14 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-1.0.5.apk`
+产物：`dist/DeepSeekHouse-1.0.6.apk`
 
 ### 云端构建（GitHub Actions）
 
 推 tag 或手动触发 `Build & Release APK` workflow 即可：
 
 ```bash
-git tag v1.0.5 && git push origin v1.0.5
+git tag v1.0.6 && git push origin v1.0.6
 ```
 
 CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → `apksigner verify` → 上传 artifact →

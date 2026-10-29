@@ -3109,3 +3109,45 @@ body { background-color: #181818; }
   background-repeat: no-repeat, no-repeat;
 }
 .chat-head-avatar { border-radius: 50%; }
+
+/* ==========================================================================
+   v1.0.6：会话列表行更紧凑（对齐 Telegram 的密度）
+   行高 74→64，头像 54→48，标题 17/600→16/500，预览 15→14，时间 13→12
+   ========================================================================== */
+.chat-item {
+  min-height: 64px;
+  padding: 4px 14px;
+  gap: 12px;
+}
+.chat-avatar {
+  width: 48px;
+  height: 48px;
+}
+.chat-item-body {
+  gap: 1px;
+}
+.chat-item-title {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.chat-item-preview {
+  font-size: 14px;
+  line-height: 1.3;
+}
+.chat-item-time {
+  font-size: 12px;
+}
+.chat-item-meta {
+  gap: 4px;
+  padding: 0;
+}
+.unread-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+.chat-pin svg { width: 13px; height: 13px; }
+.contact-tag { font-size: 10px; }
