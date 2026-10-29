@@ -10,10 +10,49 @@
 (function (global) {
   'use strict';
 
-  var MODELS = [
-    { id: 'deepseek-chat', name: 'DeepSeek-V3.2 通用' },
-    { id: 'deepseek-reasoner', name: 'DeepSeek-R1 推理' }
-  ];
+  /* 追加需求 v1.1 B1：内置回退模型目录（无 key 或 GET /models 失败时展示，顺序固定） */
+  var MODEL_FALLBACK = {
+    V4: [
+      'deepseek-v4-pro',
+      'deepseek-v4.1-flash',
+      'deepseek-v4-flash',
+      'deepseek-v4-pro-0813',
+      'deepseek-v4-flash-0731',
+      'deepseek-v4.1-flash-free'
+    ],
+    V3: ['deepseek-v3.2', 'deepseek-chat', 'deepseek-reasoner'],
+    '其他': ['deepseek-flash']
+  };
+
+  var MODEL_FALLBACK_GROUPS = ['V4', 'V3', 'V2', 'V1', '其他'];
+  /* 内置目录里已知模型的系列（deepseek-chat / deepseek-reasoner 无版本号，但归属 V3 系列，保持目录顺序固定） */
+  var MODEL_SERIES_HINTS = (function () {
+    var map = {};
+    for (var g = 0; g < MODEL_FALLBACK_GROUPS.length; g++) {
+      var group = MODEL_FALLBACK_GROUPS[g];
+      if (!/^V\d+$/.test(group)) continue;
+      var ids = MODEL_FALLBACK[group];
+      if (!Array.isArray(ids)) continue;
+      for (var i = 0; i < ids.length; i++) map[ids[i]] = group;
+    }
+    return map;
+  })();
+  var MODEL_LABEL_OVERRIDES = {
+    'deepseek-chat': 'DeepSeek Chat',
+    'deepseek-reasoner': 'DeepSeek Reasoner'
+  };
+  var MODEL_WORD_CASE = {
+    deepseek: 'DeepSeek',
+    gpt: 'GPT',
+    glm: 'GLM',
+    qwen: 'Qwen',
+    llama: 'Llama',
+    mistral: 'Mistral',
+    moonshot: 'Moonshot',
+    ai: 'AI'
+  };
+  var MODEL_TAG_ORDER = ['free', 'pro', 'flash', 'reasoner', 'chat', 'vision'];
+
   var MAX_INPUT = 8000;
   var MAX_TOOL_ROUNDS = 3;
   var FLUSH_INTERVAL = 50;
@@ -26,6 +65,11 @@
     loginBusy: false,
     apiKey: '',
     prefs: {},
+    remoteModels: [],
+    remoteModelsLoaded: false,
+    remoteModelsPromise: null,
+    customModels: [],
+    modelCatalog: [],
     requestId: null,
     requestChatId: null,
     assistantMsgId: null,
@@ -42,7 +86,7 @@
     pluginsBound: false
   };
 
-  var App = { handlers: null, MODELS: MODELS, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
+  var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
 
   /* ------------------------------------------------------------------ *
    * 基础工具
@@ -200,12 +244,19 @@
     for (var i = 0; i < keys.length; i++) {
       if (base[keys[i]] !== undefined && base[keys[i]] !== null) out[keys[i]] = base[keys[i]];
     }
-    var nkeys = ['baseUrl', 'model', 'temperature', 'maxTokens', 'stream', 'theme', 'systemPrompt'];
+    var nkeys = ['baseUrl', 'temperature', 'maxTokens', 'stream', 'theme', 'systemPrompt'];
     for (var j = 0; j < nkeys.length; j++) {
       var k = nkeys[j];
       var v = native[k];
       if (v !== undefined && v !== null && v !== '') out[k] = v;
     }
+    // 模型：Store 与原生都会持久化；原生若仍为旧默认值（deepseek-chat）而 Store 已切换，以 Store 为准，
+    // 保证「选择后重启仍保持」；原生非默认模型（例如旧版本写入）优先。
+    var nativeModel = native.model ? String(native.model) : '';
+    var storeModel = base.model ? String(base.model) : '';
+    if (nativeModel && nativeModel !== 'deepseek-chat') out.model = nativeModel;
+    else if (storeModel) out.model = storeModel;
+    else if (nativeModel) out.model = nativeModel;
     out.baseUrl = normalizeUrl(out.baseUrl) || 'https://api.deepseek.com';
     return out;
   }
@@ -221,6 +272,8 @@
     var nativePrefs = readNativePrefs();
     state.apiKey = nativePrefs.apiKey ? String(nativePrefs.apiKey) : '';
     state.prefs = mergePrefs(Store.getPrefs(), nativePrefs);
+    loadCustomModels();
+    state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels);
 
     bindBridgeEvents();
     bindPluginFileFallback();
@@ -255,7 +308,10 @@
     ui('showScreen', 'chat');
     ui('setUser', { name: 'DeepSeek 用户' });
     ui('setModel', state.prefs.model);
+    applyModelLabel();
     ensureActiveChat();
+    // B1：启动/登录成功后静默拉取 GET /models，失败则保留内置回退目录
+    refreshModelsFromApi({});
     refreshChatList();
     renderActiveChat();
     ui('setStreaming', false);
@@ -377,6 +433,21 @@
       onRegenerate: safe(function (msgId) { retryMessage(msgId); return true; }, 'onRegenerate'),
       onOpenSettings: safe(function () { openSettings(); }, 'onOpenSettings'),
       onOpenPlugins: safe(function () { openPlugins(); }, 'onOpenPlugins'),
+      onOpenModelPicker: safe(function () { openModelPicker(); return true; }, 'onOpenModelPicker'),
+      onSelectModel: safe(function (id) { selectModel(id); return true; }, 'onSelectModel'),
+      onRefreshModels: safe(function () {
+        refreshModelsFromApi({ toast: true }).then(function (res) {
+          if (!res || !res.ok) return;
+          var U = getUI();
+          // 面板打开时用新目录重开；UI 未提供 closeModelPicker 时不重复 open，避免叠层
+          if (U && typeof U.closeModelPicker === 'function') {
+            try { U.closeModelPicker(); } catch (e) { /* ignore */ }
+            setTimeout(function () { openModelPicker(); }, 80);
+          }
+        });
+        return true;
+      }, 'onRefreshModels'),
+      onDeleteCustomModel: safe(function (id) { removeCustomModel(id); return true; }, 'onDeleteCustomModel'),
       onSaveSettings: safe(function (patch) { return saveSettings(patch) !== false; }, 'onSaveSettings'),
       onLogin: safe(function (data) { login(data); return true; }, 'onLogin'),
       onLogout: safe(function () { logout(true); }, 'onLogout'),
@@ -1064,12 +1135,361 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 模型目录 / 选择器（追加需求 v1.1 B1）+ 自定义模型
+   * ------------------------------------------------------------------ */
+
+  function trimModelId(value) {
+    return String(value === null || value === undefined ? '' : value).replace(/^\s+|\s+$/g, '');
+  }
+
+  /** 由 id 推断 series：含 v1/v2/v3/v4… → "V<n>"，无版本号 → "其他" */
+  function inferModelSeries(id) {
+    var text = String(id === null || id === undefined ? '' : id);
+    var m = /(?:^|[^a-z0-9])v(\d+)/i.exec(text);
+    if (m) return 'V' + m[1];
+    return '其他';
+  }
+
+  /** 由 id 推断 tag：pro/flash/chat/reasoner/free/vision */
+  function inferModelTag(id) {
+    var s = String(id === null || id === undefined ? '' : id).toLowerCase();
+    var matchers = {
+      free: function () { return s.indexOf('free') !== -1; },
+      pro: function () { return /(^|[-_.])pro($|[-_.\d])/.test(s); },
+      flash: function () { return /(^|[-_.])flash($|[-_.\d])/.test(s); },
+      reasoner: function () { return s.indexOf('reasoner') !== -1 || s.indexOf('reasoning') !== -1; },
+      chat: function () { return /(^|[-_.])chat($|[-_.\d])/.test(s); },
+      vision: function () { return /(^|[-_.])(vision|vlm|vl)($|[-_.\d])/.test(s); }
+    };
+    for (var i = 0; i < MODEL_TAG_ORDER.length; i++) {
+      var tag = MODEL_TAG_ORDER[i];
+      if (matchers[tag] && matchers[tag]()) return tag;
+    }
+    return '';
+  }
+
+  /** deepseek-v4.1-flash → "DeepSeek V4.1 Flash"；deepseek-chat → "DeepSeek Chat"；未知 id 原样美化 */
+  function humanizeModelId(id) {
+    var s = trimModelId(id);
+    if (!s) return '未命名模型';
+    if (MODEL_LABEL_OVERRIDES[s]) return MODEL_LABEL_OVERRIDES[s];
+    var parts = s.split(/[-_]+/);
+    var words = [];
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (!part) continue;
+      if (/^v\d+(?:\.\d+)*$/i.test(part)) { words.push(part.toUpperCase()); continue; }
+      if (/^\d+$/.test(part)) { words.push(part); continue; }
+      var lower = part.toLowerCase();
+      if (MODEL_WORD_CASE[lower]) { words.push(MODEL_WORD_CASE[lower]); continue; }
+      words.push(part.charAt(0).toUpperCase() + part.slice(1));
+    }
+    var label = words.join(' ').replace(/[\/]+/g, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    return label || s;
+  }
+
+  function makeModelInfo(id, opts) {
+    var modelId = trimModelId(id);
+    if (!modelId) return null;
+    opts = opts || {};
+    var custom = !!opts.custom;
+    return {
+      id: modelId,
+      label: humanizeModelId(modelId),
+      series: custom ? '自定义' : (MODEL_SERIES_HINTS[modelId] || inferModelSeries(modelId)),
+      tag: inferModelTag(modelId),
+      custom: custom,
+      remote: !!opts.remote,
+      fallback: !!opts.fallback
+    };
+  }
+
+  function seriesRank(series) {
+    if (series === '自定义') return 1000;
+    if (series === '其他') return 1001;
+    var m = /^V(\d+)$/.exec(String(series || ''));
+    if (m) return 1000 - Number(m[1]);
+    return 999;
+  }
+
+  function compareModelInfo(a, b) {
+    var ra = seriesRank(a.series);
+    var rb = seriesRank(b.series);
+    if (ra !== rb) return ra - rb;
+    return (Number(a._idx) || 0) - (Number(b._idx) || 0);
+  }
+
+  /**
+   * 合并回退目录 + 远端 GET /models ids + 用户自定义 ids。
+   * 去重规则：先出现者保留（回退 → 远端 → 自定义），远端可覆盖同 id 的回退条目展示。
+   * 展示顺序：V10…V4→V3→V2→V1 → 自定义 → 其他；组内按来源/添加顺序。
+   */
+  function buildModelCatalog(remoteIds, customIds) {
+    var remote = Array.isArray(remoteIds) ? remoteIds : (Array.isArray(state.remoteModels) ? state.remoteModels : []);
+    var custom = Array.isArray(customIds) ? customIds : (Array.isArray(state.customModels) ? state.customModels : []);
+    var catalog = [];
+    var seen = Object.create(null);
+
+    function push(id, opts) {
+      var modelId = trimModelId(id);
+      if (!modelId || seen[modelId]) return;
+      var info = makeModelInfo(modelId, opts);
+      if (!info) return;
+      seen[modelId] = true;
+      info._idx = catalog.length;
+      catalog.push(info);
+    }
+
+    for (var g = 0; g < MODEL_FALLBACK_GROUPS.length; g++) {
+      var groupName = MODEL_FALLBACK_GROUPS[g];
+      var ids = MODEL_FALLBACK[groupName];
+      if (!Array.isArray(ids)) continue;
+      for (var i = 0; i < ids.length; i++) push(ids[i], { fallback: true });
+    }
+    var remoteSeen = Object.create(null);
+    for (var r = 0; r < remote.length; r++) {
+      var remoteId = trimModelId(remote[r]);
+      if (!remoteId) continue;
+      remoteSeen[remoteId] = true;
+      push(remoteId, { remote: true });
+    }
+    for (var c = 0; c < custom.length; c++) push(custom[c], { custom: true });
+
+    // 远端 /models 已合并的条目不再标记为 fallback（UI 据此决定是否显示「从 API 获取」按钮）
+    for (var f = 0; f < catalog.length; f++) {
+      if (remoteSeen[catalog[f].id]) catalog[f].fallback = false;
+    }
+
+    catalog.sort(compareModelInfo);
+    for (var k = 0; k < catalog.length; k++) delete catalog[k]._idx;
+    return catalog;
+  }
+
+  /** 当前选中但不在目录中的 id（如手输）也补一条，保证可显示/选中 */
+  function catalogWithCurrent(catalog, currentId) {
+    var id = trimModelId(currentId);
+    if (!id) return catalog;
+    for (var i = 0; i < catalog.length; i++) {
+      if (catalog[i].id === id) return catalog;
+    }
+    var copy = catalog.slice();
+    var extra = makeModelInfo(id, { custom: true });
+    if (!extra) return copy;
+    extra._idx = copy.length;
+    copy.forEach(function (item, idx) { item._idx = idx; });
+    extra._idx = copy.length;
+    copy.push(extra);
+    copy.sort(compareModelInfo);
+    copy.forEach(function (item) { delete item._idx; });
+    return copy;
+  }
+
+  function findModelInfo(id, catalog) {
+    var key = trimModelId(id);
+    catalog = catalog || currentModelCatalog();
+    for (var i = 0; i < catalog.length; i++) {
+      if (catalog[i].id === key) return catalog[i];
+    }
+    return null;
+  }
+
+  function labelForModelId(id) {
+    var info = findModelInfo(id);
+    return info ? info.label : humanizeModelId(id);
+  }
+
+  function currentModelCatalog() {
+    return catalogWithCurrent(buildModelCatalog(state.remoteModels, state.customModels), state.prefs.model);
+  }
+
+  function loadCustomModels() {
+    var list = [];
+    try {
+      if (global.Store && typeof Store.getCustomModels === 'function') list = Store.getCustomModels();
+    } catch (e) {
+      warn('读取自定义模型失败：' + errText(e));
+    }
+    if (!Array.isArray(list)) list = [];
+    state.customModels = list.map(function (item) { return String(item); });
+    return state.customModels;
+  }
+
+  function persistCustomModels(list) {
+    state.customModels = Array.isArray(list) ? list.slice() : [];
+    try {
+      if (global.Store && typeof Store.setCustomModels === 'function') {
+        state.customModels = Store.setCustomModels(state.customModels);
+      }
+    } catch (e) {
+      warn('保存自定义模型失败：' + errText(e));
+    }
+    state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels);
+    return state.customModels;
+  }
+
+  /** 顶栏副标题 / 设置页当前模型名（UI.setModelLabel 优先；缺失时用 UI.setModel 兜底） */
+  function applyModelLabel() {
+    var modelId = state.prefs.model || 'deepseek-chat';
+    var info = findModelInfo(modelId);
+    var label = info ? info.label : humanizeModelId(modelId);
+    ui('setModel', modelId);
+    var U = getUI();
+    if (U && typeof U.setModelLabel === 'function') {
+      ui('setModelLabel', label);
+    } else {
+      var chat = Store.getActiveChat();
+      if (chat) setHeader(chat, '');
+    }
+    return label;
+  }
+
+  /**
+   * 选择模型：写 state.prefs.model + 当前 chat.model，持久化到 Store + Bridge，
+   * 更新 UI 标签并 toast；不在目录中的 id 自动进入「自定义」组。
+   */
+  function selectModel(id, opts) {
+    opts = opts || {};
+    var modelId = trimModelId(id);
+    if (!modelId) return false;
+    if (modelId.length > 120) { toast('模型 ID 太长（最多 120 字符）'); return false; }
+
+    var catalog = buildModelCatalog(state.remoteModels, state.customModels);
+    var isKnown = false;
+    for (var i = 0; i < catalog.length; i++) {
+      if (catalog[i].id === modelId) { isKnown = true; break; }
+    }
+    if (!isKnown) {
+      var list = (state.customModels || []).slice();
+      if (list.indexOf(modelId) === -1) list.push(modelId);
+      persistCustomModels(list);
+    }
+
+    state.prefs.model = modelId;
+    try { Store.setPrefs({ model: modelId }); } catch (e) { warn('Store.setPrefs(model) 失败：' + errText(e)); }
+    try {
+      if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ model: modelId });
+    } catch (e2) { warn('Bridge.setPrefs(model) 失败：' + errText(e2)); }
+
+    var chat = Store.getActiveChat();
+    if (chat) {
+      try {
+        if (typeof Store.updateChat === 'function') Store.updateChat(chat.id, { model: modelId });
+        chat.model = modelId;
+      } catch (e3) { warn('更新会话模型失败：' + errText(e3)); }
+    }
+
+    state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels);
+    var label = applyModelLabel();
+    if (!opts.silent) toast('已切换到 ' + label, true);
+    return true;
+  }
+
+  function modelCatalogText() {
+    var catalog = currentModelCatalog();
+    var lines = ['当前模型：`' + (state.prefs.model || '') + '` ' + '（' + labelForModelId(state.prefs.model) + '）', ''];
+    var lastGroup = '';
+    for (var i = 0; i < catalog.length; i++) {
+      var m = catalog[i];
+      var group = m.custom ? '自定义' : m.series;
+      if (group !== lastGroup) {
+        lines.push('**' + (group === '其他' ? '其他' : group + ' 系列') + '**');
+        lastGroup = group;
+      }
+      lines.push('- ' + m.label + ' · `' + m.id + '`' + (m.tag ? ' [' + m.tag + ']' : '') + (m.id === state.prefs.model ? ' ← 当前' : ''));
+    }
+    return lines.join('\n');
+  }
+
+  function openModelPicker() {
+    var catalog = currentModelCatalog();
+    state.modelCatalog = catalog;
+    var current = state.prefs.model;
+    var U = getUI();
+    if (U && typeof U.openModelPicker === 'function') {
+      try {
+        U.openModelPicker(catalog, current, function (id) {
+          if (id === null || id === undefined || id === '') return; // 关闭面板
+          selectModel(String(id));
+        });
+        return true;
+      } catch (e) {
+        warn('UI.openModelPicker 失败：' + errText(e));
+      }
+    }
+    // 兜底：UI 尚未实现 openModelPicker 时，用输入框选择
+    toast('当前模型：' + labelForModelId(current), true);
+    promptAsync('选择模型（输入模型 ID）', current, '例如 deepseek-v4-pro').then(function (value) {
+      if (value === null || value === undefined) return;
+      var v = trimModelId(value);
+      if (!v) return;
+      selectModel(v);
+    });
+    return false;
+  }
+
+  function refreshModelsFromApi(opts) {
+    opts = opts || {};
+    if (state.remoteModelsPromise && !opts.force) return state.remoteModelsPromise;
+    if (!global.Api || typeof global.Api.verifyKey !== 'function') {
+      return Promise.resolve({ ok: false, models: [], error: 'Api 不可用' });
+    }
+    var promise = Api.verifyKey({ timeout: opts.timeout || 15000 }).then(function (res) {
+      state.remoteModelsPromise = null;
+      res = res || {};
+      if (res.ok && Array.isArray(res.models) && res.models.length) {
+        var list = [];
+        var seen = Object.create(null);
+        for (var i = 0; i < res.models.length; i++) {
+          var id = trimModelId(res.models[i]);
+          if (!id || seen[id]) continue;
+          seen[id] = true;
+          list.push(id);
+        }
+        state.remoteModels = list;
+        state.remoteModelsLoaded = true;
+        state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels);
+        applyModelLabel();
+        if (opts.toast) toast('已获取 ' + list.length + ' 个模型', true);
+        return { ok: true, models: list.slice(), count: list.length };
+      }
+      if (opts.toast) {
+        var message = res.timeout ? '获取模型列表超时' : (res.message || '获取模型列表失败');
+        toast(message + '，继续使用内置目录', true);
+      }
+      return { ok: false, models: [], error: res.message || '获取模型列表失败' };
+    }).catch(function (e) {
+      state.remoteModelsPromise = null;
+      if (opts.toast) toast('获取模型列表失败：' + errText(e), true);
+      return { ok: false, models: [], error: errText(e) };
+    });
+    state.remoteModelsPromise = promise;
+    return promise;
+  }
+
+  function removeCustomModel(id) {
+    var modelId = trimModelId(id);
+    if (!modelId) return false;
+    var list = (state.customModels || []).slice();
+    var idx = list.indexOf(modelId);
+    if (idx < 0) {
+      toast('「' + modelId + '」不是自定义模型');
+      return false;
+    }
+    list.splice(idx, 1);
+    persistCustomModels(list);
+    if (state.prefs.model === modelId) applyModelLabel();
+    toast('已删除自定义模型「' + humanizeModelId(modelId) + '」', true);
+    return true;
+  }
+
+  /* ------------------------------------------------------------------ *
    * 设置
    * ------------------------------------------------------------------ */
 
   function openSettings() {
     closeDrawer();
-    ui('renderSettings', state.prefs, MODELS);
+    state.modelCatalog = currentModelCatalog();
+    ui('renderSettings', state.prefs, state.modelCatalog);
     ui('showScreen', 'settings');
     navTo('settings');
   }
@@ -1081,10 +1501,6 @@
       var baseUrl = normalizeUrl(patch.baseUrl);
       if (!baseUrl) { toast('Base URL 格式不正确'); return false; }
       next.baseUrl = baseUrl;
-    }
-    if (patch.model !== undefined) {
-      var model = String(patch.model || '').replace(/^\s+|\s+$/g, '');
-      if (model) next.model = model;
     }
     if (patch.temperature !== undefined) next.temperature = clampNum(patch.temperature, 0, 2);
     if (patch.maxTokens !== undefined) next.maxTokens = Math.round(clampNum(patch.maxTokens, 16, 8192));
@@ -1105,12 +1521,15 @@
 
     state.prefs = mergePrefs(Store.getPrefs(), readNativePrefs());
     var active = Store.getActiveChat();
-    if (active && next.model) {
-      Store.updateChat(active.id, { model: next.model });
-      active.model = next.model;
+    // B1：设置页保存 model 时同样走 selectModel 逻辑（含自定义模型落目录/持久化/标签更新）
+    var requestedModel = patch.model !== undefined ? trimModelId(patch.model) : '';
+    if (requestedModel) {
+      selectModel(requestedModel, { silent: true });
+    } else {
+      applyModelLabel();
     }
-    ui('setModel', state.prefs.model);
-    ui('renderSettings', state.prefs, MODELS);
+    state.modelCatalog = currentModelCatalog();
+    ui('renderSettings', state.prefs, state.modelCatalog);
     setHeader(active, '');
     return true;
   }
@@ -1373,7 +1792,11 @@
       '- `/clear` 清空当前会话',
       '- `/export` 导出当前会话',
       '- `/stop` 停止生成',
-      '- `/model` 查看 / 切换模型',
+      '- `/model` 打开模型选择器',
+      '- `/model <id>` 直接切换模型（自动加入自定义）',
+      '- `/model list` 列出模型目录',
+      '- `/model remove <id>` 删除自定义模型',
+      '- `/models` 从 API 获取模型列表',
       '- `/settings` 打开设置'
     ];
     try {
@@ -1424,17 +1847,31 @@
     if (cmd === 'model' || cmd === '模型') {
       var target = String(args || '').replace(/^\s+|\s+$/g, '');
       if (!target) {
-        var names = [];
-        for (var i = 0; i < MODELS.length; i++) names.push('`' + MODELS[i].id + '`（' + MODELS[i].name + '）');
-        return { handled: true, text: '当前模型：`' + state.prefs.model + '`\n\n可用模型：' + names.join('、') };
+        // 无参数：打开选择器（UI 支持时）；否则返回目录文本
+        openModelPicker();
+        return { handled: true };
       }
-      var found = null;
-      for (var j = 0; j < MODELS.length; j++) {
-        if (MODELS[j].id === target) { found = MODELS[j]; break; }
+      var lower = target.toLowerCase();
+      if (lower === 'list' || lower === '列表') {
+        return { handled: true, text: modelCatalogText() };
       }
-      if (!found) return { handled: true, text: '未知模型：`' + target + '`' };
-      saveSettings({ model: found.id });
-      return { handled: true, text: '已切换模型：`' + found.id + '`（' + found.name + '）' };
+      if (lower === 'refresh' || lower === '刷新') {
+        refreshModelsFromApi({ toast: true });
+        return { handled: true };
+      }
+      if (/^remove\s+/i.test(target)) {
+        var removeId = target.replace(/^remove\s+/i, '').replace(/^\s+|\s+$/g, '');
+        var removed = removeCustomModel(removeId);
+        return { handled: true, text: removed ? '已删除自定义模型：`' + removeId + '`' : '「' + removeId + '」不在自定义模型中。' };
+      }
+      if (selectModel(target, { silent: true })) {
+        return { handled: true, text: '已切换模型：`' + target + '`（' + labelForModelId(target) + '）' };
+      }
+      return { handled: true, text: '无法切换到模型：`' + target + '`' };
+    }
+    if (cmd === 'models' || cmd === '模型列表') {
+      refreshModelsFromApi({ toast: true });
+      return { handled: true };
     }
     return null;
   }
@@ -1529,6 +1966,17 @@
   App.refreshChatList = safe(function () { refreshChatList(); }, 'App.refreshChatList');
   App.refreshPlugins = safe(function () { refreshPlugins(); }, 'App.refreshPlugins');
   App.pluginList = function () { return pluginListNormalized(); };
+  App.buildModelCatalog = function (remoteIds, customIds) { return buildModelCatalog(remoteIds, customIds); };
+  App.currentModelCatalog = function () { return currentModelCatalog(); };
+  App.selectModel = safe(function (id, opts) { return selectModel(id, opts); }, 'App.selectModel');
+  App.openModelPicker = safe(function () { return openModelPicker(); }, 'App.openModelPicker');
+  App.refreshModels = safe(function (opts) { return refreshModelsFromApi(opts || {}); }, 'App.refreshModels');
+  App.removeCustomModel = safe(function (id) { return removeCustomModel(id); }, 'App.removeCustomModel');
+  App.getCustomModels = function () { try { return (Store.getCustomModels ? Store.getCustomModels() : state.customModels).slice(); } catch (e) { return (state.customModels || []).slice(); } };
+  App.labelForModelId = function (id) { return labelForModelId(id); };
+  App.humanizeModelId = function (id) { return humanizeModelId(id); };
+  App.inferModelSeries = function (id) { return inferModelSeries(id); };
+  App.inferModelTag = function (id) { return inferModelTag(id); };
   App.openDrawer = function () { state.nav.drawerOpen = true; };
   App.closeDrawer = function () { closeDrawer(); };
 

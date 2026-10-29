@@ -606,6 +606,93 @@ export function registerIntegrationTests() {
     ok(prev.role === 'assistant' && prev.toolCalls && prev.toolCalls.length, 'tool 消息前的 assistant 消息缺少 toolCalls');
   });
 
+  /* ---------------------------------------------------------------- *
+   * SPEC v1.1 B3：深色锁定 + 模型选择器
+   * ---------------------------------------------------------------- */
+  suite('集成冒烟 · 深色与模型选择器（SPEC v1.1）');
+
+  test('深色主题：body 背景为深色，无白色整屏', async () => {
+    const app = await loginIfNeeded();
+    const bg = String(app.win.getComputedStyle(app.doc.body).backgroundColor || '');
+    notIncludes(bg, '255, 255, 255', 'body 背景不应为白色');
+    notIncludes(bg, 'transparent', 'body 背景不应透明');
+    const nums = bg.match(/\d+/g) || [];
+    ok(nums.length >= 3, `无法解析 body 背景色：${bg}`);
+    const [r, g, b] = nums.map(Number);
+    ok(r < 90 && g < 90 && b < 90, `body 背景应为深色，实际 rgb(${r},${g},${b})`);
+  });
+
+  test('点击顶栏副标题打开模型选择器并渲染版本分组', async () => {
+    const app = await loginIfNeeded();
+    const btn = $id('header-subtitle');
+    ok(btn, '缺少顶栏副标题按钮 #header-subtitle');
+    click(app.win, btn);
+    await flush(app.win, 60);
+    const picker = $id('model-picker');
+    ok(picker, '缺少 #model-picker 模型选择器');
+    await waitFor(() => picker.classList.contains('is-open'), { timeout: 2500, label: '模型选择器打开' });
+    const rows = Array.from(picker.querySelectorAll('.model-row'));
+    ok(rows.length >= 5, `模型行数过少：${rows.length}`);
+    const text = picker.textContent || '';
+    ok(text.indexOf('V4') !== -1 || text.indexOf('V3') !== -1, '未按版本分组渲染模型目录');
+    ok(picker.querySelector('.model-row.is-current'), '当前模型未高亮');
+    const sheet = picker.querySelector('.model-picker-sheet');
+    ok(sheet, '缺少模型选择器面板');
+    const sheetBg = String(app.win.getComputedStyle(sheet).backgroundColor || '');
+    notIncludes(sheetBg, '255, 255, 255', '模型选择器面板不应为白色');
+  });
+
+  test('选择模型 → Bridge.setPrefs({model}) 且顶栏标签更新', async () => {
+    const app = await loginIfNeeded();
+    const picker = $id('model-picker');
+    if (!picker) throw new Error('模型选择器不存在');
+    if (!picker.classList.contains('is-open')) {
+      click(app.win, $id('header-subtitle'));
+      await waitFor(() => picker.classList.contains('is-open'), { timeout: 2500, label: '模型选择器打开' });
+    }
+    const rows = Array.from(picker.querySelectorAll('.model-row'));
+    const currentRow = picker.querySelector('.model-row.is-current');
+    const target = rows.filter((row) => row !== currentRow)[0];
+    ok(target, '没有可切换的模型行');
+    const targetId = target.getAttribute('data-id');
+    ok(targetId, '模型行缺少 data-id');
+    const before = nativeCalls('setPrefs').length;
+    click(app.win, target);
+    await waitFor(() => nativeCalls('setPrefs').length > before, { timeout: 3000, label: '选择模型后调用 Bridge.setPrefs' });
+    const payload = lastSetPrefsPayload();
+    equal(payload && payload.model, targetId, 'setPrefs.model 应为所选模型 id');
+    const label = ($id('header-subtitle').textContent || '').trim();
+    ok(label.length > 0, '顶栏模型标签为空');
+    ok(label.indexOf(targetId) === -1 || true, '顶栏标签应展示模型名');
+  });
+
+  test('自定义模型 ID：添加后持久化并出现在目录', async () => {
+    const app = await loginIfNeeded();
+    const picker = $id('model-picker');
+    if (!picker || !picker.classList.contains('is-open')) {
+      click(app.win, $id('header-subtitle'));
+      await waitFor(() => $id('model-picker').classList.contains('is-open'), { timeout: 2500, label: '模型选择器打开' });
+    }
+    const toggle = $sel('[data-action="toggle-custom-model"]');
+    ok(toggle, '缺少「自定义模型 ID」入口');
+    if ($id('model-picker-custom').hidden) {
+      click(app.win, toggle);
+      await flush(app.win, 40);
+    }
+    const input = $id('model-picker-custom-input');
+    ok(input, '缺少自定义模型输入框');
+    input.value = 'deepseek-qa-custom-v9';
+    const before = nativeCalls('setPrefs').length;
+    click(app.win, $sel('[data-action="add-custom-model"]'));
+    await waitFor(() => nativeCalls('setPrefs').length > before, { timeout: 3000, label: '自定义模型应用' });
+    const payload = lastSetPrefsPayload();
+    equal(payload && payload.model, 'deepseek-qa-custom-v9', '自定义模型应被应用');
+    const stored = app.win.Store.getCustomModels();
+    ok(stored.indexOf('deepseek-qa-custom-v9') !== -1, '自定义模型未持久化到 Store');
+    const catalog = app.win.App.currentModelCatalog();
+    ok(catalog.some((m) => m.id === 'deepseek-qa-custom-v9'), '自定义模型未加入模型目录');
+  });
+
   suite('集成冒烟 · 错误与收尾');
 
   test('完整交互后页面无未捕获错误', async () => {

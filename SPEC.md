@@ -205,3 +205,46 @@ onChange(fn)                // 状态变化通知（UI 刷新插件列表）
    插件启用/禁用/安装/工具调用→导出→返回键分层。
 5. 无外部网络资源引用；无 `http://` 硬编码（默认 https）；API Key 只在 SharedPreferences + 请求头，不写日志。
 6. 界面视觉符合 §4.4（深色、Telegram 布局、气泡、抽屉、动画）。
+
+---
+
+# 追加需求 v1.1（2026-10-29）：深色锁定 + 模型选择器
+
+## A. 深色主题（强制，所有成员遵守）
+- 界面只能是**深色**：`html/body/#app` 背景 `#17212B`，无任何白色/浅色整屏幕；控件（输入框、弹窗、按钮、开关、设置行、下拉/选择器）一律深色；
+  禁止 `background:#fff`/`#f*`/浅色渐变作为面板底色（`#fff` 仅允许用于开关圆点、按钮文字等前景细节）。
+- `<meta name="color-scheme" content="dark">`、`color-scheme: dark`、WebView 背景 `#17212B`、状态栏 `#17212B`、导航栏 `#0E1621`（已有）。
+- 系统深浅色跟随无效：App 永远深色。登录页、设置页、插件页、模型选择器、Toast、确认弹窗、长按菜单全部深色。
+- 无白色闪屏：原生窗口背景与 WebView 背景均已深色（已实现）；CSS 首屏不得有浅色骨架。
+
+## B. 模型选择器（对标 DeepSeek Harness 网页版）
+### B1. 模型条目结构（app.js 构造，UI 只渲染）
+```
+ModelInfo = { id:string, label:string, series:"V4"|"V3"|"V2"|"V1"|"其他", tag:"pro"|"flash"|"chat"|"reasoner"|"free"|"vision"|"", desc?:string }
+```
+- `label` 人类可读：`deepseek-v4-pro` → `DeepSeek V4 Pro`；`deepseek-v4.1-flash` → `DeepSeek V4.1 Flash`；`deepseek-reasoner` → `DeepSeek Reasoner`。
+- `series` 由 id 推断（含 `v1`/`v2`/`v3`/`v4` 分组；无版本号归"其他"），**允许任意数量/任意版本**，不要写死只有 V3/V4。
+- 内置回退目录（无 key 或 /models 失败时展示，顺序固定）：
+  V4: deepseek-v4-pro, deepseek-v4.1-flash, deepseek-v4-flash, deepseek-v4-pro-0813, deepseek-v4-flash-0731, deepseek-v4.1-flash-free
+  V3: deepseek-v3.2, deepseek-chat, deepseek-reasoner
+  其他: deepseek-flash
+- 运行时以 `GET /models`（现有 `Bridge.validateKey` 返回的 `models` 字符串数组）**合并覆盖**回退目录：远端返回的 id 全部展示，未知 id 自动推断 series/label。
+- 用户可添加**自定义模型 ID**（任意字符串，持久化到 `state.customModels`，出现在"自定义"分组），也可删除自定义项。
+- 选择结果：`state.prefs.model` 全局默认 + 当前 `chat.model`；持久化走 `Bridge.setPrefs` + `Store`；模型与当前会话绑定，新建会话继承全局默认。
+- 当前模型不在目录中时（例如手输 id），目录里要显示一条该 id 的条目并选中。
+
+### B2. UI API 追加（web-shell 实现于 ui.js；web-logic 只调用）
+```
+UI.openModelPicker(models, currentId, onPick)   // 底部弹出面板；onPick(id) 选中，关闭时 onPick(null)
+UI.setModelLabel(label)                        // 顶栏副标题 / 设置页当前模型名
+UI.closeModelPicker()
+```
+- 视觉：底部弹层（圆角顶部 20px、拖拽把手、深色 `#0E1621`、260ms 上滑、遮罩 rgba(0,0,0,.5)）；顶部标题"选择模型"+关闭钮；
+  搜索框（按 label/id 过滤）；分组标题（V4 系列/V3 系列/V2 系列/V1 系列/自定义/其他），每行：左侧名称+id 小字，右侧 tag 徽章与选中勾；
+  底部"＋ 自定义模型 ID"：展开输入框 + 添加并选中；键盘弹出时面板随 adjustResize 上移，可滚动，安全区适配。
+- 设置页"模型"行改为显示当前模型名 + 右侧"更改"箭头，点击打开同一选择器；聊天页顶部副标题显示当前模型名（如 `DeepSeek V4 Pro`），点击打开选择器。
+- 新回调（UI.init cb 追加，app.js 提供）：`onOpenModelPicker()`；`onSelectModel(id)`。
+- 打开选择器时若目录为空/仅回退，显示"从 API 获取模型列表"按钮（触发 `onRefreshModels()`）。
+
+### B3. 测试要求
+- QA 增加：模型选择器渲染分组、选择后 `Bridge.setPrefs({model})` 被调用、重启后 model 保持、自定义模型添加/删除、远端目录合并、深色断言（jsdom `getComputedStyle(document.body).backgroundColor` 为深色）。

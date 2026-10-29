@@ -14,7 +14,8 @@
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  background-color: var(--bg);
+  /* 深色锁定（SPEC v1.1 A） */
+  background-color: #17212b;
 }
 
 .screens {
@@ -33,7 +34,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background-color: var(--bg);
+  background-color: #17212b;
 }
 
 /* 主聊天页始终在最底层 */
@@ -70,7 +71,7 @@
   background:
     radial-gradient(120% 80% at 10% -10%, rgba(82, 136, 193, 0.3), transparent 62%),
     radial-gradient(100% 70% at 100% 0%, rgba(106, 178, 242, 0.16), transparent 56%),
-    var(--bg);
+    #17212b;
   transition: opacity 220ms ease, transform 220ms ease;
 }
 
@@ -150,6 +151,27 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 顶栏副标题：当前模型名，可点击打开模型选择器 */
+.topbar-title .subtitle--action {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topbar-title .subtitle--action:active {
+  color: var(--accent-2);
 }
 
 .icon-btn {
@@ -1159,6 +1181,33 @@
   max-width: 130px;
 }
 
+.form-control--value {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.model-current {
+  max-width: 58vw;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 仅供兼容/无障碍读取的隐藏控件（如 #set-model） */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  white-space: nowrap !important;
+}
+
 .input {
   width: 100%;
   min-width: 0;
@@ -2116,5 +2165,370 @@
 
   .suggestions {
     margin-top: 10px;
+  }
+}
+
+/* ============================ 模型选择器（SPEC v1.1 B2） ============================ */
+
+.model-picker {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 76;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 200ms ease, visibility 0s linear 200ms;
+}
+
+.model-picker.is-open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 200ms ease;
+}
+
+.model-picker-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 520px;
+  max-height: min(78dvh, 680px);
+  background-color: #0e1621;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -14px 44px rgba(0, 0, 0, 0.5);
+  padding-bottom: calc(4px + var(--safe-bottom));
+  overflow: hidden;
+  transform: translateY(100%);
+  transition: transform 260ms var(--ease);
+  will-change: transform;
+}
+
+.model-picker.is-open .model-picker-sheet {
+  transform: none;
+}
+
+.picker-handle {
+  flex: none;
+  width: 38px;
+  height: 4px;
+  margin: 8px auto 2px;
+  border-radius: 2px;
+  background-color: rgba(255, 255, 255, 0.26);
+  touch-action: none;
+}
+
+.picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 2px 8px 4px 16px;
+}
+
+.picker-title {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 40px;
+  margin: 2px 12px 8px;
+  padding: 0 6px 0 11px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 11px;
+  background-color: #17212b;
+}
+
+.picker-search > svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: var(--muted);
+}
+
+.picker-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background-color: transparent;
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+}
+
+.picker-search-input::placeholder {
+  color: var(--muted);
+}
+
+.picker-search-clear {
+  width: 28px;
+  height: 28px;
+}
+
+.picker-search-clear svg {
+  width: 17px;
+  height: 17px;
+}
+
+.picker-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px 10px 8px;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.picker-group {
+  margin: 2px 0 4px;
+}
+
+.picker-group-title {
+  padding: 10px 8px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 10px;
+  border-radius: 12px;
+  color: var(--text);
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.model-row:active {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.model-row.is-current {
+  background-color: rgba(82, 136, 193, 0.16);
+}
+
+.model-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.model-row-label {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.model-row-id {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.model-tag {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.model-tag--pro {
+  background-color: rgba(106, 178, 242, 0.16);
+  color: #8cc4f5;
+}
+
+.model-tag--flash {
+  background-color: rgba(242, 196, 106, 0.16);
+  color: #f2c46a;
+}
+
+.model-tag--chat {
+  background-color: rgba(82, 136, 193, 0.2);
+  color: #a9cdf0;
+}
+
+.model-tag--reasoner {
+  background-color: rgba(186, 140, 242, 0.16);
+  color: #c9a7f5;
+}
+
+.model-tag--free {
+  background-color: rgba(79, 208, 91, 0.16);
+  color: #8fe897;
+}
+
+.model-tag--vision {
+  background-color: rgba(242, 140, 180, 0.16);
+  color: #f2a0c0;
+}
+
+.model-check {
+  display: inline-flex;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--accent-2);
+}
+
+.model-check svg {
+  width: 20px;
+  height: 20px;
+}
+
+.model-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.model-del svg {
+  width: 17px;
+  height: 17px;
+}
+
+.model-del:active {
+  background-color: rgba(224, 93, 93, 0.16);
+  color: var(--danger);
+}
+
+.picker-empty {
+  padding: 30px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.picker-foot {
+  flex: none;
+  padding: 8px 14px calc(4px + var(--safe-bottom));
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background-color: #0e1621;
+}
+
+.picker-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 40px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(106, 178, 242, 0.28);
+  border-radius: 11px;
+  background-color: rgba(82, 136, 193, 0.1);
+  color: var(--accent-2);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.picker-refresh:active {
+  background-color: rgba(82, 136, 193, 0.18);
+}
+
+.picker-refresh:disabled {
+  opacity: 0.6;
+}
+
+.picker-refresh svg {
+  width: 16px;
+  height: 16px;
+}
+
+.picker-custom-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 40px;
+  border-radius: 11px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--accent-2);
+  font-size: 13.5px;
+}
+
+.picker-custom-toggle:active {
+  background-color: rgba(255, 255, 255, 0.09);
+}
+
+.picker-custom-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.picker-custom {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.picker-custom-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 11px;
+  background-color: #17212b;
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+}
+
+.picker-custom-input:focus {
+  border-color: var(--accent);
+}
+
+.picker-custom-add {
+  flex: none;
+  height: 42px;
+  padding: 0 14px;
+  font-size: 14px;
+}
+
+@media (orientation: landscape) and (max-height: 480px) {
+  .model-picker-sheet {
+    max-height: 90dvh;
   }
 }

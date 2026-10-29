@@ -8,6 +8,7 @@
  *   chats: [{id,title,createdAt,updatedAt,pinned,archived,model,messages:[]}],
  *   activeChatId,
  *   plugins: {enabled:{<id>:true}, settings:{<id>:{...}}},
+ *   customModels: ["<自定义模型 id>"],   // B1：用户自定义模型 ID（任意字符串）
  *   ui: {drawerOpen:false}
  * }
  * msg = {id, role:"user"|"assistant"|"tool"|"note", content, reasoning?, toolCalls?, toolName?,
@@ -130,9 +131,25 @@
       prefs: defaultPrefs(),
       chats: [],
       activeChatId: null,
+      customModels: [],
       plugins: { enabled: {}, settings: {} },
       ui: { drawerOpen: false }
     };
+  }
+
+  function normalizeCustomModels(raw) {
+    var out = [];
+    var seen = {};
+    if (!Array.isArray(raw)) return out;
+    for (var i = 0; i < raw.length && out.length < 50; i++) {
+      var v = raw[i];
+      if (v === null || v === undefined) continue;
+      var id = String(v).replace(/^\s+|\s+$/g, '');
+      if (!id || id.length > 120 || seen[id]) continue;
+      seen[id] = true;
+      out.push(id);
+    }
+    return out;
   }
 
   function normalizePrefs(raw) {
@@ -223,6 +240,9 @@
     }
     if (raw.ui && typeof raw.ui === 'object' && typeof raw.ui.drawerOpen === 'boolean') {
       next.ui.drawerOpen = raw.ui.drawerOpen;
+    }
+    if (raw.customModels !== undefined) {
+      next.customModels = normalizeCustomModels(raw.customModels);
     }
     var ids = next.chats.map(function (c) { return c.id; });
     if (raw.activeChatId && ids.indexOf(String(raw.activeChatId)) !== -1) {
@@ -593,6 +613,46 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 自定义模型（追加需求 v1.1 B1）
+   * ------------------------------------------------------------------ */
+
+  function getCustomModels() {
+    load();
+    return (state.customModels || []).slice();
+  }
+
+  function setCustomModels(list) {
+    load();
+    state.customModels = normalizeCustomModels(list);
+    save();
+    return getCustomModels();
+  }
+
+  function addCustomModel(id) {
+    load();
+    var value = String(id === null || id === undefined ? '' : id).replace(/^\s+|\s+$/g, '');
+    if (!value) return getCustomModels();
+    var list = (state.customModels || []).slice();
+    if (list.indexOf(value) === -1) {
+      if (value.length > 120) value = value.slice(0, 120);
+      list.push(value);
+      state.customModels = normalizeCustomModels(list);
+      save();
+    }
+    return getCustomModels();
+  }
+
+  function removeCustomModel(id) {
+    load();
+    var value = String(id === null || id === undefined ? '' : id);
+    if (!value) return getCustomModels();
+    var list = (state.customModels || []).filter(function (item) { return item !== value; });
+    state.customModels = list;
+    save();
+    return getCustomModels();
+  }
+
+  /* ------------------------------------------------------------------ *
    * 插件状态
    * ------------------------------------------------------------------ */
 
@@ -699,6 +759,11 @@
 
     exportChatMarkdown: exportChatMarkdown,
     clearAll: clearAll,
+
+    getCustomModels: getCustomModels,
+    setCustomModels: setCustomModels,
+    addCustomModel: addCustomModel,
+    removeCustomModel: removeCustomModel,
 
     getPluginEnabled: getPluginEnabled,
     setPluginEnabled: setPluginEnabled,

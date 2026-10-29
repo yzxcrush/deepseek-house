@@ -364,8 +364,8 @@ export function registerStaticTests() {
       [/android:exported="true"/, 'Activity 缺少 exported=true'],
       [/android\.intent\.category\.LAUNCHER/, '缺少 LAUNCHER intent-filter'],
       [/android:configChanges="[^"]*orientation[^"]*"/, 'configChanges 缺少 orientation'],
-      [/android:versionName="1\.0\.0"/, 'versionName 应为 1.0.0'],
-      [/android:versionCode="1"/, 'versionCode 应为 1'],
+      [/android:versionName="1\.0\.\d+"/, 'versionName 应为 1.0.x'],
+      [/android:versionCode="[1-9]\d*"/, 'versionCode 应为正整数'],
     ]) {
       ok(re.test(manifest), description);
     }

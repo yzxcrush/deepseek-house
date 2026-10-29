@@ -22,6 +22,7 @@
     chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>',
     checkDouble: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 12.4 5.4 16 12 8.6"></path><path d="M8.8 12.4 12.4 16 22 5.6"></path></svg>',
     pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1.2 6.2L17 12.5H7l3.2-3.3L9 3Z"></path><path d="M12 12.5V21"></path></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>',
     puzzle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>'
@@ -73,7 +74,22 @@
     /* 模型 */
     model: 'deepseek-chat',
     models: [],
+    modelLabel: '',
+    modelLabelId: '',
     subtitleOverride: '',
+
+    /* 模型选择器（SPEC v1.1 B2） */
+    modelPicker: {
+      open: false,
+      models: [],
+      currentId: '',
+      onPick: null,
+      resolved: false,
+      query: '',
+      customOpen: false,
+      opts: {},
+      refreshTimer: 0
+    },
 
     /* 各页数据 */
     prefs: {},
@@ -214,6 +230,396 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 模型选择器（SPEC v1.1 B2）
+   * 数据完全由 app.js 构造（ModelInfo），UI 只负责分组渲染与交互。
+   * ------------------------------------------------------------------ */
+  var PICKER_GROUPS = [
+    { key: 'V4', title: 'V4 系列' },
+    { key: 'V3', title: 'V3 系列' },
+    { key: 'V2', title: 'V2 系列' },
+    { key: 'V1', title: 'V1 系列' },
+    { key: '自定义', title: '自定义' },
+    { key: '其他', title: '其他' }
+  ];
+  var PICKER_TAGS = { pro: 1, flash: 1, chat: 1, reasoner: 1, free: 1, vision: 1 };
+
+  function labelForModel(id) {
+    var value = id == null ? '' : String(id);
+    for (var i = 0; i < state.models.length; i++) {
+      if (String(state.models[i].id) === value) return state.models[i].label;
+    }
+    return MODEL_LABELS[value] || value;
+  }
+
+  /* 顶栏副标题 / 设置页模型行统一显示 */
+  function updateModelLabelUI() {
+    var label = state.modelLabel || labelForModel(state.model);
+    var subtitle = r('header-subtitle');
+    if (subtitle && !state.subtitleOverride) subtitle.textContent = label;
+    var rowLabel = r('set-model-label');
+    if (rowLabel) rowLabel.textContent = label;
+  }
+
+  function normalizePickerModels(models) {
+    var list = [];
+    (Array.isArray(models) ? models : []).forEach(function (item) {
+      if (!item) return;
+      if (typeof item === 'string') {
+        list.push({ id: item, label: item, series: '', tag: '', desc: '', fallback: false, custom: false, remote: false });
+        return;
+      }
+      if (typeof item !== 'object') return;
+      var id = item.id == null ? '' : String(item.id);
+      if (!id) return;
+      var series = item.series == null ? '' : String(item.series);
+      list.push({
+        id: id,
+        label: item.label ? String(item.label) : id,
+        series: series,
+        tag: item.tag ? String(item.tag).toLowerCase() : '',
+        desc: item.desc ? String(item.desc) : '',
+        fallback: !!item.fallback,
+        custom: !!(item.custom || series === '自定义'),
+        remote: !!item.remote
+      });
+    });
+    return list;
+  }
+
+  function pickerGroupKey(model) {
+    if (!model) return '其他';
+    if (model.custom || String(model.series || '') === '自定义') return '自定义';
+    var match = /V(\d+)/i.exec(String(model.series || ''));
+    if (match) return 'V' + match[1];
+    return '其他';
+  }
+
+  function findPickerModel(id) {
+    var value = id == null ? '' : String(id);
+    for (var i = 0; i < state.modelPicker.models.length; i++) {
+      if (String(state.modelPicker.models[i].id) === value) return state.modelPicker.models[i];
+    }
+    return null;
+  }
+
+  function pickerShowsRefresh() {
+    if (typeof state.cb.onRefreshModels !== 'function') return false;
+    var picker = state.modelPicker;
+    if (picker.opts && (picker.opts.fallbackOnly || picker.opts.fallback || picker.opts.refreshable)) return true;
+    if (!picker.models.length) return true;
+    for (var i = 0; i < picker.models.length; i++) {
+      if (picker.models[i].fallback) return true;
+    }
+    return false;
+  }
+
+  function buildModelPickerRow(model) {
+    var picker = state.modelPicker;
+    var current = String(model.id) === String(picker.currentId);
+    var row = el('div', 'model-row' + (current ? ' is-current' : ''));
+    row.setAttribute('data-action', 'pick-model');
+    row.setAttribute('data-id', String(model.id));
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', current ? 'true' : 'false');
+    row.setAttribute('tabindex', '0');
+
+    var main = el('div', 'model-row-main');
+    main.appendChild(makeText('div', 'model-row-label', model.label || model.id));
+    main.appendChild(makeText('div', 'model-row-id', model.id));
+    row.appendChild(main);
+
+    if (model.tag) {
+      var tagKey = PICKER_TAGS[model.tag] ? model.tag : '';
+      row.appendChild(makeText('span', 'model-tag' + (tagKey ? ' model-tag--' + tagKey : ''), String(model.tag).toUpperCase()));
+    }
+    if (model.desc) row.title = String(model.desc);
+
+    var customRow = model.custom || pickerGroupKey(model) === '自定义';
+    if (customRow && typeof state.cb.onDeleteCustomModel === 'function') {
+      var del = el('span', 'model-del');
+      del.setAttribute('data-action', 'delete-custom-model');
+      del.setAttribute('data-id', String(model.id));
+      del.setAttribute('role', 'button');
+      del.setAttribute('aria-label', '删除自定义模型');
+      del.innerHTML = ICON.trash;
+      row.appendChild(del);
+    }
+    if (current) {
+      var check = el('span', 'model-check');
+      check.innerHTML = ICON.check;
+      row.appendChild(check);
+    }
+    return row;
+  }
+
+  function renderModelPickerList() {
+    var listEl = r('model-picker-list');
+    if (!listEl) return;
+    var picker = state.modelPicker;
+    listEl.textContent = '';
+    var query = String(picker.query || '').trim().toLowerCase();
+    var buckets = Object.create(null);
+    PICKER_GROUPS.forEach(function (group) { buckets[group.key] = []; });
+
+    picker.models.forEach(function (model) {
+      if (query) {
+        var hay = (String(model.label) + ' ' + String(model.id)).toLowerCase();
+        if (hay.indexOf(query) === -1) return;
+      }
+      var key = pickerGroupKey(model);
+      if (!buckets[key]) key = '其他';
+      buckets[key].push(model);
+    });
+
+    var rendered = 0;
+    PICKER_GROUPS.forEach(function (group) {
+      var items = buckets[group.key];
+      if (!items || !items.length) return;
+      rendered += items.length;
+      var wrapper = el('div', 'picker-group');
+      wrapper.appendChild(makeText('div', 'picker-group-title', group.title));
+      items.forEach(function (model) { wrapper.appendChild(buildModelPickerRow(model)); });
+      listEl.appendChild(wrapper);
+    });
+
+    if (!rendered) {
+      listEl.appendChild(makeText('div', 'picker-empty', query ? '没有找到匹配的模型' : '暂无可用模型'));
+    }
+    var refresh = r('model-picker-refresh');
+    if (refresh) refresh.hidden = !pickerShowsRefresh();
+  }
+
+  function openModelPickerPanel(models, currentId, onPick, opts) {
+    var picker = state.modelPicker;
+    if (picker.refreshTimer) {
+      clearTimeout(picker.refreshTimer);
+      picker.refreshTimer = 0;
+    }
+    picker.models = normalizePickerModels(models);
+    picker.currentId = currentId == null ? state.model : String(currentId);
+    picker.onPick = typeof onPick === 'function' ? onPick : null;
+    picker.opts = opts && typeof opts === 'object' ? opts : {};
+    picker.query = '';
+    picker.resolved = false;
+    picker.customOpen = false;
+    picker.open = true;
+
+    /* 当前模型不在目录中时补一条并选中（app.js 一般已补，这里兜底） */
+    if (picker.currentId && !findPickerModel(picker.currentId)) {
+      picker.models.unshift({
+        id: picker.currentId,
+        label: state.modelLabel || picker.currentId,
+        series: '自定义',
+        tag: '',
+        desc: '',
+        fallback: false,
+        custom: true,
+        remote: false
+      });
+    }
+
+    var search = r('model-picker-search');
+    if (search) search.value = '';
+    var clearBtn = r('model-picker-search-clear');
+    if (clearBtn) clearBtn.hidden = true;
+    var customWrap = r('model-picker-custom');
+    if (customWrap) customWrap.hidden = true;
+    var customInput = r('model-picker-custom-input');
+    if (customInput) customInput.value = '';
+    var toggle = document.querySelector('[data-action="toggle-custom-model"]');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    var refreshLabel = r('model-picker-refresh-label');
+    if (refreshLabel) refreshLabel.textContent = '从 API 获取模型列表';
+    var refreshBtn = r('model-picker-refresh');
+    if (refreshBtn) refreshBtn.disabled = false;
+
+    renderModelPickerList();
+
+    var panel = r('model-picker');
+    if (panel) {
+      var sheet = panel.querySelector('.model-picker-sheet');
+      if (sheet) sheet.style.transform = '';
+      panel.classList.add('is-open');
+      panel.setAttribute('aria-hidden', 'false');
+    }
+    var listEl = r('model-picker-list');
+    if (listEl) listEl.scrollTop = 0;
+    syncDepth();
+  }
+
+  function closeModelPickerPanel(notify) {
+    var picker = state.modelPicker;
+    if (picker.refreshTimer) {
+      clearTimeout(picker.refreshTimer);
+      picker.refreshTimer = 0;
+    }
+    if (!picker.open) return;
+    picker.open = false;
+    var panel = r('model-picker');
+    if (panel) {
+      panel.classList.remove('is-open');
+      panel.setAttribute('aria-hidden', 'true');
+      var sheet = panel.querySelector('.model-picker-sheet');
+      if (sheet) sheet.style.transform = '';
+    }
+    var callback = picker.onPick;
+    var notifyCallback = notify && !picker.resolved && typeof callback === 'function' ? callback : null;
+    picker.onPick = null;
+    picker.resolved = false;
+    picker.models = [];
+    syncDepth();
+    if (notifyCallback) {
+      try { notifyCallback(null); } catch (err) { console.warn('[UI] 模型选择器 onPick(null) 回调异常:', err); }
+    }
+  }
+
+  function syncHiddenModelSelect(id) {
+    var select = r('set-model');
+    if (!select || id == null) return;
+    var value = String(id);
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === value) { select.value = value; return; }
+    }
+  }
+
+  function pickModel(id) {
+    var value = id == null ? '' : String(id).trim();
+    if (!value) return;
+    var picker = state.modelPicker;
+    if (!picker.open) return;
+    var callback = picker.onPick;
+    var selected = findPickerModel(value);
+    picker.resolved = true;
+    closeModelPickerPanel(false);
+    state.model = value;
+    state.modelLabel = selected ? (selected.label || value) : (state.modelLabel || value);
+    state.modelLabelId = value;
+    updateModelLabelUI();
+    syncHiddenModelSelect(value);
+    if (typeof callback === 'function') {
+      try { callback(value); } catch (err) { console.warn('[UI] 模型选择回调异常:', err); }
+    } else if (!invoke('onSelectModel', value)) {
+      /* 没有回调时保持 UI 乐观更新即可 */
+    }
+  }
+
+  function requestModelPicker() {
+    if (invoke('onOpenModelPicker')) return;
+    if (!state.models.length) return;
+    openModelPickerPanel(
+      state.models.map(function (model) {
+        return { id: model.id, label: model.label, series: model.series || '', tag: model.tag || '' };
+      }),
+      state.model,
+      function (id) { if (id) invoke('onSelectModel', id); }
+    );
+  }
+
+  function toggleCustomModel() {
+    var picker = state.modelPicker;
+    if (!picker.open) return;
+    picker.customOpen = !picker.customOpen;
+    var wrap = r('model-picker-custom');
+    if (wrap) wrap.hidden = !picker.customOpen;
+    var toggle = document.querySelector('[data-action="toggle-custom-model"]');
+    if (toggle) toggle.setAttribute('aria-expanded', picker.customOpen ? 'true' : 'false');
+    if (picker.customOpen) {
+      var input = r('model-picker-custom-input');
+      setTimeout(function () {
+        if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+      }, 60);
+    }
+  }
+
+  function addCustomModel() {
+    var input = r('model-picker-custom-input');
+    var value = input ? String(input.value || '').trim() : '';
+    if (!value) {
+      UI.toast('请输入模型 ID');
+      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+      return;
+    }
+    pickModel(value);
+  }
+
+  function deleteCustomModel(id) {
+    if (!id) return;
+    if (!invoke('onDeleteCustomModel', id)) return;
+    state.modelPicker.models = state.modelPicker.models.filter(function (model) {
+      return String(model.id) !== String(id);
+    });
+    renderModelPickerList();
+  }
+
+  function refreshModelPicker() {
+    var picker = state.modelPicker;
+    if (!picker.open) return;
+    var button = r('model-picker-refresh');
+    var label = r('model-picker-refresh-label');
+    if (button) button.disabled = true;
+    if (label) label.textContent = '获取中…';
+    if (picker.refreshTimer) clearTimeout(picker.refreshTimer);
+    picker.refreshTimer = setTimeout(function () {
+      var btn = r('model-picker-refresh');
+      var lbl = r('model-picker-refresh-label');
+      if (btn) btn.disabled = false;
+      if (lbl) lbl.textContent = '从 API 获取模型列表';
+    }, 4000);
+    if (!invoke('onRefreshModels')) {
+      if (button) button.disabled = false;
+      if (label) label.textContent = '从 API 获取模型列表';
+    }
+  }
+
+  function clearModelPickerSearch() {
+    var input = r('model-picker-search');
+    if (input) input.value = '';
+    state.modelPicker.query = '';
+    var clearBtn = r('model-picker-search-clear');
+    if (clearBtn) clearBtn.hidden = true;
+    renderModelPickerList();
+    if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+  }
+
+  function bindModelPickerEvents() {
+    var panel = r('model-picker');
+    if (!panel) return;
+    panel.addEventListener('click', function (event) {
+      if (event.target === panel) closeModelPickerPanel(true);
+    });
+    var sheet = panel.querySelector('.model-picker-sheet');
+    var handle = r('model-picker-handle');
+    if (!sheet || !handle) return;
+    var startY = 0;
+    var delta = 0;
+    var dragging = false;
+    handle.addEventListener('pointerdown', function (event) {
+      dragging = true;
+      startY = event.clientY;
+      delta = 0;
+      sheet.style.transition = 'none';
+      try {
+        if (handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
+      } catch (err) { /* 静默 */ }
+    });
+    handle.addEventListener('pointermove', function (event) {
+      if (!dragging) return;
+      delta = Math.max(0, event.clientY - startY);
+      sheet.style.transform = 'translateY(' + delta + 'px)';
+    });
+    function endDrag() {
+      if (!dragging) return;
+      dragging = false;
+      sheet.style.transition = '';
+      sheet.style.transform = '';
+      if (delta > 90) closeModelPickerPanel(true);
+      delta = 0;
+    }
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+  }
+
+  /* ------------------------------------------------------------------ *
    * 剪贴板 / 外链（只作为回调缺失时的兜底，全部 try/catch）
    * ------------------------------------------------------------------ */
   function normalizeClipText(value) {
@@ -311,7 +717,7 @@
     if (state.screen === 'chat') base = 0;
     else if (state.screen === 'settings' || state.screen === 'plugins') base = 1;
     else return; /* login 由 app.js 决定 */
-    var overlay = state.drawerOpen || state.menuOpen ||
+    var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
@@ -439,6 +845,7 @@
     closeMenu();
     if (name !== 'chat') closeDrawer();
     closeAllModals();
+    closeModelPickerPanel(true);
     syncDepth();
   }
 
@@ -462,7 +869,7 @@
   }
 
   function closeDrawer() {
-    var hasOverlay = state.drawerOpen || state.menuOpen ||
+    var hasOverlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) || isModalOpen(r('install-modal'));
     if (!hasOverlay) return;
     if (state.drawerOpen) {
@@ -482,12 +889,13 @@
     syncDepth();
   }
 
-  /* app.js 的返回键会调用 UI.closeDrawer()：同时收起长按菜单与弹窗，避免返回后残留浮层 */
+  /* app.js 的返回键会调用 UI.closeDrawer()：同时收起长按菜单、弹窗与模型选择器，避免返回后残留浮层 */
   function dismissOverlays() {
     if (state.menuOpen) closeMenu();
     if (isModalOpen(r('confirm-modal'))) resolveConfirm(false);
     if (isModalOpen(r('rename-modal'))) resolveRename(null);
     if (isModalOpen(r('install-modal'))) closeModal(r('install-modal'));
+    if (state.modelPicker.open) closeModelPickerPanel(true);
   }
 
   function focusSearch() {
@@ -1264,8 +1672,10 @@
   }
 
   function doLogout() {
-    /* 退出确认由 app.js 的 onLogout 接管（避免双重确认） */
-    invoke('onLogout');
+    /* app.js 的 onLogout 以 skipConfirm=true 调用，确认框由 UI 负责 */
+    confirmDialog('退出登录', '将清除本机保存的 API Key（聊天记录保留）。确定要退出吗？').then(function (ok) {
+      if (ok) invoke('onLogout');
+    });
   }
 
   /* ------------------------------------------------------------------ *
@@ -1375,8 +1785,11 @@
   function doRemovePlugin(id) {
     if (!id) return;
     var plugin = findPlugin(id);
-    /* 删除确认由 app.js 的 onPluginRemove 接管（避免双重确认） */
-    invoke('onPluginRemove', plugin ? plugin.id : id);
+    var name = plugin && plugin.name ? '「' + plugin.name + '」' : '该插件';
+    /* app.js 的 onPluginRemove 以 skipConfirm=true 调用，确认框由 UI 负责 */
+    confirmDialog('删除插件', '确定要删除' + name + '吗？删除后它的命令和工具将不可用。').then(function (ok) {
+      if (ok) invoke('onPluginRemove', plugin ? plugin.id : id);
+    });
   }
 
   /* ------------------------------------------------------------------ *
@@ -1455,8 +1868,11 @@
         icon: ICON.trash,
         danger: true,
         run: function () {
-          /* app.js 的 deleteChat 会弹出确认框，这里直接委托，避免双重确认 */
-          invoke('onDeleteChat', chat.id);
+          /* app.js 的 onDeleteChat 以 skipConfirm=true 调用，确认框由 UI 负责 */
+          var name = chat.title ? '「' + chat.title + '」' : '该会话';
+          confirmDialog('删除会话', '确定删除' + name + '吗？删除后不可恢复。').then(function (ok) {
+            if (ok) invoke('onDeleteChat', chat.id);
+          });
         }
       });
     }
@@ -1578,6 +1994,7 @@
     if (isModalOpen(r('install-modal'))) { closeModal(r('install-modal')); return true; }
     if (isModalOpen(r('rename-modal'))) { resolveRename(null); return true; }
     if (isModalOpen(r('confirm-modal'))) { resolveConfirm(false); return true; }
+    if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
     if (state.drawerOpen) { closeDrawer(); return true; }
     return false;
   }
@@ -1711,6 +2128,30 @@
         }
         break;
       }
+      case 'open-model-picker':
+        requestModelPicker();
+        break;
+      case 'close-model-picker':
+        closeModelPickerPanel(true);
+        break;
+      case 'clear-model-search':
+        clearModelPickerSearch();
+        break;
+      case 'pick-model':
+        pickModel(node.getAttribute('data-id'));
+        break;
+      case 'toggle-custom-model':
+        toggleCustomModel();
+        break;
+      case 'add-custom-model':
+        addCustomModel();
+        break;
+      case 'delete-custom-model':
+        deleteCustomModel(node.getAttribute('data-id'));
+        break;
+      case 'refresh-models':
+        refreshModelPicker();
+        break;
       default:
         break;
     }
@@ -1754,6 +2195,13 @@
     }
     if (target.id === 'search-input') {
       onSearchInput();
+      return;
+    }
+    if (target.id === 'model-picker-search') {
+      state.modelPicker.query = String(target.value || '');
+      var pickerClear = r('model-picker-search-clear');
+      if (pickerClear) pickerClear.hidden = !state.modelPicker.query;
+      renderModelPickerList();
       return;
     }
     if (target.id === 'set-temperature') {
@@ -1806,6 +2254,20 @@
         event.preventDefault();
         doLogin();
       }
+      return;
+    }
+    if (target.id === 'model-picker-custom-input') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        addCustomModel();
+      }
+      return;
+    }
+    if (target.classList && target.classList.contains('model-row')) {
+      if (key === 'Enter' || key === ' ') {
+        event.preventDefault();
+        pickModel(target.getAttribute('data-id'));
+      }
     }
   }
 
@@ -1849,6 +2311,7 @@
     bindModalBackdrop(r('install-modal'), function () { closeModal(r('install-modal')); });
     bindModalBackdrop(r('confirm-modal'), function () { resolveConfirm(false); });
     bindModalBackdrop(r('rename-modal'), function () { resolveRename(null); });
+    bindModelPickerEvents();
   }
 
   function cacheRefs() {
@@ -2126,7 +2589,8 @@
     var data = info || {};
     if (Object.prototype.hasOwnProperty.call(data, 'hasKey')) state.login.hasKey = !!data.hasKey;
     if (Object.prototype.hasOwnProperty.call(data, 'error')) state.login.error = data.error ? String(data.error) : '';
-    if (Object.prototype.hasOwnProperty.call(data, 'busy')) state.login.busy = !!data.busy;
+    /* busy 未传视为“当前不在验证中”，避免上一轮 busy 状态残留 */
+    state.login.busy = Object.prototype.hasOwnProperty.call(data, 'busy') ? !!data.busy : false;
 
     var error = r('login-error');
     if (error) {
@@ -2186,5 +2650,17 @@
     else closeDrawer();
   };
   UI.isDrawerOpen = function () { return state.drawerOpen; };
-  UI.version = '1.0.0';
+  /* SPEC v1.1 B2：模型选择器 / 模型标签（app.js 通过这三个入口驱动 UI） */
+  UI.openModelPicker = function (models, currentId, onPick, opts) {
+    openModelPickerPanel(models, currentId, onPick, opts);
+  };
+  UI.closeModelPicker = function () {
+    closeModelPickerPanel(false);
+  };
+  UI.setModelLabel = function (label) {
+    state.modelLabel = label == null ? '' : String(label);
+    updateModelLabelUI();
+  };
+
+  UI.version = '1.0.1';
 })();
