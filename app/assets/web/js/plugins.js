@@ -1160,32 +1160,16 @@
       throw new Error("当前环境不支持安装插件（Bridge.pluginWrite 不可用）");
     }
 
+    // 元数据注释头是可选的（SPEC §5.1）；真正的 id 优先从 register({id}) 推导。
     var fallback = isObj(extraMeta) ? extraMeta : {};
     var meta = parseMeta(src);
-    var id = trimStr(meta.id || fallback.id);
-    var name = trimStr(meta.name || fallback.name);
-    var version = trimStr(meta.version || fallback.version) || "1.0.0";
-    var author = trimStr(meta.author || fallback.author);
-    var description = trimStr(meta.description || fallback.description);
-
-    if (!id) throw new Error("插件缺少 id：请在代码开头添加注释 // @id user.你的插件名");
-    if (!/^user\.[A-Za-z0-9_-]{1,48}$/.test(id)) {
-      throw new Error("外部插件 id 必须以 user. 开头，且只含字母、数字、下划线、短横线（例如 user.demo）：" + id);
-    }
-    if (!name) throw new Error("插件缺少 name：请添加注释 // @name 插件名称");
-    if (!/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}$/.test(version)) {
-      throw new Error("插件版本号格式不正确（例如 1.0.0）：" + version);
-    }
-    if (registry[id] && registry[id].builtin) {
-      throw new Error("插件 id 与内置插件冲突：" + id);
-    }
 
     // 先执行验证（注册被捕获到 installing.defs，不污染正式注册表）
     installing = { defs: [] };
     var execError = null;
     var captured = null;
     try {
-      execPluginCode(src, id);
+      execPluginCode(src, "install");
     } catch (e) {
       execError = e;
     } finally {
@@ -1201,28 +1185,51 @@
     }
 
     var rawDef = defs[0];
+    if (!isObj(rawDef)) throw new Error("插件定义必须是对象");
+    var registeredId = trimStr(rawDef.id);
+    var metaId = trimStr(meta.id || fallback.id);
+    var id = registeredId || metaId;
+    if (!id) {
+      throw new Error("插件没有提供 id：请在 register({id:...}) 中设置，或添加注释 // @id user.xxx");
+    }
+    if (registeredId && metaId && registeredId !== metaId) {
+      warn("插件注释头 id（" + metaId + "）与 register id（" + registeredId + "）不一致，以 register id 为准");
+    }
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(id)) {
+      throw new Error("插件 id 只能包含字母、数字、点、下划线、短横线（最长 64）：" + id);
+    }
+    if (id.indexOf("user.") !== 0) {
+      warn("外部插件 id 建议以 user. 开头（当前：" + id + "），以免与内置插件混淆");
+    }
+    if (registry[id] && registry[id].builtin) {
+      throw new Error("插件 id 与内置插件冲突：" + id);
+    }
+
     var def;
     try {
-      def = normalizeDef(rawDef);
+      def = normalizeDef(Object.assign({}, rawDef, { id: id }));
     } catch (e2) {
       throw new Error("插件定义无效：" + errText(e2));
     }
-    if (def.id !== id) {
-      throw new Error("插件注册的 id（" + def.id + "）与元数据 id（" + id + "）不一致，请统一为 " + id);
+    var name = trimStr(meta.name || fallback.name) || def.name;
+    var version = trimStr(meta.version || fallback.version) || def.version || "1.0.0";
+    if (!/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}$/.test(version)) {
+      warn("插件版本号格式不规范（" + version + "），已按 1.0.0 记录");
+      version = "1.0.0";
     }
-    if (!def.name) throw new Error("插件缺少 name");
+    var author = trimStr(meta.author || fallback.author) || def.author || "";
+    var description = trimStr(meta.description || fallback.description) || def.description || "";
     var hasHook = Object.keys(def.hooks).some(function (k) {
       return isFn(def.hooks[k]);
     });
     if (!def.commands.length && !def.tools.length && !hasHook) {
       throw new Error("插件没有提供任何命令、工具或钩子，无法安装");
     }
-    if (registry[id] && registry[id].builtin) throw new Error("插件 id 与内置插件冲突：" + id);
 
     def.builtin = false;
     def.external = true;
     def.fileId = id;
-    def.fileName = trimStr(fallback.fileName) || trimStr(rawDef.fileName) || id + ".js";
+    def.fileName = trimStr(fallback.fileName) || id + ".js";
     def._loaded = true;
     def._nativeEnabled = true;
     def.error = null;
@@ -1231,10 +1238,10 @@
     try {
       metaJson = JSON.stringify({
         id: id,
-        name: name || def.name,
+        name: name,
         version: version,
-        author: author || def.author || "",
-        description: description || def.description || "",
+        author: author,
+        description: description,
         installedAt: Date.now()
       });
     } catch (e3) {
@@ -1288,9 +1295,16 @@
       }
     }
     try {
-      var content = ev && typeof ev.content === "string" ? ev.content : "";
-      if (!content.trim()) throw new Error("文件内容为空或读取失败");
-      var fileName = trimStr(ev && (ev.fileName || ev.id));
+      var evObj = ev || {};
+      var content = typeof evObj.content === "string" ? evObj.content : "";
+      var cancelled = evObj.error === "cancelled" || evObj.cancelled === true;
+      // 用户取消选择（或空内容）：静默 resolve(null)，不抛错、不弹错误提示
+      if (cancelled || !content.trim()) {
+        if (!cancelled) warn("插件文件内容为空或读取失败，已忽略");
+        pending.resolve(null);
+        return;
+      }
+      var fileName = trimStr(evObj.fileName || evObj.id);
       var looksJson = /\.json$/i.test(fileName) || /^\s*\{/.test(content);
       if (looksJson) {
         var obj;

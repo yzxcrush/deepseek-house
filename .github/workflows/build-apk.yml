@@ -1,22 +1,16 @@
-name: Build & Release APK
+name: Build APK
 
 on:
-  workflow_dispatch:
-    inputs:
-      release:
-        description: "Publish a GitHub Release (v1.0.0) with the APK"
-        type: boolean
-        default: true
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build APK (manual toolchain: aapt/javac/d8/apksigner)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -31,47 +25,39 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install platform 34 + build-tools 34
+      - name: Install Android platform 34 and build-tools 34
         run: |
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0" >/dev/null
-          echo "ANDROID_HOME=$ANDROID_HOME"
+          eval "export ANDROID_HOME=${ANDROID_HOME}"
           ls "$ANDROID_HOME/platforms/android-34/android.jar"
 
-      - name: Setup Node (for JS checks & tests)
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Asset contract checks
-        shell: bash
         env:
           DSH_STRICT_CHECKS: "1"
         run: bash scripts/check-assets.sh
 
-      - name: Web layer smoke tests (jsdom)
-        shell: bash
+      - name: Web layer tests
         run: |
           if [ -f package.json ]; then
             npm install --no-audit --no-fund
             npm test
-          else
-            echo "no package.json yet — skipping web tests"
           fi
 
       - name: Build APK
-        shell: bash
         env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
           DSH_STRICT_CHECKS: "1"
         run: bash scripts/build.sh
 
       - name: Verify APK
-        shell: bash
         run: |
-          set -e
           APK="dist/DeepSeekHouse-1.0.0.apk"
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$APK"
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | head -12
+          apksigner verify --verbose "$APK"
+          aapt dump badging "$APK" | head -12
           sha256sum "$APK" | tee dist/DeepSeekHouse-1.0.0.apk.sha256
 
       - name: Upload artifact
@@ -81,27 +67,13 @@ jobs:
           path: |
             dist/DeepSeekHouse-1.0.0.apk
             dist/DeepSeekHouse-1.0.0.apk.sha256
-          if-no-files-found: error
 
-      - name: Publish release (tags / manual with release=true)
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v1.0.0' }}
-          name: "DeepSeek House v1.0.0"
-          body: |
-            ## DeepSeek House v1.0.0
-
-            仿 Telegram 风格的 DeepSeek 安卓客户端（WebView + 原生桥接），支持 API Key 登录与插件系统。
-
-            ### 安装
-            1. 下载 `DeepSeekHouse-1.0.0.apk`
-            2. 允许「安装未知来源应用」
-            3. 打开 App，填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com)）
-
-            ### 构建
-            使用 `aapt → javac → d8 → zipalign → apksigner` 手工流水线（无 Gradle），源码见仓库。
+          tag_name: v1.0.0
+          name: DeepSeek House v1.0.0
+          draft: false
           files: |
             dist/DeepSeekHouse-1.0.0.apk
             dist/DeepSeekHouse-1.0.0.apk.sha256
-          fail_on_unmatched_files: true

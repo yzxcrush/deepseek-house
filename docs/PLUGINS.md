@@ -73,9 +73,11 @@ DeepSeek House 的插件是**纯 JavaScript**：一段代码在 App 的 WebView 
 
 ## 2. 插件文件结构
 
-### 2.1 元数据注释（`installFromCode` 校验用）
+### 2.1 元数据注释（可选）
 
-插件文件开头 25 行内用注释声明元数据（`//`、`/* */`、`#` 均可）：
+**元数据注释是可选的**（SPEC §5.1）。安装时插件 id 优先从 `register({ id: ... })` 自动推导；
+注释头只用于补充展示信息或覆盖文件记录的名称/版本/作者。插件文件开头 25 行内可用
+`//`、`/* */`、`#` 声明（推荐写，便于插件列表展示）：
 
 ```
 // @id user.demo
@@ -87,9 +89,9 @@ DeepSeek House 的插件是**纯 JavaScript**：一段代码在 App 的 WebView 
 
 | 字段 | 必填 | 规则 |
 |---|---|---|
-| `@id` | 是 | 外部插件必须以 `user.` 开头，只含字母/数字/下划线/短横线，例如 `user.weather` |
-| `@name` | 是 | 展示名称，最多 60 字符 |
-| `@version` | 否 | 默认 `1.0.0`，建议语义化版本 |
+| `@id` | 否 | 推荐以 `user.` 开头（非强制，仅用于区分外部插件与内置插件）；应与 `register({id})` 一致，不一致时以 register id 为准并 console.warn |
+| `@name` | 否 | 展示名称，最多 60 字符；省略时用 `register({name})`，再省略用 id |
+| `@version` | 否 | 默认 `1.0.0`，建议语义化版本；格式不规范会告警并按 `1.0.0` 记录 |
 | `@author` | 否 | 作者 |
 | `@description` | 否 | 插件页显示的一句话描述 |
 
@@ -97,7 +99,8 @@ DeepSeek House 的插件是**纯 JavaScript**：一段代码在 App 的 WebView 
 
 - 整段代码通过 `new Function("window", "DSPlugins", "console", code)` 在全局作用域执行；
 - 必须调用 `window.DSPlugins.register({...})`（或 `DSPlugins.register`）且**只注册一个插件**；
-- 注册的 `id` 必须与 `@id` 一致；
+- `id` 必填，来自 `register({id})`（或注释头/JSON）；建议以 `user.` 开头；若同时写了 `@id` 注释头，
+  两者应保持一致，不一致时以 register id 为准并 console.warn；
 - 一个插件文件上限 512KB；命令最多 100 个，工具最多 50 个；
 - 建议用 IIFE 包裹，避免污染全局变量；**不要依赖 `this`**（插件内请显式使用 `window` / `DSPlugins`）；
 - 可用语法：ES2020（Android WebView 较新）。不要使用外部依赖、CDN 或 `require`。
@@ -108,7 +111,7 @@ DeepSeek House 的插件是**纯 JavaScript**：一段代码在 App 的 WebView 
 
 ```js
 DSPlugins.register({
-  id: "user.demo",              // 唯一 id；内置用内置名，外部必须 user.*
+  id: "user.demo",              // 唯一 id（必填）；内置用内置名，外部建议 user.*
   name: "随机名言",              // 展示名称
   version: "1.0.0",             // 版本
   author: "你的名字",            // 可选
@@ -216,8 +219,8 @@ App 侧通过 `DSPlugins.runHook(name, arg1, arg2)` 调用钩子（见 §4.3）�
   enabled: true|false,        // 当前生效的启用状态
   error: null | "中文错误信息", // 外部插件加载失败的标记
   fileName: "user.demo.js",
-  commands: ["quote"],        // 命令名列表
-  tools: ["random_quote"]     // 工具名列表（插件内原始名）
+  commands: [{ name: "quote", description: "…", usage: "/quote [关键词]" }], // 命令列表（含展示信息）
+  tools: [{ name: "random_quote", description: "…" }]                     // 工具列表（插件内原始名）
 }
 ```
 
@@ -262,17 +265,18 @@ App 侧通过 `DSPlugins.runHook(name, arg1, arg2)` 调用钩子（见 §4.3）�
 | 方法 | 返回 | 说明 |
 |---|---|---|
 | `installFromCode(code, meta?)` | `Promise<View>` | 校验并安装代码，成功后落盘 + 注册 + 启用 |
-| `installFromFile()` | `Promise<View>` | 调起原生文件选择器（.js / .json / .txt），等 `plugin-file` 事件后安装；约 120s 超时 |
+| `installFromFile()` | `Promise<View \| null>` | 调起原生文件选择器（.js / .json / .txt），等 `plugin-file` 事件后安装；约 120s 超时；**用户取消选择时静默 `resolve(null)`**，不报错 |
 | `remove(id)` | `Promise<true>` | 删除外部插件（内置不可删）；抛中文错误说明原因 |
 
-`installFromCode` 的校验流程：
+`installFromCode` 的校验流程（元数据注释头可选）：
 
-1. 解析 `@id/@name/@version` 注释（`.json` 安装时可用 JSON 的 id/name/version 兜底）；
-2. 校验 id 前缀 `user.`、name、版本号格式、id 是否与内置冲突、代码大小；
-3. **先执行一次验证**（注册被捕获，不会污染正式注册表），确认恰好注册一个插件、id 与元数据一致、
-   且至少提供命令/工具/钩子之一；
-4. 调用 `Bridge.pluginWrite(id, code, metaJson)` 落盘；
-5. 正式注册、写入启用状态并 `emitChange()`。
+1. **先执行一次验证**：注册被捕获到临时列表，不会污染正式注册表；
+2. 从捕获到的 `register({...})` 中取 `id`；没有则回退到 `@id` 注释或 `.json` 的 `id` 字段；
+   两者都没有才报错。id 格式校验、内置插件 id 冲突检查；不以 `user.` 开头只告警、不拒绝；
+3. 名称/版本/作者/描述依次取注释头 → `.json` 字段 → `register` 里的值；
+4. 确认恰好注册一个插件，且至少提供命令/工具/钩子之一；
+5. 调用 `Bridge.pluginWrite(id, code, metaJson)` 落盘；
+6. 正式注册、写入启用状态并 `emitChange()`。
 
 任一步失败都会抛中文 `Error`，且不会留下半安装状态（不会写入文件、不会污染注册表）。
 
@@ -363,9 +367,9 @@ try {
 3. **常见错误与含义**：
    | 报错 | 原因 |
    |---|---|
-   | `插件缺少 id：请在代码开头添加注释 // @id user.xxx` | 缺 `@id` 或 id 不以 `user.` 开头 |
+   | `插件没有提供 id：请在 register({id:...}) 中设置，或添加注释 // @id user.xxx` | `register` 与注释头/JSON 都没有 id |
    | `插件代码没有调用 window.DSPlugins.register({...})` | 代码未注册，或注册代码在异步回调里（必须同步注册） |
-   | `插件注册的 id（x）与元数据 id（y）不一致` | `@id` 与 `register({id})` 不同，请统一 |
+   | `插件注释头 id（x）与 register id（y）不一致，以 register id 为准` | 仅 console.warn，不是错误，可忽略或统一两者 |
    | `一个插件文件只能注册一个插件` | 一个文件里调用了多次 `register` |
    | `插件没有提供任何命令、工具或钩子，无法安装` | 定义了空插件 |
    | `插件代码语法错误：...` | JS 语法错误（可先用 `node --check` 检查） |
@@ -373,10 +377,10 @@ try {
    | `工具名冲突且无法生成稳定别名，已跳过` | 工具名冲突太多（见 §8） |
 4. **自测**：仓库内可用 Node 做快速冒烟（无需 Android）：
    ```bash
-   node --check app/assets/web/js/plugins.js
-   node --check app/assets/web/js/plugins_builtin.js
+   node scripts/check-js.mjs
    ```
-   并在 Node 里用 `vm` 模拟 `window` / `Bridge` / `Store` 后加载两个脚本，直接调用
+   （Termux 的 node wrapper 会拦截 `node --check`，该脚本用 `vm.Script` 做等价语法检查。）
+   也可在 Node 里用 `vm` 模拟 `window` / `Bridge` / `Store` 后加载两个脚本，直接调用
    `DSPlugins.runCommand("/calc 1+2*3")` 验证命令、`DSPlugins.toolSchemas()` 验证工具。
 
 ---
@@ -442,9 +446,10 @@ try {
 
 | 项目 | 限制 |
 |---|---|
-| 外部插件 id | 必须 `user.` 开头，`[A-Za-z0-9_-]`，总长 ≤ 53（`user.` 前缀 + 1~48 个字符） |
-| 插件名称 | 1~60 字符 |
-| 版本号 | `[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}`，如 `1.0.0` |
+| 外部插件 id | 必填；建议 `user.` 开头（非强制）；`[A-Za-z0-9_.-]{1,64}` |
+| 元数据注释头 | 可选（id 优先从 `register({id})` 推导） |
+| 插件名称 | ≤ 60 字符（省略时依次用 `register({name})`、id） |
+| 版本号 | 建议 `[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}`，如 `1.0.0`；格式不规范会告警并回退 `1.0.0` |
 | 源码大小 | ≤ 512KB |
 | 每个文件的插件数 | 恰好 1 个 |
 | 命令数 / 工具数 | ≤ 100 / ≤ 50 |

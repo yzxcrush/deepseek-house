@@ -144,11 +144,11 @@
   function isTableSeparator(line) {
     if (line === null || line === undefined) return false;
     var s = String(line).replace(/^\s+|\s+$/g, '');
-    if (s.indexOf('|') === -1 && !/^:?-{2,}:?$/.test(s)) return false;
+    if (s.indexOf('|') === -1 && !/^:?-+:?$/.test(s)) return false;
     var cells = splitRow(s);
     if (!cells.length) return false;
     for (var i = 0; i < cells.length; i++) {
-      if (!/^:?-{2,}:?$/.test(cells[i])) return false;
+      if (!/^:?-+:?$/.test(cells[i])) return false;
     }
     return true;
   }

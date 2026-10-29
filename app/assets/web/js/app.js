@@ -241,7 +241,7 @@
       state.nav = { screen: 'login', drawerOpen: false };
       setBackDepth(0);
       ui('showScreen', 'login');
-      ui('renderLogin', { hasKey: false });
+      ui('renderLogin', { hasKey: false, busy: false });
     } else {
       enterChat();
     }
@@ -371,31 +371,33 @@
       onStop: safe(function () { stopGeneration(); }, 'onStop'),
       onNewChat: safe(function () { newChat(); }, 'onNewChat'),
       onSelectChat: safe(function (id) { selectChat(id); }, 'onSelectChat'),
-      onDeleteChat: safe(function (id) { deleteChat(id); }, 'onDeleteChat'),
+      onDeleteChat: safe(function (id) { deleteChat(id, true); }, 'onDeleteChat'),
       onRenameChat: safe(function (id, title) { renameChat(id, title); }, 'onRenameChat'),
-      onRetry: safe(function (msgId) { retryMessage(msgId); }, 'onRetry'),
-      onRegenerate: safe(function (msgId) { retryMessage(msgId); }, 'onRegenerate'),
+      onRetry: safe(function (msgId) { retryMessage(msgId); return true; }, 'onRetry'),
+      onRegenerate: safe(function (msgId) { retryMessage(msgId); return true; }, 'onRegenerate'),
       onOpenSettings: safe(function () { openSettings(); }, 'onOpenSettings'),
       onOpenPlugins: safe(function () { openPlugins(); }, 'onOpenPlugins'),
-      onSaveSettings: safe(function (patch) { saveSettings(patch); }, 'onSaveSettings'),
-      onLogin: safe(function (data) { login(data); }, 'onLogin'),
-      onLogout: safe(function () { logout(); }, 'onLogout'),
+      onSaveSettings: safe(function (patch) { return saveSettings(patch) !== false; }, 'onSaveSettings'),
+      onLogin: safe(function (data) { login(data); return true; }, 'onLogin'),
+      onLogout: safe(function () { logout(true); }, 'onLogout'),
       onPluginToggle: safe(function (id, enabled) { togglePlugin(id, enabled); }, 'onPluginToggle'),
-      onPluginInstall: safe(function (code) { installPlugin(code); }, 'onPluginInstall'),
-      onPluginInstallFile: safe(function () { installPluginFile(); }, 'onPluginInstallFile'),
-      onPluginRemove: safe(function (id) { removePlugin(id); }, 'onPluginRemove'),
+      onPluginInstall: safe(function (code) { installPlugin(code); return true; }, 'onPluginInstall'),
+      onPluginInstallFile: safe(function () { installPluginFile(); return true; }, 'onPluginInstallFile'),
+      onPluginRemove: safe(function (id) { removePlugin(id, true); }, 'onPluginRemove'),
       onPluginRefresh: safe(function () { refreshPlugins(); }, 'onPluginRefresh'),
       onExportChat: safe(function (id) { exportChat(id); }, 'onExportChat'),
       onSearch: safe(function (q) { search(q); }, 'onSearch'),
       onCommand: safe(function (text) { handleCommand(text); }, 'onCommand'),
-      onBack: safe(function () { onBack(); }, 'onBack'),
-      onCopy: safe(function (text) { copyText(text); }, 'onCopy'),
+      onBack: safe(function () { onBack(); return true; }, 'onBack'),
+      onCopy: safe(function (text) { copyText(text); return true; }, 'onCopy'),
+      onDeleteMessage: safe(function (msgId) { deleteMessage(msgId); }, 'onDeleteMessage'),
       onPasteApiKey: safe(function () {
         try { return global.Bridge && global.Bridge.getClipboard ? String(global.Bridge.getClipboard() || '') : ''; }
         catch (e) { return ''; }
       }, 'onPasteApiKey'),
       onOpenSignup: safe(function () {
         if (global.Bridge && global.Bridge.openUrl) global.Bridge.openUrl('https://platform.deepseek.com/api_keys');
+        return true;
       }, 'onOpenSignup'),
       onOpenUrl: safe(function (url) {
         if (global.Bridge && global.Bridge.openUrl) global.Bridge.openUrl(String(url || ''));
@@ -429,15 +431,15 @@
     var key = String(data.apiKey === null || data.apiKey === undefined ? '' : data.apiKey).replace(/^\s+|\s+$/g, '');
     var baseUrl = normalizeUrl(data.baseUrl || state.prefs.baseUrl || 'https://api.deepseek.com');
     if (!key) {
-      ui('renderLogin', { hasKey: false, error: '请输入 API Key' });
+      ui('renderLogin', { hasKey: false, busy: false, error: '请输入 API Key' });
       return;
     }
     if (!baseUrl) {
-      ui('renderLogin', { hasKey: false, error: 'Base URL 格式不正确' });
+      ui('renderLogin', { hasKey: false, busy: false, error: 'Base URL 格式不正确' });
       return;
     }
     state.loginBusy = true;
-    ui('renderLogin', { hasKey: false, busy: true });
+    ui('renderLogin', { hasKey: false, busy: true, error: '' });
     try {
       if (global.Bridge && global.Bridge.setPrefs) global.Bridge.setPrefs({ apiKey: key, baseUrl: baseUrl });
     } catch (e) { warn('写入 prefs 失败：' + errText(e)); }
@@ -451,7 +453,7 @@
         try { if (global.Bridge && global.Bridge.setPrefs) global.Bridge.setPrefs({ baseUrl: baseUrl }); } catch (e2) { /* ignore */ }
         state.prefs = mergePrefs(Store.getPrefs(), readNativePrefs());
         state.prefs.baseUrl = baseUrl;
-        ui('renderLogin', { hasKey: true });
+        ui('renderLogin', { hasKey: true, busy: false, error: '' });
         enterChat();
         toast('登录成功', true);
         return;
@@ -463,23 +465,26 @@
       }
       var text = res.message || '验证失败，请检查 API Key 或网络连接';
       if (status === 401) text = 'API Key 无效，请检查后重试';
-      ui('renderLogin', { hasKey: false, error: text });
+      ui('renderLogin', { hasKey: false, busy: false, error: text });
     }).catch(function (e) {
       state.loginBusy = false;
-      ui('renderLogin', { hasKey: false, error: '验证失败：' + errText(e) });
+      ui('renderLogin', { hasKey: false, busy: false, error: '验证失败：' + errText(e) });
     });
   }
 
-  function logout() {
-    confirmAsync('退出登录', '将清除本机保存的 API Key（会话记录保留）。').then(function (ok) {
-      if (!ok) return;
+  function logout(skipConfirm) {
+    var doLogout = function () {
       if (state.busy) stopGeneration();
       try { if (global.Bridge && global.Bridge.setPrefs) global.Bridge.setPrefs({ apiKey: '' }); } catch (e) { /* ignore */ }
       state.apiKey = '';
       state.nav = { screen: 'login', drawerOpen: false };
       ui('showScreen', 'login');
-      ui('renderLogin', { hasKey: false });
+      ui('renderLogin', { hasKey: false, busy: false });
       setBackDepth(0);
+    };
+    if (skipConfirm) { doLogout(); return; }
+    confirmAsync('退出登录', '将清除本机保存的 API Key（会话记录保留）。').then(function (ok) {
+      if (ok) doLogout();
     });
   }
 
@@ -714,7 +719,7 @@
     if (chatId && aId) {
       var content = state.buf.content;
       var reasoning = state.buf.reasoning;
-      if (!content) content = reasoning ? '' : '（已停止生成）';
+      if (!content) content = '（已停止生成）';
       var patch = {
         content: content,
         reasoning: reasoning || '',
@@ -985,12 +990,11 @@
     ui('scrollBottom', true);
   }
 
-  function deleteChat(id) {
+  function deleteChat(id, skipConfirm) {
     var chat = Store.getChat(id);
     if (!chat) chat = Store.getActiveChat();
     if (!chat) return;
-    confirmAsync('删除会话', '确定删除「' + (chat.title || '该会话') + '」吗？删除后不可恢复。').then(function (ok) {
-      if (!ok) return;
+    var doDelete = function () {
       var wasActive = Store.getActiveChatId() === chat.id;
       Store.deleteChat(chat.id);
       var next = Store.getActiveChat();
@@ -1005,6 +1009,10 @@
         ui('scrollBottom', true);
       }
       toast('会话已删除');
+    };
+    if (skipConfirm) { doDelete(); return; }
+    confirmAsync('删除会话', '确定删除「' + (chat.title || '该会话') + '」吗？删除后不可恢复。').then(function (ok) {
+      if (ok) doDelete();
     });
   }
 
@@ -1071,7 +1079,7 @@
     var next = {};
     if (patch.baseUrl !== undefined) {
       var baseUrl = normalizeUrl(patch.baseUrl);
-      if (!baseUrl) { toast('Base URL 格式不正确'); return; }
+      if (!baseUrl) { toast('Base URL 格式不正确'); return false; }
       next.baseUrl = baseUrl;
     }
     if (patch.model !== undefined) {
@@ -1104,7 +1112,7 @@
     ui('setModel', state.prefs.model);
     ui('renderSettings', state.prefs, MODELS);
     setHeader(active, '');
-    toast('设置已保存', true);
+    return true;
   }
 
   /* ------------------------------------------------------------------ *
@@ -1173,7 +1181,10 @@
         author: p.author || '',
         description: p.description || '',
         enabled: enabled,
-        builtin: !!p.builtin
+        builtin: !!p.builtin,
+        external: !!p.external,
+        fileName: p.fileName || '',
+        error: p.error || null
       });
     }
     return list;
@@ -1241,7 +1252,8 @@
     var P = global.DSPlugins;
     if (P && typeof P.installFromFile === 'function') {
       toast('请选择插件文件…');
-      Promise.resolve(P.installFromFile()).then(function () {
+      Promise.resolve(P.installFromFile()).then(function (view) {
+        if (!view) return; // 用户取消 / 空文件：静默
         toast('插件已安装', true);
         refreshPlugins();
       }).catch(function (e) {
@@ -1257,7 +1269,7 @@
     }
   }
 
-  function removePlugin(id) {
+  function removePlugin(id, skipConfirm) {
     if (!id) return;
     var list = pluginListNormalized();
     var target = null;
@@ -1268,8 +1280,7 @@
       toast('内置插件不可删除，只能禁用');
       return;
     }
-    confirmAsync('删除插件', '确定删除插件「' + (target ? target.name : id) + '」吗？').then(function (ok) {
-      if (!ok) return;
+    var doRemove = function () {
       var work = null;
       try {
         if (global.DSPlugins && typeof global.DSPlugins.remove === 'function') {
@@ -1288,6 +1299,10 @@
       }).catch(function (e2) {
         toast('删除失败：' + errText(e2));
       });
+    };
+    if (skipConfirm) { doRemove(); return; }
+    confirmAsync('删除插件', '确定删除插件「' + (target ? target.name : id) + '」吗？').then(function (ok) {
+      if (ok) doRemove();
     });
   }
 
@@ -1309,6 +1324,18 @@
     }
     if (ok === false) toast('导出失败');
     else toast('正在导出…');
+  }
+
+  /** 删除单条消息（UI 会自己移除 DOM，此处只改 Store） */
+  function deleteMessage(msgId) {
+    if (msgId === null || msgId === undefined || msgId === '') return;
+    var chat = Store.getActiveChat();
+    if (!chat) return;
+    var ok = Store.removeMessage(chat.id, msgId);
+    if (ok) {
+      refreshChatList();
+      toast('消息已删除');
+    }
   }
 
   function copyText(text) {

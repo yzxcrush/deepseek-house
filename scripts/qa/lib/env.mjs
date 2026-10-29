@@ -118,10 +118,12 @@ export function installStubs(win) {
  * 单元测试窗口：jsdom（http origin → localStorage 可用）+ 手动执行 IIFE
  * ------------------------------------------------------------------ */
 export function createUnitWindow(opts = {}) {
+  const quietConsole = new VirtualConsole(); // 单元测试静默页面 console，避免噪音
   const dom = new JSDOM('<!doctype html><html><head></head><body><div id="app"></div></body></html>', {
     url: 'http://localhost/unit',
     runScripts: 'outside-only',
     pretendToBeVisual: true,
+    virtualConsole: quietConsole,
   });
   const win = dom.window;
   installStubs(win);

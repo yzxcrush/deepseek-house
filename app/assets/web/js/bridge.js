@@ -80,6 +80,16 @@
     }
   }
 
+  /** plugin-file 事件：分发给监听者，并 resolve importPluginFile() 的 Promise */
+  function dispatchPluginFile(evt) {
+    emit('plugin-file', evt);
+    var waiters = mockFileWaiters.slice();
+    mockFileWaiters.length = 0;
+    for (var i = 0; i < waiters.length; i++) {
+      try { waiters[i](evt); } catch (e) { /* ignore */ }
+    }
+  }
+
   /* ------------------------------------------------------------------ *
    * 原生可用性 & 底层调用
    * ------------------------------------------------------------------ */
@@ -254,9 +264,9 @@
     '    author: "DeepSeek House (mock)",',
     '    description: "mock 模式下从文件导入的示例插件（随机骰子）。",',
     '    commands: [{',
-    '      name: "roll",',
-    '      description: "掷骰子，例如 /roll 6",',
-    '      usage: "/roll 6",',
+    '      name: "mockroll",',
+    '      description: "掷骰子，例如 /mockroll 6",',
+    '      usage: "/mockroll 6",',
     '      run: async function (ctx, args) {',
     '        var n = parseInt(args, 10);',
     '        if (!(n > 1)) n = 6;',
@@ -538,7 +548,7 @@
         mockFileWaiters.push(waiter);
         if (!hasNative) {
           setTimeout(function () {
-            emit('plugin-file', {
+            dispatchPluginFile({
               type: 'plugin-file',
               id: 'user.mock-sample',
               fileName: 'mock-sample.js',
@@ -713,12 +723,7 @@
       var type = String(evt.type);
       if (type === 'back') { dispatchBack(); return; }
       if (type === 'plugin-file') {
-        emit(type, evt);
-        var waiters = mockFileWaiters.slice();
-        mockFileWaiters.length = 0;
-        for (var i = 0; i < waiters.length; i++) {
-          try { waiters[i](evt); } catch (e2) { /* ignore */ }
-        }
+        dispatchPluginFile(evt);
         return;
       }
       emit(type, evt);

@@ -21,6 +21,7 @@
     spark: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"></path></svg>',
     chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>',
     checkDouble: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 12.4 5.4 16 12 8.6"></path><path d="M8.8 12.4 12.4 16 22 5.6"></path></svg>',
+    pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1.2 6.2L17 12.5H7l3.2-3.3L9 3Z"></path><path d="M12 12.5V21"></path></svg>',
     puzzle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>'
@@ -375,12 +376,20 @@
   }
 
   function promptRename(initial) {
+    return inputDialog('重命名会话', initial, '会话标题');
+  }
+
+  /* 通用文本输入对话框：供重命名与 app.js 的 promptAsync 使用 */
+  function inputDialog(title, value, placeholder) {
     if (state.renameResolve) resolveRename(null);
     if (state.screen === 'chat' && state.drawerOpen) closeDrawer();
     var titleEl = r('rename-title');
     var input = r('rename-input');
-    if (titleEl) titleEl.textContent = '重命名会话';
-    if (input) input.value = initial == null ? '' : String(initial);
+    if (titleEl) titleEl.textContent = title == null || title === '' ? '请输入' : String(title);
+    if (input) {
+      input.value = value == null ? '' : String(value);
+      input.placeholder = placeholder == null || placeholder === '' ? '请输入' : String(placeholder);
+    }
     openModal(r('rename-modal'));
     setTimeout(function () {
       if (!input) return;
@@ -453,19 +462,32 @@
   }
 
   function closeDrawer() {
-    if (!state.drawerOpen) return;
-    state.drawerOpen = false;
-    var drawer = r('drawer');
-    var overlay = r('overlay');
-    if (drawer) {
-      drawer.classList.remove('is-open');
-      drawer.setAttribute('aria-hidden', 'true');
+    var hasOverlay = state.drawerOpen || state.menuOpen ||
+      isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) || isModalOpen(r('install-modal'));
+    if (!hasOverlay) return;
+    if (state.drawerOpen) {
+      state.drawerOpen = false;
+      var drawer = r('drawer');
+      var overlay = r('overlay');
+      if (drawer) {
+        drawer.classList.remove('is-open');
+        drawer.setAttribute('aria-hidden', 'true');
+      }
+      if (overlay) {
+        overlay.classList.remove('is-open');
+        overlay.setAttribute('aria-hidden', 'true');
+      }
     }
-    if (overlay) {
-      overlay.classList.remove('is-open');
-      overlay.setAttribute('aria-hidden', 'true');
-    }
+    dismissOverlays();
     syncDepth();
+  }
+
+  /* app.js 的返回键会调用 UI.closeDrawer()：同时收起长按菜单与弹窗，避免返回后残留浮层 */
+  function dismissOverlays() {
+    if (state.menuOpen) closeMenu();
+    if (isModalOpen(r('confirm-modal'))) resolveConfirm(false);
+    if (isModalOpen(r('rename-modal'))) resolveRename(null);
+    if (isModalOpen(r('install-modal'))) closeModal(r('install-modal'));
   }
 
   function focusSearch() {
@@ -848,8 +870,9 @@
       if (refs.time.textContent !== timeText) refs.time.textContent = timeText;
     }
 
-    /* 流式光标：只由全局 streaming 状态控制（避免残留） */
-    var streaming = state.streaming && (role === 'assistant' || role === 'tool') && id === lastAssistantId();
+    /* 流式光标：由全局 streaming 状态控制；内容为空时改用 typing 三点，避免空气泡光标 */
+    var hasContent = String(msg.content == null ? '' : msg.content).length > 0;
+    var streaming = state.streaming && hasContent && (role === 'assistant' || role === 'tool') && id === lastAssistantId();
     if (refs.streaming !== streaming) {
       refs.bubble.classList.toggle('is-streaming', streaming);
       refs.streaming = streaming;
@@ -873,7 +896,9 @@
     Object.keys(state.msgNodes).forEach(function (id) {
       var refs = state.msgNodes[id];
       if (!refs || !refs.bubble) return;
-      var should = state.streaming && id === lastId;
+      var data = state.msgData[id] || {};
+      var hasContent = String(data.content == null ? '' : data.content).length > 0;
+      var should = state.streaming && hasContent && id === lastId;
       if (refs.streaming !== should) {
         refs.bubble.classList.toggle('is-streaming', should);
         refs.streaming = should;
@@ -1131,6 +1156,13 @@
     }
     state.login.error = '';
     state.login.busy = false;
+    var keyInput = r('login-key');
+    if (keyInput) {
+      keyInput.value = '';
+      keyInput.type = 'password';
+    }
+    var toggle = document.querySelector('[data-action="toggle-key"]');
+    if (toggle) toggle.classList.remove('is-on');
   }
 
   /* ------------------------------------------------------------------ *
@@ -1228,14 +1260,12 @@
       if (Object.prototype.hasOwnProperty.call(patch, key)) state.prefs[key] = patch[key];
     }
     UI.setModel(patch.model);
-    UI.toast('设置已保存');
+    /* 保存成功的 toast 由 app.js 统一提示，避免重复 */
   }
 
   function doLogout() {
-    confirmDialog('退出登录', '将清除本机保存的 API Key，聊天记录会保留。确定要退出吗？').then(function (ok) {
-      if (!ok) return;
-      invoke('onLogout');
-    });
+    /* 退出确认由 app.js 的 onLogout 接管（避免双重确认） */
+    invoke('onLogout');
   }
 
   /* ------------------------------------------------------------------ *
@@ -1345,10 +1375,8 @@
   function doRemovePlugin(id) {
     if (!id) return;
     var plugin = findPlugin(id);
-    var name = plugin && plugin.name ? String(plugin.name) : String(id);
-    confirmDialog('删除插件', '确定要删除「' + name + '」吗？删除后它的命令和工具将不可用。').then(function (ok) {
-      if (ok) invoke('onPluginRemove', plugin ? plugin.id : id);
-    });
+    /* 删除确认由 app.js 的 onPluginRemove 接管（避免双重确认） */
+    invoke('onPluginRemove', plugin ? plugin.id : id);
   }
 
   /* ------------------------------------------------------------------ *
@@ -1401,6 +1429,17 @@
         });
       }
     } else if (context.type === 'chat') {
+      var chat = findChat(context.id) || { id: context.id };
+      var pinHandler = state.cb.onPinChat || state.cb.onTogglePin;
+      if (typeof pinHandler === 'function') {
+        items.push({
+          label: chat.pinned ? '取消置顶' : '置顶会话',
+          icon: ICON.pin,
+          run: function () {
+            invoke(state.cb.onPinChat ? 'onPinChat' : 'onTogglePin', chat.id, !chat.pinned);
+          }
+        });
+      }
       items.push({
         label: '重命名',
         icon: ICON.edit,
@@ -1416,9 +1455,8 @@
         icon: ICON.trash,
         danger: true,
         run: function () {
-          confirmDialog('删除会话', '删除后不可恢复，确定要删除这个会话吗？').then(function (ok) {
-            if (ok) invoke('onDeleteChat', context.id);
-          });
+          /* app.js 的 deleteChat 会弹出确认框，这里直接委托，避免双重确认 */
+          invoke('onDeleteChat', chat.id);
         }
       });
     }
@@ -2128,10 +2166,19 @@
     return confirmDialog(title, text);
   };
 
+  /* 通用输入框（app.js 的 promptAsync 会优先使用它，替代 window.prompt） */
+  UI.prompt = function (title, value, placeholder) {
+    return inputDialog(title, value, placeholder);
+  };
+
   /* 扩展辅助 API（非 SPEC 必需，提供给 app.js 做返回键/层级协作） */
   UI.handleBack = handleBack;
   UI.openDrawer = openDrawer;
   UI.closeDrawer = closeDrawer;
+  UI.setDrawerOpen = function (open) {
+    if (open) openDrawer();
+    else closeDrawer();
+  };
   UI.isDrawerOpen = function () { return state.drawerOpen; };
   UI.version = '1.0.0';
 })();

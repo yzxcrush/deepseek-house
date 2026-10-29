@@ -7,8 +7,9 @@
 // 这个文件可以直接在 App 里安装：
 //   打开「插件」页 → 安装插件 → 粘贴下面全部代码（或选择本文件）→ 安装。
 // 安装校验规则（由 app/assets/web/js/plugins.js 的 installFromCode 执行）：
-//   1. 开头注释必须提供 @id（必须以 user. 开头）、@name、@version；
-//   2. 必须调用 window.DSPlugins.register({...}) 且 id 与 @id 一致；
+//   1. 必须调用 window.DSPlugins.register({...})；id 优先以 register({id}) 为准，
+//      开头注释头（@id/@name/@version）是可选的展示/兜底元数据，推荐写上；
+//   2. id 建议以 user. 开头，便于与内置插件区分（不强制）；
 //   3. 一个文件只能注册一个插件，且至少提供命令、工具或钩子之一。
 (function () {
   "use strict";

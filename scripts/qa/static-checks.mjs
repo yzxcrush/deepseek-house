@@ -133,6 +133,7 @@ export function definesMethod(src, name) {
     new RegExp(`\\b${escaped}\\s*:\\s*(?:async\\s+)?function`, 'm'),
     new RegExp(`\\.${escaped}\\s*=\\s*function`, 'm'),
     new RegExp(`\\.${escaped}\\s*=\\s*\\(`, 'm'),
+    new RegExp(`\\.${escaped}\\s*=\\s*\\{`, 'm'),
   ];
   return patterns.some((re) => re.test(src));
 }
@@ -311,6 +312,75 @@ export function registerStaticTests() {
     const builtin = readJs('plugins_builtin.js');
     const count = (builtin.match(/\bbuiltin\s*:\s*true/g) || []).length;
     ok(count >= 3, `SPEC §5.3 要求至少 3 个内置插件，静态扫描 builtin:true 仅 ${count} 处`);
+  });
+
+  suite('跨端静态核对（SPEC §3 / Manifest）');
+
+  const JAVA_DIR = path.join(ROOT, 'app', 'src', 'main', 'java', 'com', 'deepseekhouse', 'app');
+  const JS_BRIDGE = path.join(JAVA_DIR, 'JsBridge.java');
+  const MAIN_ACTIVITY = path.join(JAVA_DIR, 'MainActivity.java');
+  const MANIFEST = path.join(ROOT, 'app', 'AndroidManifest.xml');
+  const STRINGS = path.join(ROOT, 'app', 'res', 'values', 'strings.xml');
+
+  function readOrNull(file) {
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  }
+
+  test('JsBridge.java 实现 SPEC §3.1/§3.2 全部方法', () => {
+    const source = readOrNull(JS_BRIDGE);
+    ok(source, 'app/src/main/java/com/deepseekhouse/app/JsBridge.java 不存在');
+    const names = new Set();
+    const re = /public\s+(?:static\s+)?(?:String|void|int|boolean)\s+([A-Za-z_$][\w$]*)\s*\(/g;
+    let m;
+    while ((m = re.exec(source))) names.add(m[1]);
+    const expected = [
+      'appInfo', 'getPrefs', 'setPrefs', 'pluginsList', 'pluginRead', 'pluginWrite', 'pluginDelete',
+      'pluginSetEnabled', 'getClipboard', 'setClipboard', 'toast', 'openUrl', 'setBackDepth',
+      'cancelRequest', 'cancelAllRequests', 'setStatusBar', 'finishApp',
+      'startChat', 'validateKey', 'httpFetch', 'importPluginFile', 'saveTextFile',
+    ];
+    const missing = expected.filter((n) => !names.has(n));
+    ok(missing.length === 0, `JsBridge.java 缺少 SPEC 方法：${missing.join(', ')}`);
+  });
+
+  test('JsBridge 注入名 DSNative、事件入口为 DSHost.onEvent', () => {
+    const bridge = readOrNull(JS_BRIDGE) || '';
+    const activity = readOrNull(MAIN_ACTIVITY) || '';
+    match(bridge, /JS_NAME\s*=\s*"DSNative"/, 'JsBridge 未定义注入名 DSName="DSNative"');
+    ok(/addJavascriptInterface\s*\(/.test(activity), 'MainActivity 未调用 addJavascriptInterface');
+    ok(/DSHost\s*&&\s*DSHost\.onEvent\s*\(/.test(bridge) || /DSHost\.onEvent/.test(bridge), 'Java→JS 事件未通过 DSHost.onEvent');
+    ok(/evaluateJavascript/.test(bridge), '事件未使用 evaluateJavascript 主线程回调');
+  });
+
+  test('AndroidManifest 符合 SPEC §3（权限/SDK/Activity/输入模式）', () => {
+    const manifest = readOrNull(MANIFEST);
+    ok(manifest, 'AndroidManifest.xml 不存在');
+    for (const [re, description] of [
+      [/android\.permission\.INTERNET/, '缺少 INTERNET 权限'],
+      [/android:minSdkVersion="24"/, 'minSdkVersion 应为 24'],
+      [/android:targetSdkVersion="34"/, 'targetSdkVersion 应为 34'],
+      [/android:usesCleartextTraffic="true"/, '缺少 usesCleartextTraffic=true'],
+      [/android:windowSoftInputMode="adjustResize"/, '缺少 adjustResize'],
+      [/android:exported="true"/, 'Activity 缺少 exported=true'],
+      [/android\.intent\.category\.LAUNCHER/, '缺少 LAUNCHER intent-filter'],
+      [/android:configChanges="[^"]*orientation[^"]*"/, 'configChanges 缺少 orientation'],
+      [/android:versionName="1\.0\.0"/, 'versionName 应为 1.0.0'],
+      [/android:versionCode="1"/, 'versionCode 应为 1'],
+    ]) {
+      ok(re.test(manifest), description);
+    }
+    equal((manifest.match(/package="com\.deepseekhouse\.app"/) || []).length, 1, 'applicationId 应为 com.deepseekhouse.app');
+  });
+
+  test('资源：app_name = DeepSeek House、图标资源存在', () => {
+    const strings = readOrNull(STRINGS);
+    ok(strings, 'res/values/strings.xml 不存在');
+    match(strings, /<string\s+name="app_name"\s*>\s*DeepSeek House\s*<\/string>/, 'app_name 应为 DeepSeek House');
+    const manifest = readOrNull(MANIFEST) || '';
+    ok(manifest.indexOf('@mipmap/ic_launcher') !== -1, 'Manifest 未使用 @mipmap/ic_launcher');
+    for (const dpi of ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi']) {
+      ok(fs.existsSync(path.join(ROOT, 'app', 'res', `mipmap-${dpi}`, 'ic_launcher.png')), `缺少 mipmap-${dpi}/ic_launcher.png`);
+    }
   });
 
   test('页面 CSS 使用 SPEC §4.4 深色变量', () => {
