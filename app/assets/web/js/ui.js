@@ -12,6 +12,7 @@
    * 内联 SVG 图标（动态渲染用；静态图标在 index.html 中）
    * ------------------------------------------------------------------ */
   var ICON = {
+    share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>',
     copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"></rect><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4H6.5A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"></path></svg>',
     refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"></path><path d="M20.5 4v7h-7"></path></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"></path><path d="M10 11v6M14 11v6"></path><path d="M6.5 7 7.5 19a1.5 1.5 0 0 0 1.5 1.4h6a1.5 1.5 0 0 0 1.5-1.4L17.5 7"></path><path d="M9.5 7V4.8h5V7"></path></svg>',
@@ -829,7 +830,7 @@
   var SCREEN_IDS = {
     login: 'screen-login',
     chats: 'screen-chats',
-    contacts: 'screen-contacts',
+    share: 'screen-share',
     profile: 'screen-profile',
     chat: 'screen-chat',
     settings: 'screen-settings',
@@ -837,8 +838,8 @@
   };
 
   function syncBottomNav(name) {
-    var map = { chats: 'nav-chats', contacts: 'nav-contacts', profile: 'nav-profile' };
-    ['nav-chats', 'nav-contacts', 'nav-profile'].forEach(function (id) {
+    var map = { chats: 'nav-chats', share: 'nav-share', profile: 'nav-profile' };
+    ['nav-chats', 'nav-share', 'nav-profile'].forEach(function (id) {
       var node = r(id);
       if (!node) return;
       node.classList.toggle('is-active', map[name] === id);
@@ -2295,9 +2296,9 @@
         closeDrawer();
         invoke('onNavChats');
         break;
-      case 'nav-contacts':
+      case 'nav-share':
         closeDrawer();
-        invoke('onNavContacts');
+        invoke('onNavShare');
         break;
       case 'nav-profile':
         closeDrawer();
@@ -2461,9 +2462,9 @@
 
     if (state.menuOpen && !target.closest('#longpress')) closeMenu();
 
-    var agentNode = target.closest('[data-agent-id]');
-    if (agentNode) {
-      invoke('onSelectAgent', agentNode.getAttribute('data-agent-id'));
+    var shareNode = target.closest('[data-share-id]');
+    if (shareNode) {
+      invoke('onShareChat', shareNode.getAttribute('data-share-id'));
       return;
     }
     var tabNode = target.closest('#chat-tabs [data-tab]');
@@ -2632,7 +2633,7 @@
       'app', 'screens',
       'screen-login', 'screen-chats', 'screen-chat', 'screen-settings', 'screen-plugins',
       'chats-list', 'chats-empty', 'chats-title', 'chat-search-wrap', 'chat-search-input', 'chat-search-clear',
-      'contacts-list', 'profile-status', 'nav-badge', 'nav-chats', 'nav-contacts', 'nav-profile', 'tip-card',
+      'share-list', 'share-empty', 'profile-status', 'nav-badge', 'nav-chats', 'nav-share', 'nav-profile', 'tip-card',
       'chat-header', 'chat-head-avatar', 'emoji-panel', 'emoji-grid',
       'login-form', 'login-key', 'login-baseurl', 'login-error', 'login-submit', 'login-advanced',
       'header-title', 'header-subtitle',
@@ -2657,22 +2658,16 @@
   /* ------------------------------------------------------------------ *
    * 联系人（智能体列表）/ 个人资料 / 提示卡
    * ------------------------------------------------------------------ */
-  function contactInitial(model) {
-    var label = String((model && (model.label || model.id)) || 'D').trim();
-    var chars = Array.from(label);
-    return chars.length ? (/[a-z]/i.test(chars[0]) ? chars[0].toUpperCase() : chars[0]) : 'D';
-  }
-
-  function renderContacts(models) {
-    var list = r('contacts-list');
+  function renderShareList(chats) {
+    var list = r('share-list');
     if (!list) return;
     list.textContent = '';
-    var items = Array.isArray(models) ? models : [];
-    items.forEach(function (model) {
+    var items = Array.isArray(chats) ? chats : [];
+    items.forEach(function (chat) {
       var item = document.createElement('button');
       item.type = 'button';
-      item.className = 'chat-item chat-item--contact';
-      item.setAttribute('data-agent-id', String(model.id));
+      item.className = 'chat-item chat-item--share';
+      item.setAttribute('data-share-id', String(chat.id));
 
       var avatar = document.createElement('img');
       avatar.className = 'chat-avatar';
@@ -2682,22 +2677,23 @@
 
       var body = el('div', 'chat-item-body');
       var top = el('div', 'chat-item-top');
-      top.appendChild(makeText('span', 'chat-item-title', model.label || model.id));
+      top.appendChild(makeText('span', 'chat-item-title', chat.title || 'DeepSeek'));
       body.appendChild(top);
-      body.appendChild(makeText('span', 'chat-item-preview', 'DeepSeek 模型 · ' + String(model.id)));
+      body.appendChild(makeText('span', 'chat-item-preview', previewOf(chat)));
 
       var meta = el('div', 'chat-item-meta');
-      var tag = model.tag || (model.custom ? 'custom' : '');
-      if (tag) meta.appendChild(makeText('span', 'contact-tag', String(tag).toUpperCase()));
+      meta.appendChild(makeText('span', 'chat-item-time', listTime(chat.updatedAt || chat.createdAt)));
+      var shareIcon = el('span', 'share-icon');
+      shareIcon.innerHTML = ICON.share || '';
+      meta.appendChild(shareIcon);
 
       item.appendChild(avatar);
       item.appendChild(body);
       item.appendChild(meta);
       list.appendChild(item);
     });
-    if (!items.length) {
-      list.appendChild(makeText('div', 'contacts-empty', '暂无可用模型'));
-    }
+    var empty = r('share-empty');
+    if (empty) empty.hidden = items.length > 0;
   }
 
   function renderProfile(info) {
@@ -3017,7 +3013,7 @@
 
   /* 扩展辅助 API（非 SPEC 必需，提供给 app.js 做返回键/层级协作） */
   UI.getScreen = function () { return state.screen; };
-  UI.renderContacts = renderContacts;
+  UI.renderShareList = renderShareList;
   UI.renderProfile = renderProfile;
   UI.setNavBadge = setNavBadge;
   UI.setTipVisible = setTipVisible;
@@ -3045,5 +3041,5 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.0.6';
+  UI.version = '1.0.7';
 })();

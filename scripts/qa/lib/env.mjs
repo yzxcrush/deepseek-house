@@ -250,6 +250,10 @@ export function createMockNative(opts = {}) {
       record('getClipboard', []);
       return clipboard;
     },
+    shareText(title, text) {
+      record('shareText', [title, text]);
+    },
+
     setClipboard(text) {
       record('setClipboard', [text]);
       clipboard = String(text == null ? '' : text);

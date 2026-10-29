@@ -623,6 +623,19 @@
       } catch (e) { warn('setClipboard 失败：' + (e && e.message)); return false; }
     },
 
+    shareText: function (title, text) {
+      var subject = String(title === null || title === undefined ? '' : title);
+      var body = String(text === null || text === undefined ? '' : text);
+      if (!hasNative) {
+        mockClipboard = body;
+        return true;
+      }
+      try {
+        if (typeof DSNative.shareText === 'function') DSNative.shareText(subject, body);
+        return true;
+      } catch (e) { warn('shareText 失败：' + (e && e.message)); return false; }
+    },
+
     toast: function (msg) {
       var text = String(msg === null || msg === undefined ? '' : msg);
       if (!hasNative) {

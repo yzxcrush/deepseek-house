@@ -190,6 +190,28 @@ public final class JsBridge {
         }
     }
 
+    /** 系统分享：把聊天记录明文交给其它 App（ACTION_SEND text/plain）。 */
+    @JavascriptInterface
+    public void shareText(final String title, final String text) {
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Intent send = new Intent(Intent.ACTION_SEND);
+                    send.setType("text/plain");
+                    send.putExtra(Intent.EXTRA_SUBJECT, title == null ? "" : title);
+                    send.putExtra(Intent.EXTRA_TEXT, text == null ? "" : text);
+                    Intent chooser = Intent.createChooser(send,
+                            activity.getString(R.string.share_chat));
+                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activity.startActivity(chooser);
+                } catch (Throwable ignored) {
+                    // 没有可分享的 App 时静默
+                }
+            }
+        });
+    }
+
     @JavascriptInterface
     public void setClipboard(final String text) {
         main.post(new Runnable() {

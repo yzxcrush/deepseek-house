@@ -148,11 +148,11 @@
       </button>
     </section>
 
-    <!-- ---------------------------- 联系人（智能体列表） ---------------------------- -->
-    <section class="screen screen--contacts" id="screen-contacts" aria-hidden="true">
-      <header class="topbar topbar--chats" id="contacts-header">
+    <!-- ---------------------------- 分享聊天记录 ---------------------------- -->
+    <section class="screen screen--share" id="screen-share" aria-hidden="true">
+      <header class="topbar topbar--chats" id="share-header">
         <div class="topbar-title">
-          <div class="title">联系人</div>
+          <div class="title">分享聊天记录</div>
         </div>
         <button class="icon-btn" type="button" data-action="open-drawer" aria-label="更多">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -160,8 +160,17 @@
           </svg>
         </button>
       </header>
-      <div class="section-label section-label--contacts">DeepSeek 智能体</div>
-      <div class="chatlist" id="contacts-list" role="list"></div>
+      <div class="tip-card share-tip">
+        <div class="tip-body">
+          <div class="tip-title">选择一个会话分享</div>
+          <div class="tip-sub">把整段对话以文本形式发送到任意 App，内容只在本机生成。</div>
+        </div>
+      </div>
+      <div class="chatlist" id="share-list" role="list"></div>
+      <div class="chatlist-empty" id="share-empty" hidden>
+        <div class="chatlist-empty-title">还没有可分享的会话</div>
+        <div class="chatlist-empty-sub">先和 DeepSeek 聊几句吧</div>
+      </div>
     </section>
 
     <!-- ---------------------------- 个人资料 ---------------------------- -->
@@ -203,7 +212,7 @@
             <span class="menu-text">退出登录</span>
           </button>
         </div>
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.0.6</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v1.0.7</div>
       </div>
     </section>
 
@@ -406,7 +415,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.0.6</span></div>
+          <div class="about-row"><span>版本</span><span>1.0.7</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -489,14 +498,16 @@
       </span>
       <span class="nav-label">聊天</span>
     </button>
-    <button class="nav-item" type="button" data-action="nav-contacts" id="nav-contacts">
+    <button class="nav-item" type="button" data-action="nav-share" id="nav-share">
       <span class="nav-icon-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="8" r="4"></circle>
-          <path d="M4 21c0-4 3.6-6.5 8-6.5S20 17 20 21"></path>
+          <circle cx="18" cy="5" r="3"></circle>
+          <circle cx="6" cy="12" r="3"></circle>
+          <circle cx="18" cy="19" r="3"></circle>
+          <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"></path>
         </svg>
       </span>
-      <span class="nav-label">联系人</span>
+      <span class="nav-label">分享</span>
     </button>
     <button class="nav-item" type="button" data-action="nav-profile" id="nav-profile">
       <span class="nav-icon-wrap">
@@ -567,7 +578,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v1.0.6</span>
+      <span class="drawer-version">v1.0.7</span>
     </div>
   </aside>
 

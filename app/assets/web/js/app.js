@@ -331,12 +331,33 @@
     setBackDepth(0);
   }
 
-  function showContacts() {
-    state.nav = { screen: 'contacts', drawerOpen: false };
-    state.modelCatalog = currentModelCatalog();
-    ui('renderContacts', state.modelCatalog);
-    ui('showScreen', 'contacts');
+  function showShare() {
+    state.nav = { screen: 'share', drawerOpen: false };
+    ui('renderShareList', Store.listChats());
+    ui('showScreen', 'share');
     setBackDepth(0);
+  }
+
+  /** 分享整段聊天记录：系统分享面板（原生 ACTION_SEND） */
+  function shareChat(id) {
+    var chat = Store.getChat(id) || Store.getActiveChat();
+    if (!chat) { toast('没有可分享的会话'); return; }
+    var md = '';
+    try { md = Store.exportChatMarkdown(chat.id) || ''; } catch (e) { warn('导出聊天失败：' + errText(e)); }
+    if (!md) { toast('会话为空，暂无可分享内容'); return; }
+    var text = '【' + (chat.title || 'DeepSeek 对话') + '】\n\n' + md + '\n\n—— DeepSeek House · @惜白.';
+    var B = global.Bridge;
+    try {
+      if (B && typeof B.shareText === 'function') {
+        if (B.shareText(chat.title || '聊天记录', text) !== false) return;
+      }
+      if (B && typeof B.setClipboard === 'function') {
+        B.setClipboard(text);
+        toast('已复制聊天记录，可粘贴分享');
+        return;
+      }
+    } catch (e2) { warn('分享失败：' + errText(e2)); }
+    toast('分享失败');
   }
 
   function showProfile() {
@@ -347,17 +368,6 @@
     ui('renderProfile', { status: status });
     ui('showScreen', 'profile');
     setBackDepth(0);
-  }
-
-  /** 从联系人选一个智能体：切模型 + 新建会话 */
-  function selectAgent(modelId) {
-    if (!modelId) return;
-    selectModel(modelId, { silent: true });
-    var chat = Store.createChat({ model: modelId, title: defaultAgentTitle(modelId) });
-    Store.setActiveChat(chat.id);
-    state.nav = { screen: 'chat', drawerOpen: false, from: 'contacts' };
-    navTo('chat');
-    enterChat(chat);
   }
 
   /* Telegram 式首屏：会话列表（Home） */
@@ -457,21 +467,21 @@
       try { if (global.Bridge && global.Bridge.finishApp) global.Bridge.finishApp(); } catch (e) { /* ignore */ }
       return;
     }
-    if (screen === 'contacts' || screen === 'profile') {
+    if (screen === 'share' || screen === 'profile') {
       closeDrawer();
       showChatsScreen();
       return;
     }
     if (screen === 'chat') {
       closeDrawer();
-      var from = state.nav.from === 'contacts' ? 'contacts' : 'chats';
-      if (from === 'contacts') showContacts(); else showChatsScreen();
+      var from = state.nav.from === 'share' ? 'share' : 'chats';
+      if (from === 'share') showShare(); else showChatsScreen();
       return;
     }
     /* 设置 / 插件页 → 回到来源页（对话页或某个标签页） */
     closeDrawer();
     var back = state.nav.from || 'chats';
-    if (back === 'contacts') { showContacts(); return; }
+    if (back === 'share') { showShare(); return; }
     if (back === 'profile') { showProfile(); return; }
     if (back !== 'chat') { showChatsScreen(); return; }
     var chat = Store.getActiveChat();
@@ -526,9 +536,9 @@
       onRetry: safe(function (msgId) { retryMessage(msgId); return true; }, 'onRetry'),
       onRegenerate: safe(function (msgId) { retryMessage(msgId); return true; }, 'onRegenerate'),
       onNavChats: safe(function () { showChatsScreen(); return true; }, 'onNavChats'),
-      onNavContacts: safe(function () { showContacts(); return true; }, 'onNavContacts'),
+      onNavShare: safe(function () { showShare(); return true; }, 'onNavShare'),
       onNavProfile: safe(function () { showProfile(); return true; }, 'onNavProfile'),
-      onSelectAgent: safe(function (id) { selectAgent(id); return true; }, 'onSelectAgent'),
+      onShareChat: safe(function (id) { shareChat(id); return true; }, 'onShareChat'),
       onDismissTip: safe(function () { dismissTip(); return true; }, 'onDismissTip'),
       onOpenSettings: safe(function () { openSettings(); }, 'onOpenSettings'),
       onOpenPlugins: safe(function () { openPlugins(); }, 'onOpenPlugins'),
@@ -1146,7 +1156,7 @@
 
   function selectChat(id) {
     if (state.busy) stopGeneration();
-    state.nav.from = state.nav.screen === 'contacts' ? 'contacts' : 'chats';
+    state.nav.from = state.nav.screen === 'share' ? 'share' : 'chats';
     var chat = Store.getChat(id);
     if (!chat) return;
     Store.setActiveChat(chat.id);

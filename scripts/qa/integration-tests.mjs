@@ -672,35 +672,35 @@ export function registerIntegrationTests() {
     equal(navBadge.textContent, '2', '底部导航未读角标应为 2');
   });
 
-  test('底部导航：聊天 / 联系人 / 个人资料三个标签可切换', async () => {
+  test('底部导航：聊天 / 分享 / 个人资料三个标签可切换，分享聊天记录走原生分享', async () => {
     const app = await loginIfNeeded();
     const w = app.win;
     clickAction('back-to-chats');
     await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
     ok($id('bottom-nav'), '缺少底部导航');
-    clickAction('nav-contacts');
-    await waitFor(() => isScreenActive(w, 'screen-contacts'), { timeout: 3000, label: '联系人页显示' });
-    await waitFor(() => $$('#contacts-list .chat-item--contact').length >= 3, { timeout: 3000, label: '智能体列表渲染' });
-    ok($id('nav-contacts').classList.contains('is-active'), '联系人标签未高亮');
-    const agent = $$('#contacts-list .chat-item--contact')[0];
-    const agentId = agent.getAttribute('data-agent-id');
-    click(w, agent);
-    await waitFor(() => isScreenActive(w, 'screen-chat'), { timeout: 5000, label: '从联系人进入对话' });
-    const chat = w.Store.getActiveChat();
-    equal(chat.model, agentId, '会话模型应为所选智能体');
-    ok(/^DeepSeek/i.test(String(chat.title || '')), '智能体名应以 DeepSeek 开头');
-    await sleep(200);
-    app.native.__emit({ type: 'back' });
-    await waitFor(() => isScreenActive(w, 'screen-contacts'), { timeout: 3000, label: '返回联系人页' });
+    // 分享页
+    clickAction('nav-share');
+    await waitFor(() => isScreenActive(w, 'screen-share'), { timeout: 3000, label: '分享页显示' });
+    ok($id('nav-share').classList.contains('is-active'), '分享标签未高亮');
+    await waitFor(() => $$('#share-list .chat-item--share').length >= 1, { timeout: 3000, label: '分享会话列表渲染' });
+    const beforeShare = nativeCalls('shareText').length;
+    click(w, $$('#share-list .chat-item--share')[0]);
+    await waitFor(() => nativeCalls('shareText').length > beforeShare, { timeout: 3000, label: '调用原生分享' });
+    const shareCall = nativeCalls('shareText')[nativeCalls('shareText').length - 1];
+    ok(shareCall.args[1] && String(shareCall.args[1]).length > 0, '分享文本不应为空');
+    includes(String(shareCall.args[1]), 'DeepSeek House', '分享文本应带署名');
+    // 个人资料
     clickAction('nav-profile');
     await waitFor(() => isScreenActive(w, 'screen-profile'), { timeout: 3000, label: '个人资料页显示' });
     ok($id('nav-profile').classList.contains('is-active'), '个人资料标签未高亮');
     ok(($id('profile-status').textContent || '').length > 0, '个人资料页缺少状态文案');
+    // 设置返回个人资料
     clickAction('open-settings');
     await waitFor(() => isScreenActive(w, 'screen-settings'), { timeout: 3000, label: '设置页显示' });
     await sleep(200);
     app.native.__emit({ type: 'back' });
     await waitFor(() => isScreenActive(w, 'screen-profile'), { timeout: 3000, label: '设置返回个人资料' });
+    // 返回聊天
     clickAction('nav-chats');
     await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到聊天标签' });
   });
