@@ -1,0 +1,285 @@
+/* ==========================================================================
+   DeepSeek House — markdown.css
+   气泡内 Markdown 内容样式（由 markdown.js 输出的安全 HTML 渲染）。
+   markdown.js 约定的 DOM：
+     <div class="md-code"><div class="md-code-head"><span class="md-code-lang">js</span>
+       <button class="md-code-copy" data-action="copy-code">复制</button></div>
+       <pre class="md-pre"><code class="md-code-body">…</code></pre></div>
+     其它类名：.md-p .md-h .md-list .md-quote .md-table-wrap .md-table .md-hr .md-inline-code
+   ========================================================================== */
+
+.md {
+  font-size: 15.5px;
+  line-height: 1.46;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.md > *:first-child {
+  margin-top: 0 !important;
+}
+
+.md > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* 段落 */
+.md .md-p,
+.md p {
+  margin: 0 0 6px;
+}
+
+.md .md-p:last-child,
+.md p:last-child {
+  margin-bottom: 0;
+}
+
+/* 标题 */
+.md .md-h,
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 10px 0 6px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #fff;
+}
+
+.md h1,
+.md .md-h-1 {
+  font-size: 19px;
+}
+
+.md h2,
+.md .md-h-2 {
+  font-size: 17.5px;
+}
+
+.md h3,
+.md .md-h-3 {
+  font-size: 16.5px;
+}
+
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 15.5px;
+}
+
+/* 列表 */
+.md .md-list,
+.md ul,
+.md ol {
+  margin: 4px 0 6px;
+  padding-left: 22px;
+}
+
+.md .md-list li,
+.md ul li,
+.md ol li {
+  margin: 2px 0;
+}
+
+.md ul ul,
+.md ol ol,
+.md ul ol,
+.md ol ul {
+  margin: 2px 0;
+}
+
+/* 引用 */
+.md .md-quote,
+.md blockquote {
+  margin: 6px 0;
+  padding: 5px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: rgba(82, 136, 193, 0.13);
+  color: #c3d3e0;
+}
+
+.md .md-quote > *:last-child,
+.md blockquote > *:last-child {
+  margin-bottom: 0;
+}
+
+/* 行内代码 */
+.md .md-inline-code,
+.md code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #cfe3f5;
+  word-break: break-word;
+}
+
+/* 代码块 */
+.md .md-code {
+  margin: 7px 0;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.md .md-code.md-code-open {
+  border-color: rgba(106, 178, 242, 0.45);
+}
+
+.md .md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 8px 4px 11px;
+  background: rgba(255, 255, 255, 0.045);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.md .md-code-lang {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.md .md-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 7px;
+  color: var(--accent-2);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.md .md-code-copy:active {
+  background: rgba(106, 178, 242, 0.16);
+}
+
+.md .md-pre,
+.md pre {
+  margin: 0;
+  padding: 9px 11px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.md .md-code-body,
+.md pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  color: #d7e6f5;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* 表格 */
+.md .md-table-wrap {
+  margin: 7px 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+}
+
+.md .md-table,
+.md table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 220px;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.md .md-table th,
+.md .md-table td,
+.md table th,
+.md table td {
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md .md-table th,
+.md table th {
+  background: rgba(255, 255, 255, 0.055);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.md .md-table tr:nth-child(even) td,
+.md table tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* 分隔线 */
+.md .md-hr,
+.md hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* 链接 */
+.md a {
+  color: var(--accent-2);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.md a:active {
+  text-decoration: underline;
+}
+
+/* 强调 */
+.md strong,
+.md b {
+  font-weight: 700;
+  color: #fff;
+}
+
+.md em,
+.md i {
+  font-style: italic;
+}
+
+.md del,
+.md s {
+  color: var(--muted);
+}
+
+/* 图片（不外链，但 markdown.js 若允许本地 data: 也做尺寸约束） */
+.md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+/* 嵌套块间距收紧 */
+.md .md-code + .md-p,
+.md .md-table-wrap + .md-p,
+.md .md-quote + .md-p {
+  margin-top: 7px;
+}

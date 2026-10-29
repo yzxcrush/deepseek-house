@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Telegram 深色主题调色板，与 SPEC §4.4 保持一致 -->
+    <color name="bg">#17212B</color>
+    <color name="panel">#0E1621</color>
+    <color name="sidebar">#17212B</color>
+    <color name="header">#17212B</color>
+    <color name="bubble_in">#182533</color>
+    <color name="bubble_out">#2B5278</color>
+    <color name="accent">#5288C1</color>
+    <color name="accent_2">#6AB2F2</color>
+    <color name="text">#FFFFFF</color>
+    <color name="muted">#7D8E98</color>
+    <color name="divider">#101921</color>
+    <color name="danger">#E05D5D</color>
+    <color name="online">#4FD05B</color>
+    <color name="transparent">#00000000</color>
+</resources>

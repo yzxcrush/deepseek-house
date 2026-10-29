@@ -1,0 +1,9 @@
+# build artifacts
+build/
+dist/*.apk
+dist/*.sha256
+node_modules/
+# local only
+*.log
+.DS_Store
+inbox/

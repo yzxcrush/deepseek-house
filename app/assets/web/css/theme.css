@@ -1,0 +1,172 @@
+/* ==========================================================================
+   DeepSeek House — theme.css
+   深色 Telegram 风格主题变量、基础重置与全局约束。
+   无外部字体 / 图片 / CDN；所有图标为内联 SVG（见 index.html 与 ui.js）。
+   ========================================================================== */
+
+:root {
+  /* ---- SPEC §4.4 色板 ---- */
+  --bg: #17212b;
+  --panel: #0e1621;
+  --sidebar: #17212b;
+  --header: #17212b;
+  --bubble-in: #182533;
+  --bubble-out: #2b5278;
+  --accent: #5288c1;
+  --accent-2: #6ab2f2;
+  --text: #ffffff;
+  --muted: #7d8e98;
+  --divider: #101921;
+  --danger: #e05d5d;
+  --online: #4fd05b;
+
+  /* ---- 尺寸 / 动效 ---- */
+  --topbar-h: 56px;
+  --drawer-w: min(78vw, 320px);
+  --radius-bubble: 18px;
+  --radius-bubble-tail: 6px;
+  --ease: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --drawer-ms: 220ms;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+
+  /* ---- 安全区 ---- */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /* ---- 字体栈 ---- */
+  --font: -apple-system, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", sans-serif;
+  --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+/* 表单元素是唯一允许选择文本的地方（输入 API Key / 消息） */
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: 16px;
+  color: var(--text);
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+textarea {
+  resize: none;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+a {
+  color: var(--accent-2);
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+svg {
+  display: block;
+  flex: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+::selection {
+  background: rgba(106, 178, 242, 0.35);
+  color: #fff;
+}
+
+/* 滚动条（WebView 走 Chromium 内核） */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.16);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.28);
+}
+
+/* 键盘/无障碍聚焦环 */
+:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
+/* 供 JS 使用的基础状态类 */
+.app.is-streaming .icon-send {
+  display: none;
+}
+
+/* 减少动态效果偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
