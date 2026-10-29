@@ -3,6 +3,7 @@
  * 单元测试：util / markdown / store / bridge(mock) / plugins（vm + jsdom window，stub localStorage/document）。
  */
 
+import { JSDOM } from 'jsdom';
 import { suite, test, ok, equal, deepEqual, includes, notIncludes, match, isString, isFunction, isArray, isObject } from './lib/harness.mjs';
 import { createUnitWindow, runWebScripts, sleep, waitFor } from './lib/env.mjs';
 
@@ -151,6 +152,55 @@ export function registerUnitTests() {
     includes(multi, '<blockquote', '段落后的多行引用未渲染');
     includes(multi, '第一行');
     includes(multi, '第二行');
+  });
+
+  test('恶意 Markdown DOM 解析后无脚本/事件属性（XSS 回归）', () => {
+    const payloads = [
+      '<img src=x onerror=alert(1)>',
+      '<svg/onload=alert(1)>',
+      '<script>alert(1)</script>',
+      '[x](javascript:alert(1))',
+      '[x](JaVaScRiPt:alert(1))',
+      '[x](java\tscript:alert(1))',
+      '[x](data:text/html;base64,PHNjcmlwdD4=)',
+      '[x](vbscript:msgbox(1))',
+      '[x](file:///etc/passwd)',
+      '[x](https://a.com" onmouseover="alert(1))',
+      '![img](javascript:alert(1))',
+      '**<script>alert(1)</script>**',
+      '`</code><script>alert(1)</script>`',
+      '```js\n</code></pre><script>alert(1)</script>\n```',
+      '| a |\n| --- |\n| <img src=x onerror=alert(1)> |',
+      '> <script>alert(1)</script>',
+      '- <img src=x onerror=alert(1)>',
+      '# <script>alert(1)</script>',
+      '<a href="javascript:alert(1)">x</a>',
+    ];
+    const problems = [];
+    for (const payload of payloads) {
+      const html = M.render(payload);
+      const dom = new JSDOM('<!doctype html><html><body><div id="out"></div></body></html>', { url: 'http://localhost/' });
+      try {
+        dom.window.document.getElementById('out').innerHTML = html;
+        const out = dom.window.document.getElementById('out');
+        for (const tag of ['script', 'img', 'svg', 'iframe', 'object', 'embed', 'link', 'style']) {
+          if (out.querySelector(tag)) problems.push(`${JSON.stringify(payload)} → 生成 <${tag}>`);
+        }
+        for (const node of out.querySelectorAll('*')) {
+          for (const attr of Array.from(node.attributes || [])) {
+            const name = attr.name.toLowerCase();
+            const value = String(attr.value).replace(/[\u0000-\u0020]/g, '').toLowerCase();
+            if (/^on/.test(name)) problems.push(`${JSON.stringify(payload)} → 属性 ${name}`);
+            if ((name === 'href' || name === 'src') && /^(javascript|data|vbscript|file):/.test(value)) {
+              problems.push(`${JSON.stringify(payload)} → ${name}=${value.slice(0, 40)}`);
+            }
+          }
+        }
+      } finally {
+        dom.window.close();
+      }
+    }
+    ok(problems.length === 0, `发现 XSS 风险渲染：\n  ${problems.join('\n  ')}`);
   });
 
   test('流式未闭合围栏不崩溃且自动闭合', () => {
@@ -577,7 +627,7 @@ window.DSPlugins.register({
     await assertRejects(() => P.installFromCode(''), '空');
   });
 
-  test('installFromCode 无注释头（SPEC §5.1 元数据「可选」）偏差探测', async () => {
+  test('installFromCode 无需注释头（SPEC §5.1 元数据「可选」，id 从 register 推导）', async () => {
     const { win } = loadLogic();
     const P = win.DSPlugins;
     const code = `window.DSPlugins.register({
@@ -588,20 +638,9 @@ window.DSPlugins.register({
       commands: [{ name: 'noheader', description: '测试', run: function () { return 'ok'; } }],
       tools: []
     });`;
-    let error = null;
-    try {
-      await P.installFromCode(code);
-    } catch (e) {
-      error = e;
-    }
-    if (error) {
-      // 与 SPEC §5.1「注释头元数据可选」不一致：记录为已知偏差（报告中列中危），不判失败，
-      // 以免 QA 结果因规范解释分歧长期红色；修复后会自动走下面的正路径断言。
-      console.log(`      ℹ SPEC 偏差：installFromCode 要求 // @id 注释头（${error.message}）`);
-      ok(P.list().some((p) => p.id === 'user.noheader') === false, '未安装成功时不应出现该插件');
-    } else {
-      ok(P.list().some((p) => p.id === 'user.noheader'), '无注释头安装后 list() 中找不到插件');
-    }
+    await P.installFromCode(code);
+    ok(P.list().some((p) => p.id === 'user.noheader'), '无注释头安装后 list() 中找不到插件（SPEC 要求注释头可选）');
+    ok(win.Bridge.plugins().some((p) => p.id === 'user.noheader'), '无注释头安装后未持久化');
   });
 
   test('installFromFile 从 mock 事件导入插件', async () => {

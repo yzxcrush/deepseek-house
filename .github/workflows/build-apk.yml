@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,14 +26,21 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android platform 34 and build-tools 34
+      - name: Ensure Android platform 34 + build-tools
         run: |
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" >/dev/null
-          eval "export ANDROID_HOME=${ANDROID_HOME}"
-          ls "$ANDROID_HOME/platforms/android-34/android.jar"
+          set -x
+          ls "$ANDROID_HOME" || true
+          SDKMANAGER="$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)"
+          echo "sdkmanager=$SDKMANAGER"
+          if [ ! -f "$ANDROID_HOME/platforms/android-34/android.jar" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-34" || true
+          fi
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$BT" ] || [ ! -x "$BT/aapt" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "build-tools;34.0.0" || true
+          fi
+          ls -l "$ANDROID_HOME/platforms/android-34/android.jar"
+          ls -d "$ANDROID_HOME"/build-tools/*
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -51,13 +62,15 @@ jobs:
       - name: Build APK
         env:
           DSH_STRICT_CHECKS: "1"
+          ANDROID_JAR: /usr/local/lib/android/sdk/platforms/android-34/android.jar
         run: bash scripts/build.sh
 
       - name: Verify APK
         run: |
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           APK="dist/DeepSeekHouse-1.0.0.apk"
-          apksigner verify --verbose "$APK"
-          aapt dump badging "$APK" | head -12
+          "$BT/apksigner" verify --verbose "$APK"
+          "$BT/aapt" dump badging "$APK" | head -12
           sha256sum "$APK" | tee dist/DeepSeekHouse-1.0.0.apk.sha256
 
       - name: Upload artifact
