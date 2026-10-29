@@ -207,6 +207,7 @@
       createdAt: Number(raw.createdAt) || now(),
       updatedAt: Number(raw.updatedAt) || Number(raw.createdAt) || now(),
       pinned: !!raw.pinned,
+      unread: Math.max(0, parseInt(raw.unread, 10) || 0),
       archived: !!raw.archived,
       model: raw.model ? String(raw.model) : DEFAULT_PREFS.model,
       messages: []
@@ -379,6 +380,35 @@
     return list;
   }
 
+  function setUnread(id, count) {
+    load();
+    var chat = getChat(id);
+    if (!chat) return null;
+    chat.unread = Math.max(0, parseInt(count, 10) || 0);
+    save();
+    return chat;
+  }
+
+  function incrementUnread(id) {
+    load();
+    var chat = getChat(id);
+    if (!chat) return null;
+    chat.unread = Math.max(0, chat.unread || 0) + 1;
+    save();
+    return chat;
+  }
+
+  function clearUnread(id) {
+    return setUnread(id, 0);
+  }
+
+  function totalUnread() {
+    load();
+    var n = 0;
+    for (var i = 0; i < state.chats.length; i++) n += Math.max(0, state.chats[i].unread || 0);
+    return n;
+  }
+
   function createChat(opts) {
     load();
     opts = opts || {};
@@ -388,6 +418,7 @@
       createdAt: now(),
       updatedAt: now(),
       pinned: !!opts.pinned,
+      unread: 0,
       archived: false,
       model: opts.model || state.prefs.model || DEFAULT_PREFS.model,
       messages: []
@@ -443,6 +474,7 @@
     if (patch.title !== undefined) chat.title = String(patch.title).slice(0, 80) || chat.title;
     if (patch.model !== undefined) chat.model = String(patch.model);
     if (patch.pinned !== undefined) chat.pinned = !!patch.pinned;
+    if (patch.unread !== undefined) chat.unread = Math.max(0, parseInt(patch.unread, 10) || 0);
     if (patch.archived !== undefined) chat.archived = !!patch.archived;
     if (patch.updatedAt !== undefined) chat.updatedAt = Number(patch.updatedAt) || now();
     save();
@@ -739,6 +771,10 @@
     getPrefs: getPrefs,
     setPrefs: setPrefs,
 
+    setUnread: setUnread,
+    incrementUnread: incrementUnread,
+    clearUnread: clearUnread,
+    totalUnread: totalUnread,
     createChat: createChat,
     deleteChat: deleteChat,
     renameChat: renameChat,

@@ -1,133 +1,184 @@
 #!/usr/bin/env python3
-"""从「相册第一张图」衍生 DeepSeek House 聊天壁纸。
+"""DeepSeek House 壁纸：仿 Telegram 默认深色「涂鸦」壁纸。
 
-思路：不对原图做可辨认的使用，而是重度模糊 + 压暗 + 蓝调化，只保留
-它的蓝色光斑与明暗氛围，作为深色聊天背景；前景气泡与文字保持清晰。
+- 底色取「相册第一张图」的蓝色调（采样后压暗成 #17212B 系）。
+- 图案为程序绘制的白描小涂鸦（气泡、纸飞机、心、星星、音符、猫、云、闪电……），
+  低不透明度平铺，模拟 Telegram 的 doodle wallpaper，保证气泡文字可读。
+- 未使用任何 Telegram 版权素材，全部为脚本原创绘制。
 
 用法：python3 scripts/make_wallpaper.py [源图路径]
-输出：
-  app/assets/web/img/wallpaper.jpg       （深色版，默认使用）
-  app/assets/web/img/wallpaper-soft.jpg  （柔和版候选）
-  /data/data/com.termux/files/home/1/inbox/wallpaper-preview.jpg （预览）
+输出：app/assets/web/img/wallpaper.jpg（1080x1920，JPEG）
 """
-import os
-import sys
 import math
+import os
 import random
+import sys
 
-from PIL import Image, ImageDraw, ImageFilter, ImageEnhance, ImageChops
+from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = sys.argv[1] if len(sys.argv) > 1 else "/data/data/com.termux/files/home/1/inbox/a_gifshow.jpg"
 OUT_DIR = os.path.join(ROOT, "app", "assets", "web", "img")
-INBOX = "/data/data/com.termux/files/home/1/inbox"
 W, H = 1080, 1920
-
-BASE = (23, 33, 43)      # #17212B
-PANEL = (14, 22, 33)     # #0E1621
-ACCENT = (82, 136, 193)  # #5288C1
+TILE = 420
+BASE = (23, 33, 43)
 
 
-def cover_resize(img, w, h):
-    """等比放大到覆盖目标尺寸，再居中裁切。"""
-    sw, sh = img.size
-    scale = max(w / sw, h / sh)
-    nw, nh = int(math.ceil(sw * scale)), int(math.ceil(sh * scale))
-    img = img.resize((nw, nh), Image.LANCZOS)
-    left = (nw - w) // 2
-    top = (nh - h) // 2
-    return img.crop((left, top, left + w, top + h))
+def stroke(draw, pts, width, color):
+    draw.line(pts, fill=color, width=width, joint="curve")
 
 
-def tint(img, color, amount):
-    layer = Image.new("RGB", img.size, color)
-    return Image.blend(img, layer, amount)
+def doodle(kind, size, draw, color, lw):
+    s = size
+    def P(x, y):
+        return (x * s, y * s)
+    if kind == "bubble":
+        draw.rounded_rectangle([P(0.12, 0.2), P(0.88, 0.68)], radius=int(s * 0.2), outline=color, width=lw)
+        stroke(draw, [P(0.3, 0.68), P(0.42, 0.86), P(0.52, 0.68)], lw, color)
+    elif kind == "plane":
+        stroke(draw, [P(0.1, 0.5), P(0.9, 0.16), P(0.6, 0.9)], lw, color)
+        stroke(draw, [P(0.9, 0.16), P(0.42, 0.56)], lw, color)
+        stroke(draw, [P(0.42, 0.56), P(0.6, 0.9)], lw, color)
+    elif kind == "heart":
+        draw.arc([P(0.08, 0.2), P(0.5, 0.62)], 180, 360, fill=color, width=lw)
+        draw.arc([P(0.5, 0.2), P(0.92, 0.62)], 180, 360, fill=color, width=lw)
+        stroke(draw, [P(0.08, 0.4), P(0.5, 0.88)], lw, color)
+        stroke(draw, [P(0.92, 0.4), P(0.5, 0.88)], lw, color)
+    elif kind == "star":
+        pts = []
+        for i in range(10):
+            r = 0.46 if i % 2 == 0 else 0.2
+            a = -math.pi / 2 + i * math.pi / 5
+            pts.append((0.5 + r * math.cos(a), 0.5 + r * math.sin(a)))
+        draw.polygon([(x * s, y * s) for x, y in pts], outline=color, width=lw)
+    elif kind == "note":
+        draw.ellipse([P(0.14, 0.62), P(0.42, 0.84)], outline=color, width=lw)
+        stroke(draw, [P(0.42, 0.74), P(0.42, 0.16)], lw, color)
+        stroke(draw, [P(0.42, 0.16), P(0.78, 0.26)], lw, color)
+    elif kind == "cat":
+        draw.ellipse([P(0.14, 0.26), P(0.86, 0.9)], outline=color, width=lw)
+        stroke(draw, [P(0.16, 0.34), P(0.3, 0.1), P(0.44, 0.28)], lw, color)
+        stroke(draw, [P(0.84, 0.34), P(0.7, 0.1), P(0.56, 0.28)], lw, color)
+        draw.ellipse([P(0.34, 0.5), P(0.4, 0.56)], fill=color)
+        draw.ellipse([P(0.6, 0.5), P(0.66, 0.56)], fill=color)
+        stroke(draw, [P(0.44, 0.68), P(0.5, 0.72), P(0.56, 0.68)], lw, color)
+    elif kind == "cloud":
+        draw.arc([P(0.06, 0.34), P(0.5, 0.78)], 90, 270, fill=color, width=lw)
+        draw.arc([P(0.3, 0.2), P(0.78, 0.68)], 180, 360, fill=color, width=lw)
+        draw.arc([P(0.54, 0.3), P(0.94, 0.7)], 270, 90, fill=color, width=lw)
+        stroke(draw, [P(0.06, 0.56), P(0.94, 0.56)], lw, color)
+    elif kind == "bolt":
+        stroke(draw, [P(0.56, 0.08), P(0.28, 0.54), P(0.5, 0.54), P(0.42, 0.92), P(0.74, 0.42), P(0.52, 0.42)], lw, color)
+    elif kind == "mail":
+        draw.rounded_rectangle([P(0.08, 0.24), P(0.92, 0.76)], radius=int(s * 0.08), outline=color, width=lw)
+        stroke(draw, [P(0.12, 0.3), P(0.5, 0.58), P(0.88, 0.3)], lw, color)
+    elif kind == "pin":
+        draw.ellipse([P(0.24, 0.08), P(0.76, 0.6)], outline=color, width=lw)
+        stroke(draw, [P(0.3, 0.5), P(0.5, 0.94)], lw, color)
+        stroke(draw, [P(0.7, 0.5), P(0.5, 0.94)], lw, color)
+        draw.ellipse([P(0.42, 0.26), P(0.58, 0.42)], outline=color, width=lw)
+    elif kind == "moon":
+        draw.arc([P(0.14, 0.1), P(0.9, 0.9)], 40, 320, fill=color, width=lw)
+    elif kind == "flower":
+        for i in range(6):
+            a = i * math.pi / 3
+            cx, cy = 0.5 + 0.3 * math.cos(a), 0.5 + 0.3 * math.sin(a)
+            draw.ellipse([(cx - 0.13) * s, (cy - 0.13) * s, (cx + 0.13) * s, (cy + 0.13) * s],
+                         outline=color, width=lw)
+    elif kind == "smile":
+        draw.ellipse([P(0.1, 0.1), P(0.9, 0.9)], outline=color, width=lw)
+        draw.arc([P(0.3, 0.38), P(0.7, 0.74)], 20, 160, fill=color, width=lw)
+        draw.ellipse([P(0.34, 0.32), P(0.4, 0.38)], fill=color)
+        draw.ellipse([P(0.6, 0.32), P(0.66, 0.38)], fill=color)
+    elif kind == "bookmark":
+        draw.polygon([P(0.26, 0.1), P(0.74, 0.1), P(0.74, 0.92), P(0.5, 0.72), P(0.26, 0.92)],
+                     outline=color, width=lw)
+    elif kind == "wave":
+        draw.arc([P(0.06, 0.36), P(0.5, 0.64)], 180, 360, fill=color, width=lw)
+        draw.arc([P(0.5, 0.36), P(0.94, 0.64)], 180, 360, fill=color, width=lw)
+    elif kind == "atom":
+        draw.ellipse([P(0.12, 0.3), P(0.88, 0.7)], outline=color, width=lw)
+        draw.ellipse([P(0.3, 0.12), P(0.7, 0.88)], outline=color, width=lw)
+        draw.ellipse([P(0.42, 0.42), P(0.58, 0.58)], fill=color)
 
 
-def vignette(img, strength=0.55):
-    w, h = img.size
-    mask = Image.new("L", (w, h), 0)
-    d = ImageDraw.Draw(mask)
-    # 中心亮、四角暗
-    d.ellipse((-w // 3, -h // 4, w + w // 3, h + h // 4), fill=255)
-    mask = mask.filter(ImageFilter.GaussianBlur(radius=int(min(w, h) * 0.18)))
-    dark = ImageEnhance.Brightness(img).enhance(1 - strength)
-    return Image.composite(img, dark, mask)
+KINDS = ["bubble", "plane", "heart", "star", "note", "cat", "cloud", "bolt",
+         "mail", "pin", "moon", "flower", "smile", "bookmark", "wave", "atom"]
 
 
-def noise(img, amount=6):
-    w, h = img.size
-    rnd = random.Random(20261029)
-    small = Image.new("L", (w // 3, h // 3))
-    small.putdata([128 + rnd.randint(-amount, amount) for _ in range(small.width * small.height)])
-    grain = small.resize((w, h), Image.BILINEAR).filter(ImageFilter.GaussianBlur(0.6))
-    return ImageChops.add(img, Image.merge("RGB", (grain, grain, grain)), scale=2.0, offset=-64)
+def build_tile(seed=7):
+    rnd = random.Random(seed)
+    tile = Image.new("RGBA", (TILE, TILE), (0, 0, 0, 0))
+    cells = 3
+    step = TILE / cells
+    kinds = KINDS[:]
+    rnd.shuffle(kinds)
+    for row in range(cells):
+        for col in range(cells):
+            kind = kinds[(row * cells + col) % len(kinds)]
+            size = int(step * rnd.uniform(0.42, 0.62))
+            icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            alpha = rnd.randint(14, 24)
+            color = (255, 255, 255, alpha)
+            if kind in ("bolt", "plane", "star") and rnd.random() < 0.35:
+                color = (120, 170, 235, alpha + 4)
+            doodle(kind, size, ImageDraw.Draw(icon), color, 2)
+            icon = icon.rotate(rnd.uniform(-28, 28), resample=Image.BICUBIC, expand=True)
+            x = int(col * step + step / 2 - icon.width / 2 + rnd.uniform(-6, 6))
+            y = int(row * step + step / 2 - icon.height / 2 + rnd.uniform(-6, 6))
+            tile.alpha_composite(icon, (x, y))
+    return tile
 
 
-def build(soft=False):
-    src = Image.open(SRC).convert("RGB")
-    # 1) 铺满竖屏 + 重度模糊，只留色块与明暗
-    img = cover_resize(src, W, H)
-    img = img.filter(ImageFilter.GaussianBlur(radius=64 if not soft else 52))
-    # 2) 提高蓝调纯度
-    img = ImageEnhance.Color(img).enhance(1.45)
-    img = tint(img, (60, 115, 200), 0.24)
-    # 3) 压暗：先乘亮度，再与深蓝底色混合
-    img = ImageEnhance.Brightness(img).enhance(0.62 if not soft else 0.72)
-    img = Image.blend(Image.new("RGB", img.size, BASE), img, 0.62 if not soft else 0.52)
-    # 4) 顶部/底部渐变收暗，保证气泡与输入栏区域低对比
-    grad = Image.new("L", (1, H))
-    for y in range(H):
-        t = y / max(1, H - 1)
-        # 顶部 0.16 → 中间 0.02 → 底部 0.22
-        v = 0.10 * (1 - min(1, t / 0.32)) ** 2 + 0.16 * max(0, (t - 0.62) / 0.38) ** 1.6
-        grad.putpixel((0, y), int(255 * min(1, v)))
-    grad = grad.resize((W, H))
-    img = Image.composite(Image.new("RGB", img.size, PANEL), img, grad)
-    # 5) 暗角 + 极轻噪点
-    img = vignette(img, strength=0.5 if not soft else 0.42)
-    img = noise(img, amount=5)
-    # 6) 再压一点整体亮度到 ~18%
-    img = ImageEnhance.Brightness(img).enhance(0.95 if not soft else 1.02)
-    return img
-
-
-def previews(dark, soft_img):
-    """两版并排 + 叠加模拟气泡，检查可读性。"""
-    scale = 0.32
-    pw, ph = int(W * scale), int(H * scale)
-    canvas = Image.new("RGB", (pw * 2 + 36, ph + 56), (10, 14, 20))
-    for i, (img, label) in enumerate(((dark, "dark (默认)"), (soft_img, "soft"))):
-        thumb = img.resize((pw, ph), Image.LANCZOS)
-        d = ImageDraw.Draw(thumb)
-        # 顶栏
-        d.rectangle((0, 0, pw, 26), fill=(23, 33, 43))
-        d.text((8, 8), "DeepSeek House", fill=(255, 255, 255))
-        # 左侧 AI 气泡
-        d.rounded_rectangle((10, 60, int(pw * 0.72), 118), radius=14, fill=(24, 37, 51))
-        d.text((18, 72), "有什么可以帮你？", fill=(230, 238, 245))
-        # 右侧用户气泡
-        d.rounded_rectangle((int(pw * 0.42), 132, pw - 10, 178), radius=14, fill=(43, 82, 120))
-        d.text((int(pw * 0.46), 144), "介绍一下 DeepSeek", fill=(240, 246, 252))
-        # 输入栏
-        d.rectangle((0, ph - 30, pw, ph), fill=(23, 33, 43))
-        d.rounded_rectangle((38, ph - 26, pw - 44, ph - 6), radius=10, fill=(14, 22, 33))
-        canvas.paste(thumb, (12 + i * (pw + 12), 40))
-    canvas.save(os.path.join(INBOX, "wallpaper-preview.jpg"), quality=92)
+def sample_blue(src_path):
+    try:
+        img = Image.open(src_path).convert("RGB").resize((32, 32))
+        px = list(img.getdata())
+        px.sort(key=lambda c: (c[2] - c[0]), reverse=True)
+        top = px[: len(px) // 3]
+        r = sum(p[0] for p in top) // len(top)
+        g = sum(p[1] for p in top) // len(top)
+        b = sum(p[2] for p in top) // len(top)
+        return tuple(max(14, min(48, int(v * 0.16))) for v in (r, g, b))
+    except Exception:
+        return (20, 30, 42)
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    dark = build(soft=False)
-    soft = build(soft=True)
-    dark_path = os.path.join(OUT_DIR, "wallpaper.jpg")
-    soft_path = os.path.join(INBOX, "wallpaper-soft.jpg")
-    dark.save(dark_path, quality=82, optimize=True, progressive=True)
-    soft.save(soft_path, quality=82, optimize=True, progressive=True)
-    previews(dark, soft)
-    for p in (dark_path, soft_path):
-        print(p, os.path.getsize(p) // 1024, "KB")
-    print("preview:", os.path.join(INBOX, "wallpaper-preview.jpg"))
+    base = sample_blue(SRC)
+    print("sampled base:", base)
+
+    canvas = Image.new("RGB", (W, H), BASE)
+    top, bottom = (25, 36, 48), (15, 22, 32)
+    for y in range(H):
+        t = y / (H - 1)
+        shade = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+        ImageDraw.Draw(canvas).line([(0, y), (W, y)], fill=shade)
+    blue = Image.new("RGB", (W, H), base)
+    canvas = Image.blend(canvas, blue, 0.30)
+
+    tile = build_tile()
+    pattern = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    for y in range(0, H, TILE):
+        for x in range(0, W, TILE):
+            pattern.alpha_composite(tile, (x, y))
+    canvas = Image.alpha_composite(canvas.convert("RGBA"), pattern).convert("RGB")
+
+    mask = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(mask).ellipse((-W // 4, -H // 6, W + W // 4, H + H // 6), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(int(min(W, H) * 0.16)))
+    canvas = Image.composite(canvas, ImageEnhance.Brightness(canvas).enhance(0.82), mask)
+
+    rnd = random.Random(20261029)
+    small = Image.new("L", (W // 4, H // 4))
+    small.putdata([128 + rnd.randint(-4, 4) for _ in range(small.width * small.height)])
+    grain = small.resize((W, H), Image.BILINEAR)
+    canvas = Image.blend(canvas, Image.merge("RGB", (grain, grain, grain)), 0.03)
+
+    out = os.path.join(OUT_DIR, "wallpaper.jpg")
+    canvas.save(out, quality=88, optimize=True, progressive=True)
+    print(out, os.path.getsize(out) // 1024, "KB", canvas.size)
 
 
 if __name__ == "__main__":

@@ -87,8 +87,7 @@
           </svg>
         </button>
         <div class="topbar-title">
-          <div class="title">DeepSeek House</div>
-          <div class="subtitle" id="chats-subtitle">与 DeepSeek 对话</div>
+          <div class="title" id="chats-title">聊天</div>
         </div>
         <button class="icon-btn" type="button" data-action="toggle-chat-search" aria-label="搜索会话">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -96,7 +95,17 @@
             <path d="m20 20-3.4-3.4"></path>
           </svg>
         </button>
+        <button class="icon-btn" type="button" data-action="open-drawer" aria-label="更多">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle>
+          </svg>
+        </button>
       </header>
+
+      <div class="chat-tabs" id="chat-tabs" role="tablist" aria-label="会话筛选">
+        <button class="chat-tab is-active" type="button" role="tab" data-tab="all" aria-selected="true">全部</button>
+        <button class="chat-tab" type="button" role="tab" data-tab="unread" aria-selected="false">未读</button>
+      </div>
 
       <div class="chat-search" id="chat-search-wrap" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -151,7 +160,7 @@
             <path d="M15 5l-7 7 7 7"></path>
           </svg>
         </button>
-        <div class="chat-head-avatar" id="chat-head-avatar" aria-hidden="true">D</div>
+        <img class="chat-head-avatar" id="chat-head-avatar" src="img/agent-avatar.jpg" alt="" aria-hidden="true">
         <div class="topbar-title">
           <div class="title" id="header-title">DeepSeek House</div>
           <button class="subtitle subtitle--action" id="header-subtitle" type="button" data-action="open-model-picker" aria-label="选择模型"></button>
@@ -342,7 +351,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>1.0.3</span></div>
+          <div class="about-row"><span>版本</span><span>1.0.4</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -475,7 +484,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v1.0.3</span>
+      <span class="drawer-version">v1.0.4</span>
     </div>
   </aside>
 

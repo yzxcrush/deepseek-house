@@ -69,6 +69,7 @@
     searchQuery: '',
     searchTimer: 0,
     emojiOpen: false,
+    chatTab: 'all',
     chats: [],
     activeChatId: null,
 
@@ -974,6 +975,21 @@
     }
   }
 
+  function switchChatTab(tab) {
+    var next = tab === 'unread' ? 'unread' : 'all';
+    if (state.chatTab === next) return;
+    state.chatTab = next;
+    var tabs = document.querySelectorAll('#chat-tabs [data-tab]');
+    Array.prototype.forEach.call(tabs, function (node) {
+      var active = node.getAttribute('data-tab') === next;
+      node.classList.toggle('is-active', active);
+      node.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    renderChatListImpl(state.chats, state.activeChatId);
+    var homeList = r('chats-list');
+    if (homeList) homeList.scrollTop = 0;
+  }
+
   /* ------------------------------------------------------------------ *
    * 表情面板
    * ------------------------------------------------------------------ */
@@ -1039,8 +1055,13 @@
   function applyChatHeadAvatar(chat) {
     var node = r('chat-head-avatar');
     if (!node) return;
-    node.textContent = chat ? chatAvatarText(chat) : 'D';
-    node.className = 'chat-head-avatar' + (chat ? chatAvatarClass(chat.id) : '');
+    if (node.tagName === 'IMG') {
+      node.src = 'img/agent-avatar.jpg';
+      node.alt = chat && chat.title ? String(chat.title) : '';
+    } else {
+      node.textContent = chat ? chatAvatarText(chat) : 'D';
+      node.className = 'chat-head-avatar' + (chat ? chatAvatarClass(chat.id) : '');
+    }
   }
 
   /* ------------------------------------------------------------------ *
@@ -1113,19 +1134,26 @@
     item.setAttribute('data-id', String(chat.id));
     item.setAttribute('role', 'listitem');
 
-    var avatar = el('div', 'chat-avatar' + chatAvatarClass(chat.id));
+    /* 所有 DeepSeek 智能体统一使用 App 图标，靠名字区分 */
+    var avatar = document.createElement('img');
+    avatar.className = 'chat-avatar';
+    avatar.src = 'img/agent-avatar.jpg';
+    avatar.alt = '';
     avatar.setAttribute('aria-hidden', 'true');
-    avatar.textContent = chatAvatarText(chat);
 
     var body = el('div', 'chat-item-body');
     var top = el('div', 'chat-item-top');
-    top.appendChild(makeText('span', 'chat-item-title', chat.title || '新对话'));
+    top.appendChild(makeText('span', 'chat-item-title', chat.title || 'DeepSeek'));
     body.appendChild(top);
     body.appendChild(makeText('span', 'chat-item-preview', previewOf(chat)));
 
     var meta = el('div', 'chat-item-meta');
     meta.appendChild(makeText('span', 'chat-item-time', listTime(chat.updatedAt || chat.createdAt)));
-    if (chat.pinned) {
+    var unread = Math.max(0, parseInt(chat.unread, 10) || 0);
+    if (unread > 0 && state.chatTab !== 'unread') {
+      var badge = makeText('span', 'unread-badge', unread > 99 ? '99+' : String(unread));
+      meta.appendChild(badge);
+    } else if (chat.pinned) {
       var pin = el('span', 'chat-pin');
       pin.innerHTML = ICON_PIN;
       meta.appendChild(pin);
@@ -1152,35 +1180,42 @@
         return hay.toLowerCase().indexOf(query) >= 0;
       });
     }
-    var pinned = items.filter(function (chat) { return !!chat.pinned; });
-    var normal = items.filter(function (chat) { return !chat.pinned; });
+
+    var unreadTotal = 0;
+    items.forEach(function (chat) { unreadTotal += Math.max(0, parseInt(chat.unread, 10) || 0); });
+    var visible = state.chatTab === 'unread'
+      ? items.filter(function (chat) { return (parseInt(chat.unread, 10) || 0) > 0; })
+      : items;
 
     [homeList, drawerList].forEach(function (list) {
       if (!list) return;
       list.textContent = '';
-      if (pinned.length) {
-        list.appendChild(makeText('div', 'chat-group-label', '置顶'));
-        pinned.forEach(function (chat) { list.appendChild(buildChatItem(chat)); });
-        if (normal.length) list.appendChild(makeText('div', 'chat-group-label', '全部会话'));
-      }
-      normal.forEach(function (chat) { list.appendChild(buildChatItem(chat)); });
+      visible.forEach(function (chat) { list.appendChild(buildChatItem(chat)); });
     });
+
+    /* 标签页未读计数（Telegram 文件夹式） */
+    var unreadTab = document.querySelector('#chat-tabs [data-tab="unread"]');
+    if (unreadTab) {
+      unreadTab.textContent = unreadTotal > 0 ? '未读 ' + (unreadTotal > 99 ? '99+' : unreadTotal) : '未读';
+      unreadTab.classList.toggle('has-unread', unreadTotal > 0);
+    }
 
     var homeEmpty = r('chats-empty');
     if (homeEmpty) {
-      homeEmpty.hidden = items.length > 0;
-      if (!items.length) {
+      homeEmpty.hidden = visible.length > 0;
+      if (!visible.length) {
         var title = homeEmpty.querySelector('.chatlist-empty-title');
         var sub = homeEmpty.querySelector('.chatlist-empty-sub');
-        if (title) title.textContent = query ? '没有找到会话' : '还没有会话';
-        if (sub) sub.textContent = query ? '换个关键词试试' : '点右下角按钮，开始第一次对话';
+        var unreadMode = state.chatTab === 'unread';
+        if (title) title.textContent = query ? '没有找到会话' : (unreadMode ? '没有未读消息' : '还没有聊天');
+        if (sub) sub.textContent = query ? '换个关键词试试' : (unreadMode ? '所有消息都读过了' : '点右下角按钮，开始一段新对话');
       }
     }
 
     var empty = r('chat-list-empty');
     if (empty) {
-      empty.hidden = items.length > 0;
-      empty.textContent = items.length ? '' : (query ? '没有找到匹配的会话' : '暂无会话，点击「新建会话」开始');
+      empty.hidden = visible.length > 0;
+      empty.textContent = visible.length ? '' : (query ? '没有找到匹配的会话' : '暂无会话');
     }
   }
 
@@ -2376,6 +2411,13 @@
 
     if (state.menuOpen && !target.closest('#longpress')) closeMenu();
 
+    var tabNode = target.closest('#chat-tabs [data-tab]');
+    if (tabNode) {
+      switchChatTab(tabNode.getAttribute('data-tab'));
+      return;
+    }
+    if (target.closest('#chat-tabs')) return;
+
     var emojiNode = target.closest('[data-emoji]');
     if (emojiNode) {
       insertEmoji(emojiNode.getAttribute('data-emoji'));
@@ -2534,7 +2576,7 @@
     var ids = [
       'app', 'screens',
       'screen-login', 'screen-chats', 'screen-chat', 'screen-settings', 'screen-plugins',
-      'chats-list', 'chats-empty', 'chats-subtitle', 'chat-search-wrap', 'chat-search-input',
+      'chats-list', 'chats-empty', 'chats-title', 'chat-tabs', 'chat-search-wrap', 'chat-search-input',
       'chat-header', 'chat-head-avatar', 'emoji-panel', 'emoji-grid',
       'login-form', 'login-key', 'login-baseurl', 'login-error', 'login-submit', 'login-advanced',
       'header-title', 'header-subtitle',
@@ -2885,5 +2927,5 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.0.3';
+  UI.version = '1.0.4';
 })();

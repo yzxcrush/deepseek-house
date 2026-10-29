@@ -391,6 +391,22 @@ export function registerStaticTests() {
     ok(uiJs.indexOf('spawnRipple') !== -1 || css.indexOf('ripple-ink') !== -1, '缺少水波纹');
   });
 
+  test('Telegram 聊天列表：图标头像 / 未读徽章 / 文件夹标签 / 智能体命名（SPEC v1.4）', () => {
+    const html = readOrNull(path.join(WEB_DIR, 'index.html')) || '';
+    const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';
+    const uiJs = readOrNull(path.join(WEB_DIR, 'js', 'ui.js')) || '';
+    const appJs = readOrNull(path.join(WEB_DIR, 'js', 'app.js')) || '';
+    ok(html.indexOf('id="chat-tabs"') !== -1, '缺少「全部/未读」文件夹标签');
+    ok(html.indexOf('img/agent-avatar.jpg') !== -1, '对话页头像未使用 App 图标');
+    ok(css.indexOf('.unread-badge') !== -1, '缺少未读徽章样式');
+    ok(uiJs.indexOf('unread-badge') !== -1, '会话项未渲染未读徽章');
+    ok(uiJs.indexOf("avatar.src = 'img/agent-avatar.jpg'") !== -1, '会话列表头像未使用 App 图标');
+    ok(appJs.indexOf('defaultAgentTitle') !== -1, '缺少智能体默认命名（DeepSeek + 模型型号）');
+    ok(appJs.indexOf('incrementUnread') !== -1, '缺少未读计数逻辑');
+    const avatar = readOrNull(path.join(WEB_DIR, 'img', 'agent-avatar.jpg'));
+    ok(avatar && avatar.length > 4096, '智能体头像文件缺失');
+  });
+
   test('水印 @惜白. 出现在 UI 与导出（SPEC v1.2）', () => {
     const html = readOrNull(path.join(WEB_DIR, 'index.html')) || '';
     const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';

@@ -2805,3 +2805,71 @@
   .msg { animation: none; }
   .emoji-panel, .chat-search { animation: none; }
 }
+
+/* ==========================================================================
+   Telegram 聊天列表细调（v1.4）：大标题 / 文件夹标签 / 图标头像 / 未读徽章
+   ========================================================================== */
+
+.topbar--chats .title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.chat-tabs {
+  display: flex;
+  flex: none;
+  background-color: var(--header);
+  border-bottom: 1px solid var(--divider);
+}
+.chat-tab {
+  flex: 1 1 0;
+  position: relative;
+  height: 42px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  background: transparent;
+  transition: color 140ms ease;
+}
+.chat-tab.is-active { color: var(--accent-2); }
+.chat-tab.is-active::after {
+  content: "";
+  position: absolute; left: 22%; right: 22%; bottom: 0;
+  height: 3px; border-radius: 2px 2px 0 0;
+  background-color: var(--accent-2);
+}
+.chat-tab.has-unread { color: var(--text); }
+
+img.chat-avatar {
+  object-fit: cover;
+  background-color: var(--panel);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+img.chat-head-avatar {
+  object-fit: cover;
+  background-color: var(--panel);
+}
+
+.chat-item::after { left: 82px; right: 0; }
+.chat-item-meta { gap: 5px; }
+
+.unread-badge {
+  display: flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 22px; padding: 0 6px;
+  border-radius: 11px;
+  background-color: var(--accent);
+  color: #fff;
+  font-size: 12px; font-weight: 700; line-height: 1;
+}
+
+/* 壁纸层：让涂鸦可见，同时保持气泡/文字对比 */
+.chat-main {
+  background-image:
+    linear-gradient(180deg, rgba(23, 33, 43, 0.42), rgba(14, 22, 33, 0.58)),
+    url("../img/wallpaper.jpg");
+  background-size: cover, cover;
+  background-position: center center, center center;
+  background-repeat: no-repeat, no-repeat;
+}

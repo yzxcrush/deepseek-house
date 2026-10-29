@@ -55,6 +55,7 @@
 
   var MAX_INPUT = 8000;
   var MAX_TOOL_ROUNDS = 3;
+  var AUTO_TITLE = false; /* 会话名=智能体名，默认「DeepSeek + 模型型号」，不随首条消息自动改名 */
   var FLUSH_INTERVAL = 50;
   var TOAST_THROTTLE = 700;
 
@@ -325,6 +326,8 @@
     ui('setModel', state.prefs.model);
     applyModelLabel();
     refreshChatList();
+    try { if (typeof Store.clearUnread === 'function') Store.clearUnread(chat.id); } catch (e0) { /* ignore */ }
+    refreshChatList();
     ui('renderMessages', chat);
     ui('setChatAvatar', chat);
     ui('setStreaming', false);
@@ -342,7 +345,7 @@
       Store.setActiveChat(chats[0].id);
       return Store.getChat(chats[0].id);
     }
-    chat = Store.createChat({ model: state.prefs.model });
+    chat = Store.createChat({ model: state.prefs.model, title: defaultAgentTitle(state.prefs.model) });
     Store.setActiveChat(chat.id);
     return chat;
   }
@@ -744,6 +747,10 @@
       ui('updateMessage', aId, { content: '（未收到回复）' });
     }
     Store.touchChat(chatId);
+    if (typeof Store.incrementUnread === 'function') {
+      var viewing = String(Store.getActiveChatId()) === String(chatId) && state.nav && state.nav.screen === 'chat';
+      if (!viewing) Store.incrementUnread(chatId);
+    }
     finishBusy();
     maybeAutoTitle(chat, null);
     refreshChatList();
@@ -1018,6 +1025,7 @@
    * ------------------------------------------------------------------ */
 
   function maybeAutoTitle(chat, sourceText) {
+    if (!AUTO_TITLE) return;
     chat = chat || Store.getActiveChat();
     if (!chat) return;
     var title = String(chat.title || '');
@@ -1058,7 +1066,7 @@
       toast('已经是新会话');
       return;
     }
-    var chat = Store.createChat({ model: state.prefs.model });
+    var chat = Store.createChat({ model: state.prefs.model, title: defaultAgentTitle(state.prefs.model) });
     Store.setActiveChat(chat.id);
     closeDrawer();
     navTo('chat');
@@ -1084,7 +1092,7 @@
       Store.deleteChat(chat.id);
       var next = Store.getActiveChat();
       if (!next) {
-        next = Store.createChat({ model: state.prefs.model });
+        next = Store.createChat({ model: state.prefs.model, title: defaultAgentTitle(state.prefs.model) });
         Store.setActiveChat(next.id);
       }
       refreshChatList();
@@ -1314,6 +1322,20 @@
     return info ? info.label : humanizeModelId(id);
   }
 
+  /** 会话/智能体默认名：DeepSeek + 模型型号（如 DeepSeek V4 Pro） */
+  function defaultAgentTitle(modelId) {
+    var label = labelForModelId(modelId || state.prefs.model);
+    if (!label) return 'DeepSeek';
+    return /^deepseek/i.test(label) ? label : 'DeepSeek ' + label;
+  }
+
+  function isDefaultAgentTitle(title) {
+    var t = String(title || '');
+    if (!t) return true;
+    if (t === '新的对话' || t === '新对话') return true;
+    return t === defaultAgentTitle(state.prefs.model);
+  }
+
   function currentModelCatalog() {
     return catalogWithCurrent(buildModelCatalog(state.remoteModels, state.customModels), state.prefs.model);
   }
@@ -1387,10 +1409,19 @@
     } catch (e2) { warn('Bridge.setPrefs(model) 失败：' + errText(e2)); }
 
     var chat = Store.getActiveChat();
+    var previousDefaultTitle = chat ? defaultAgentTitle(state.prefs.model) : '';
     if (chat) {
       try {
         if (typeof Store.updateChat === 'function') Store.updateChat(chat.id, { model: modelId });
         chat.model = modelId;
+        /* 智能体名仍是默认名时，跟着模型一起变；用户自定义的名字不动 */
+        if (String(chat.title || '') === previousDefaultTitle) {
+          var newTitle = defaultAgentTitle(modelId);
+          Store.renameChat(chat.id, newTitle);
+          chat.title = newTitle;
+          if (state.nav && state.nav.screen === 'chat') ui('setHeader', { title: newTitle, subtitle: '' });
+          refreshChatList();
+        }
       } catch (e3) { warn('更新会话模型失败：' + errText(e3)); }
     }
 

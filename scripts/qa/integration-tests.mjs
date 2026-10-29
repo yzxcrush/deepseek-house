@@ -629,6 +629,56 @@ export function registerIntegrationTests() {
     ok(prev.role === 'assistant' && prev.toolCalls && prev.toolCalls.length, 'tool 消息前的 assistant 消息缺少 toolCalls');
   });
 
+  test('智能体默认名 = DeepSeek + 模型型号，可重命名；对话页头像为 App 图标', async () => {
+    const app = await loginIfNeeded();
+    const w = app.win;
+    clickAction('back-to-chats');
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
+    const before = w.Store.listChats().length;
+    clickAction('new-chat');
+    await waitFor(() => isScreenActive(w, 'screen-chat'), { timeout: 5000, label: '新建对话' });
+    await waitFor(() => w.Store.listChats().length > before, { timeout: 3000, label: '会话创建' });
+    const chat = w.Store.getActiveChat();
+    ok(/^DeepSeek/i.test(String(chat.title || '')), `智能体默认名应以 DeepSeek 开头，实际：${chat.title}`);
+    // 对话页头像为 App 图标图片
+    const headAvatar = $id('chat-head-avatar');
+    ok(headAvatar, '缺少对话页头像');
+    ok(headAvatar.tagName === 'IMG', '对话页头像应为图片');
+    includes(String(headAvatar.getAttribute('src') || ''), 'agent-avatar', '对话页头像应使用 App 图标');
+    // 可重命名
+    w.Store.renameChat(chat.id, '我的代码助手');
+    w.App.refreshChatList();
+    clickAction('back-to-chats');
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
+    await waitFor(() => $$('#chats-list .chat-item-title').some((n) => (n.textContent || '').indexOf('我的代码助手') !== -1),
+      { timeout: 3000, label: '重命名后的名字出现在列表' });
+  });
+
+  test('未读徽章与「未读」标签页筛选', async () => {
+    const app = await loginIfNeeded();
+    const w = app.win;
+    clickAction('back-to-chats');
+    await waitFor(() => isScreenActive(w, 'screen-chats'), { timeout: 3000, label: '回到会话列表' });
+    const chats = w.Store.listChats();
+    ok(chats.length >= 1, '缺少会话用于未读测试');
+    w.Store.incrementUnread(chats[0].id);
+    w.Store.incrementUnread(chats[0].id);
+    w.App.refreshChatList();
+    await waitFor(() => $$('#chats-list .unread-badge').length >= 1, { timeout: 3000, label: '未读徽章出现' });
+    equal($$('#chats-list .unread-badge')[0].textContent, '2', '未读徽章数量应为 2');
+    // 切到「未读」标签，只剩有未读的会话
+    click(w, w.document.querySelector('#chat-tabs [data-tab="unread"]'));
+    await waitFor(() => {
+      const tabs = w.document.querySelector('#chat-tabs [data-tab="unread"]');
+      return tabs && tabs.classList.contains('is-active');
+    }, { timeout: 3000, label: '未读标签激活' });
+    const unreadItems = $$('#chats-list .chat-item[data-id]');
+    equal(unreadItems.length, 1, '未读标签下应只显示有未读的会话');
+    // 回到全部
+    click(w, w.document.querySelector('#chat-tabs [data-tab="all"]'));
+    await waitFor(() => $$('#chats-list .chat-item[data-id]').length >= 2, { timeout: 3000, label: '全部标签恢复列表' });
+  });
+
   /* ---------------------------------------------------------------- *
    * SPEC v1.1 B3：深色锁定 + 模型选择器
    * ---------------------------------------------------------------- */
@@ -747,7 +797,10 @@ export function registerIntegrationTests() {
     w.App.refreshChatList();
     await waitFor(() => $$('#chats-list .chat-item[data-id]').length >= 2, { timeout: 3000, label: '会话列表渲染' });
     const item = $$('#chats-list .chat-item[data-id]')[0];
-    ok(item.querySelector('.chat-avatar'), '会话项缺少头像');
+    const avatar = item.querySelector('.chat-avatar');
+    ok(avatar, '会话项缺少头像');
+    ok(avatar.tagName === 'IMG', '会话头像应为图片（App 图标）');
+    includes(String(avatar.getAttribute('src') || ''), 'agent-avatar', '会话头像应使用 App 图标 agent-avatar');
     ok(item.querySelector('.chat-item-title'), '会话项缺少标题');
     ok(item.querySelector('.chat-item-preview'), '会话项缺少预览');
     ok(item.querySelector('.chat-item-time'), '会话项缺少时间');
