@@ -27,33 +27,109 @@ public final class ToolRegistry {
         return INSTANCE;
     }
 
-    /** 注册（同名覆盖）。 */
+    /** 注册（同 id 覆盖）。key 使用 {@link ToolDef#id()}。 */
     public void register(ToolDef def) {
         if (def == null) {
             return;
         }
         synchronized (lock) {
-            tools.put(def.name(), def);
+            tools.put(def.id(), def);
         }
     }
 
-    /** 注销，返回是否真的移除了。 */
-    public boolean unregister(String name) {
-        if (name == null) {
+    /** 注销（按 id 优先，其次按 OpenAI function 名），返回是否真的移除了。 */
+    public boolean unregister(String idOrName) {
+        if (idOrName == null) {
             return false;
         }
+        String key = idOrName.trim();
         synchronized (lock) {
-            return tools.remove(name.trim()) != null;
+            if (tools.remove(key) != null) {
+                return true;
+            }
+            java.util.Iterator<Map.Entry<String, ToolDef>> iterator = tools.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, ToolDef> entry = iterator.next();
+                if (entry.getValue().name().equals(key)) {
+                    iterator.remove();
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
-    public ToolDef find(String name) {
-        if (name == null) {
+    /** 查找：先按 id，再按 OpenAI function 名（MCP 工具的 OpenAI 名与 id 不同）。 */
+    public ToolDef find(String idOrName) {
+        if (idOrName == null) {
             return null;
         }
+        String key = idOrName.trim();
         synchronized (lock) {
-            return tools.get(name.trim());
+            ToolDef def = tools.get(key);
+            if (def != null) {
+                return def;
+            }
+            for (ToolDef item : tools.values()) {
+                if (item.name().equals(key)) {
+                    return item;
+                }
+            }
+            return null;
         }
+    }
+
+    /** 注销某个 MCP 服务器的全部远程工具（断开/重连前调用），返回移除数量。 */
+    public int removeRemote(String serverId) {
+        if (serverId == null || serverId.trim().isEmpty()) {
+            return 0;
+        }
+        String target = serverId.trim();
+        int removed = 0;
+        synchronized (lock) {
+            java.util.Iterator<Map.Entry<String, ToolDef>> iterator = tools.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, ToolDef> entry = iterator.next();
+                if (target.equals(entry.getValue().remote())) {
+                    iterator.remove();
+                    removed++;
+                }
+            }
+        }
+        return removed;
+    }
+
+    /** 注销所有远程（MCP）工具，返回移除数量（manager shutdown 兜底用）。 */
+    public int clearRemote() {
+        int removed = 0;
+        synchronized (lock) {
+            java.util.Iterator<Map.Entry<String, ToolDef>> iterator = tools.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, ToolDef> entry = iterator.next();
+                if (!entry.getValue().remote().isEmpty()) {
+                    iterator.remove();
+                    removed++;
+                }
+            }
+        }
+        return removed;
+    }
+
+    /** 某个 MCP 服务器已注册的工具快照。 */
+    public List<ToolDef> remoteTools(String serverId) {
+        List<ToolDef> result = new ArrayList<>();
+        if (serverId == null) {
+            return result;
+        }
+        String target = serverId.trim();
+        synchronized (lock) {
+            for (ToolDef def : tools.values()) {
+                if (target.equals(def.remote())) {
+                    result.add(def);
+                }
+            }
+        }
+        return result;
     }
 
     public boolean contains(String name) {

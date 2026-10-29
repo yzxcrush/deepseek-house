@@ -159,7 +159,14 @@
       demoCode: '',
       sent: false
     },
-    audit: []
+    audit: [],
+    /* ARCH v2 P2：MCP 服务器管理 */
+    mcp: {
+      servers: [],
+      statusMap: {},
+      editingId: '',
+      loading: false
+    }
   };
 
   var UI = {};
@@ -1162,12 +1169,13 @@
     if (state.screen === 'chats') base = 0;
     else if (state.screen === 'chat') base = 1;
     else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents' ||
-             state.screen === 'audit') base = 2;
+             state.screen === 'audit' || state.screen === 'mcp') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       state.agentPicker.open || state.fileDrawer.open ||
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) ||
-      isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal'));
+      isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal')) ||
+      isModalOpen(r('mcp-form-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1199,7 +1207,8 @@
     if (isModalOpen(r('confirm-modal'))) resolveConfirm(false);
     if (isModalOpen(r('rename-modal'))) resolveRename(null);
     if (isModalOpen(r('risk-modal'))) resolveRisk(false);
-    ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal'].forEach(function (id) {
+    ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal',
+      'mcp-form-modal'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -1834,6 +1843,9 @@
       card.resultSummary.title = hasResult ? resultText.replace(/\s+/g, ' ').trim() : '';
       refs.lastToolResult = resultText;
     }
+
+    /* ARCH v2 P2：构建类工具进度条 + 日志流 */
+    applyToolBuildFields(msg, refs);
   }
 
   /* ================================================================== *
@@ -2205,6 +2217,537 @@
     copyText(text);
   }
 
+  /* ================================================================== *
+   * ARCH v2 P2：MCP 服务器管理页
+   * list: [{id,name,url,token?,enabled?}]
+   * statusMap: { id: 'connected'|'connecting'|'disconnected'|'error' } 或
+   *            { id: {status,message?,toolCount?,tools?:[{name}]} }
+   * ================================================================== */
+  function normalizeMcpStatus(value) {
+    var status = '';
+    var message = '';
+    var tools = null;
+    var toolCount = null;
+    if (typeof value === 'string') {
+      status = value;
+    } else if (value && typeof value === 'object') {
+      status = value.status == null ? '' : String(value.status);
+      message = value.message == null ? '' : String(value.message);
+      if (Array.isArray(value.tools)) tools = value.tools;
+      if (value.toolCount != null) {
+        var count = parseInt(value.toolCount, 10);
+        if (isFinite(count)) toolCount = Math.max(0, count);
+      }
+    }
+    status = status.toLowerCase();
+    if (status === 'ready' || status === 'online' || status === 'ok') status = 'connected';
+    else if (status === 'connecting' || status === 'reconnecting' || status === 'pending') status = 'connecting';
+    else if (status === 'error' || status === 'failed' || status === 'fail') status = 'error';
+    else if (status !== 'connected') status = 'disconnected';
+    return { status: status, message: message, tools: tools, toolCount: toolCount };
+  }
+
+  function normalizeMcpList(list) {
+    var out = [];
+    (Array.isArray(list) ? list : []).forEach(function (item, index) {
+      if (!item || typeof item !== 'object') return;
+      var id = item.id != null ? String(item.id)
+        : (item.serverId != null ? String(item.serverId) : ('mcp_' + index));
+      out.push({
+        id: id,
+        name: item.name ? String(item.name) : ('MCP 服务器 ' + (index + 1)),
+        url: item.url ? String(item.url) : '',
+        token: item.token == null ? '' : String(item.token),
+        enabled: item.enabled !== false,
+        tools: Array.isArray(item.tools) ? item.tools.slice() : null,
+        toolCount: item.toolCount,
+        status: item.status,
+        lastMessage: item.lastMessage
+      });
+    });
+    return out;
+  }
+
+  function mcpStatusFor(server) {
+    var map = state.mcp.statusMap || {};
+    var entry = map[server.id];
+    if (entry == null && server.status != null) {
+      entry = {
+        status: server.status,
+        message: server.lastMessage,
+        toolCount: server.toolCount,
+        tools: server.tools
+      };
+    }
+    return normalizeMcpStatus(entry);
+  }
+
+  function mcpToolCount(server, status) {
+    if (status && Array.isArray(status.tools)) return status.tools.length;
+    if (status && status.toolCount != null) return status.toolCount;
+    if (server && Array.isArray(server.tools)) return server.tools.length;
+    if (server && server.toolCount != null) {
+      var count = parseInt(server.toolCount, 10);
+      if (isFinite(count)) return Math.max(0, count);
+    }
+    return 0;
+  }
+
+  function mcpStatusText(status) {
+    if (!status) return '未连接';
+    if (status.status === 'connected') return '已连接';
+    if (status.status === 'connecting') return '连接中…';
+    if (status.status === 'error') return status.message ? ('连接失败：' + status.message) : '连接失败';
+    return '未连接';
+  }
+
+  function updateMcpCounts() {
+    var servers = state.mcp.servers || [];
+    var connected = 0;
+    servers.forEach(function (server) {
+      if (mcpStatusFor(server).status === 'connected') connected += 1;
+    });
+    var rowValue = r('set-mcp-count');
+    if (rowValue) rowValue.textContent = servers.length ? (servers.length + ' 个 · ' + connected + ' 已连接') : '未配置';
+    var subtitle = r('mcp-count');
+    if (subtitle) subtitle.textContent = servers.length
+      ? (servers.length + ' 个服务器 · ' + connected + ' 已连接')
+      : '管理外部工具服务器';
+    var empty = r('mcp-empty');
+    if (empty) empty.hidden = servers.length > 0;
+  }
+
+  function buildMcpRow(server) {
+    var status = mcpStatusFor(server);
+    var row = el('div', 'mcp-row');
+    row.setAttribute('data-mcp-id', server.id);
+    row.setAttribute('data-id', server.id);
+    row.setAttribute('data-action', 'mcp-edit');
+    row.setAttribute('role', 'listitem');
+    row.setAttribute('aria-label', '编辑 ' + server.name);
+
+    var top = el('div', 'mcp-row-top');
+    top.appendChild(el('span', 'mcp-dot mcp-dot--' + status.status));
+
+    var main = el('div', 'mcp-row-main');
+    var nameRow = el('div', 'mcp-row-name');
+    nameRow.appendChild(makeText('span', 'mcp-row-name-text', server.name));
+    var badgeLabel = status.status === 'connected' ? '已连接'
+      : (status.status === 'connecting' ? '连接中' : (status.status === 'error' ? '错误' : '未连接'));
+    nameRow.appendChild(makeText('span', 'mcp-status-badge mcp-status-badge--' + status.status, badgeLabel));
+    main.appendChild(nameRow);
+    main.appendChild(makeText('div', 'mcp-row-url', server.url || '未填写 URL'));
+    var sub = makeText('div', 'mcp-row-sub', '工具 ' + mcpToolCount(server, status) + ' 个 · ' + mcpStatusText(status));
+    if (status.status === 'error') sub.classList.add('is-error');
+    main.appendChild(sub);
+    top.appendChild(main);
+    row.appendChild(top);
+
+    var actions = el('div', 'mcp-row-actions');
+    function addAction(action, label, extraCls) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'mcp-act' + (extraCls ? ' ' + extraCls : '');
+      btn.setAttribute('data-action', action);
+      btn.setAttribute('data-id', server.id);
+      btn.textContent = label;
+      actions.appendChild(btn);
+      return btn;
+    }
+    if (status.status === 'connected') {
+      addAction('mcp-disconnect', '断开');
+      addAction('mcp-refresh', '刷新工具');
+    } else if (status.status === 'connecting') {
+      addAction('mcp-disconnect', '取消连接');
+    } else {
+      addAction('mcp-connect', '连接', 'mcp-act--primary');
+      addAction('mcp-test', '测试');
+    }
+    addAction('mcp-edit', '编辑');
+    addAction('mcp-delete', '删除', 'mcp-act--danger');
+    row.appendChild(actions);
+    return row;
+  }
+
+  function renderMcpRows() {
+    var list = r('mcp-list');
+    if (list) {
+      list.textContent = '';
+      (state.mcp.servers || []).forEach(function (server) {
+        list.appendChild(buildMcpRow(server));
+      });
+    }
+    updateMcpCounts();
+    return state.mcp.servers;
+  }
+
+  function renderMcpServers(list, statusMap) {
+    state.mcp.servers = normalizeMcpList(list);
+    if (statusMap && typeof statusMap === 'object' && !Array.isArray(statusMap)) {
+      var next = {};
+      Object.keys(statusMap).forEach(function (key) {
+        next[String(key)] = normalizeMcpStatus(statusMap[key]);
+      });
+      state.mcp.statusMap = next;
+    }
+    state.mcp.loading = false;
+    return renderMcpRows();
+  }
+
+  function setMcpStatus(id, status) {
+    if (id == null) return null;
+    var key = String(id);
+    state.mcp.statusMap = state.mcp.statusMap || {};
+    state.mcp.statusMap[key] = normalizeMcpStatus(status);
+    renderMcpRows();
+    return state.mcp.statusMap[key];
+  }
+
+  function loadMcpServers() {
+    if (invoke('onOpenMcp')) return true;
+    if (invoke('onMcpList')) return true;
+    renderMcpRows();
+    return false;
+  }
+
+  function openMcpPage() {
+    showScreenImpl('mcp');
+    loadMcpServers();
+  }
+
+  function refreshMcpPage() {
+    if (!loadMcpServers()) UI.toast('MCP 服务尚未就绪');
+  }
+
+  function findMcpServer(id) {
+    var key = String(id == null ? '' : id);
+    var found = null;
+    (state.mcp.servers || []).forEach(function (server) {
+      if (server.id === key) found = server;
+    });
+    return found;
+  }
+
+  function setMcpFormError(text) {
+    var error = r('mcp-form-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function showMcpFormError(text) {
+    setMcpFormError(text);
+    var input = r('mcp-form-url');
+    if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+  }
+
+  function openMcpServerForm(server) {
+    var target = server;
+    if (typeof server === 'string') target = findMcpServer(server);
+    if (!target || typeof target !== 'object') target = null;
+    state.mcp.editingId = target && target.id ? String(target.id) : '';
+
+    var nameInput = r('mcp-form-name');
+    var urlInput = r('mcp-form-url');
+    var tokenInput = r('mcp-form-token');
+    if (nameInput) nameInput.value = target ? String(target.name || '') : '';
+    if (urlInput) urlInput.value = target ? String(target.url || '') : '';
+    if (tokenInput) {
+      tokenInput.value = target ? String(target.token || '') : '';
+      tokenInput.type = 'password';
+    }
+    var toggle = document.querySelector('[data-action="mcp-toggle-token"]');
+    if (toggle) toggle.classList.remove('is-on');
+    var title = r('mcp-form-title');
+    if (title) title.textContent = state.mcp.editingId ? '编辑 MCP 服务器' : '添加 MCP 服务器';
+    var save = r('mcp-form-save');
+    if (save) save.textContent = state.mcp.editingId ? '保存并重新连接' : '保存并连接';
+    setMcpFormError('');
+    openModal(r('mcp-form-modal'));
+    setTimeout(function () {
+      if (!nameInput) return;
+      try { nameInput.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function closeMcpForm() {
+    closeModal(r('mcp-form-modal'));
+    state.mcp.editingId = '';
+    setMcpFormError('');
+  }
+
+  function toggleMcpToken() {
+    var input = r('mcp-form-token');
+    if (!input) return;
+    var show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    var btn = document.querySelector('[data-action="mcp-toggle-token"]');
+    if (btn) {
+      btn.classList.toggle('is-on', show);
+      btn.setAttribute('aria-label', show ? '隐藏 Token' : '显示或隐藏 Token');
+    }
+  }
+
+  function mcpDefaultName(url) {
+    var value = String(url || '');
+    var match = /^(?:https?:\/\/)?([^/?#]+)/i.exec(value);
+    return match && match[1] ? match[1] : 'MCP 服务器';
+  }
+
+  function submitMcpForm() {
+    var nameInput = r('mcp-form-name');
+    var urlInput = r('mcp-form-url');
+    var tokenInput = r('mcp-form-token');
+    var url = urlInput ? String(urlInput.value || '').trim() : '';
+    var name = nameInput ? String(nameInput.value || '').trim() : '';
+    var token = tokenInput ? String(tokenInput.value || '').trim() : '';
+    if (!url) {
+      showMcpFormError('请输入服务器 URL');
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      showMcpFormError('URL 需以 http:// 或 https:// 开头');
+      return;
+    }
+    if (!name) name = mcpDefaultName(url);
+    var payload = { name: name, url: url.replace(/\s+/g, ''), token: token, enabled: true, connect: true };
+    if (state.mcp.editingId) payload.id = state.mcp.editingId;
+    setMcpFormError('');
+    if (!invoke('onMcpSave', payload)) {
+      setMcpFormError('MCP 服务尚未就绪');
+      return;
+    }
+    closeMcpForm();
+  }
+
+  function deleteMcpServer(id) {
+    var server = findMcpServer(id);
+    var name = server && server.name ? '「' + server.name + '」' : '该 MCP 服务器';
+    confirmDialog('删除 MCP 服务器', '确定删除' + name + '吗？删除后其工具会立即从模型中移除。').then(function (ok) {
+      if (ok) invoke('onMcpDelete', id);
+    });
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P2：构建类工具卡（进度条 + 日志流）
+   * ================================================================== */
+  var BUILD_TOOL_NAMES = { pack_apk: 1, repack_apk: 1, decompile_apk: 1, run_gradle: 1 };
+
+  function isBuildToolName(name) {
+    var value = String(name == null ? '' : name).toLowerCase();
+    if (!value) return false;
+    if (BUILD_TOOL_NAMES[value]) return true;
+    var idx = value.lastIndexOf(':');
+    return idx >= 0 && !!BUILD_TOOL_NAMES[value.slice(idx + 1)];
+  }
+
+  function clampPercent(value) {
+    var n = Number(value);
+    if (!isFinite(n)) return null;
+    return Math.max(0, Math.min(100, Math.round(n)));
+  }
+
+  function buildLogLines(value) {
+    var out = [];
+    if (value == null) return out;
+    if (Array.isArray(value)) {
+      value.forEach(function (item) {
+        String(item == null ? '' : item).split('\n').forEach(function (line) { out.push(line); });
+      });
+    } else {
+      String(value).split('\n').forEach(function (line) { out.push(line); });
+    }
+    return out;
+  }
+
+  function ensureToolBuildNodes(refs) {
+    if (refs.toolBuild) return refs.toolBuild;
+    var card = refs.toolCard;
+    if (!card) return null;
+
+    var wrap = el('div', 'tool-progress');
+    wrap.hidden = true;
+    var head = el('div', 'tool-progress-head');
+    var label = makeText('span', 'tool-progress-label', '构建中…');
+    var percentEl = makeText('span', 'tool-progress-percent', '0%');
+    head.appendChild(label);
+    head.appendChild(percentEl);
+    var track = el('div', 'tool-progress-track');
+    var fill = el('div', 'tool-progress-fill');
+    track.appendChild(fill);
+    wrap.appendChild(head);
+    wrap.appendChild(track);
+
+    var logDetails = document.createElement('details');
+    logDetails.className = 'tool-details tool-log-details';
+    logDetails.hidden = true;
+    var summary = document.createElement('summary');
+    summary.appendChild(makeText('span', 'tool-details-label', '构建日志'));
+    var countEl = makeText('span', 'tool-log-count', '0 行');
+    summary.appendChild(countEl);
+    var caret = el('span', 'tool-details-caret');
+    caret.innerHTML = ICON.chevronDown;
+    summary.appendChild(caret);
+    var logPre = el('pre', 'tool-log');
+    logDetails.appendChild(summary);
+    logDetails.appendChild(logPre);
+    logDetails.addEventListener('toggle', function () {
+      if (logDetails.open) logPre.scrollTop = logPre.scrollHeight;
+    });
+
+    if (card.result && card.result.parentNode === card.card) {
+      card.card.insertBefore(wrap, card.result);
+      card.card.insertBefore(logDetails, card.result);
+    } else {
+      card.card.appendChild(wrap);
+      card.card.appendChild(logDetails);
+    }
+
+    refs.toolBuild = {
+      wrap: wrap,
+      label: label,
+      percentEl: percentEl,
+      fill: fill,
+      logDetails: logDetails,
+      logCount: countEl,
+      logPre: logPre,
+      lines: [],
+      percent: -1,
+      lastLogKey: ''
+    };
+    return refs.toolBuild;
+  }
+
+  function setToolBuildLog(refs, lines) {
+    var build = ensureToolBuildNodes(refs);
+    if (!build) return;
+    var next = (Array.isArray(lines) ? lines : []).slice(-200);
+    build.lines = next;
+    build.logPre.textContent = next.join('\n');
+    build.logDetails.hidden = next.length === 0;
+    build.logCount.textContent = next.length + ' 行';
+    if (next.length) build.logPre.scrollTop = build.logPre.scrollHeight;
+  }
+
+  function collectToolProgress(msg) {
+    var source = msg || {};
+    var progress = null;
+    if (source.progress != null) {
+      progress = typeof source.progress === 'number' ? { percent: source.progress } : source.progress;
+    }
+    if (!progress && source.toolProgress != null) {
+      progress = typeof source.toolProgress === 'number' ? { percent: source.toolProgress } : source.toolProgress;
+    }
+    if (!progress && source.percent != null) progress = { percent: source.percent };
+    var percent = progress && progress.percent != null ? clampPercent(progress.percent) : null;
+    var status = progress && progress.status != null ? String(progress.status) : '';
+    var line = progress && progress.line != null ? String(progress.line) : '';
+    return { percent: percent, status: status, line: line };
+  }
+
+  function applyToolBuildFields(msg, refs) {
+    var name = msg.toolName || msg.name || '';
+    if (!isBuildToolName(name)) {
+      if (refs.toolBuild) {
+        refs.toolBuild.wrap.hidden = true;
+        refs.toolBuild.logDetails.hidden = true;
+      }
+      return;
+    }
+    var build = ensureToolBuildNodes(refs);
+    if (!build) return;
+    var info = collectToolProgress(msg);
+    var percent = info.percent;
+    /* 完成/失败为权威状态：成功后强制 100%，失败保留当前进度 */
+    if (msg.ok === true) percent = 100;
+    else if (percent == null) percent = 0;
+    var failed = msg.ok === false;
+    var done = percent >= 100 || msg.ok === true;
+    var statusKey = String(info.status || '').toLowerCase();
+    var statusText;
+    if (failed) statusText = '构建失败';
+    else if (statusKey === 'pending' || statusKey === 'waiting') statusText = '等待确认…';
+    else if (statusKey === 'rejected' || statusKey === 'denied') statusText = '已拒绝';
+    else if (statusKey === 'error' || statusKey === 'failed') statusText = '构建失败';
+    else if (percent >= 100) statusText = '完成';
+    else if (statusKey === 'running' || statusKey === 'executing' || statusKey === 'success' ||
+             statusKey === 'done' || statusKey === 'ok') statusText = '构建中…';
+    else statusText = info.status || (done ? '完成' : '构建中…');
+
+    build.wrap.hidden = false;
+    build.wrap.classList.toggle('is-done', done && !failed);
+    build.wrap.classList.toggle('is-error', failed);
+    if (build.percent !== percent) {
+      build.fill.style.width = percent + '%';
+      build.percentEl.textContent = percent + '%';
+      build.percent = percent;
+    }
+    if (build.label.textContent !== statusText) build.label.textContent = statusText;
+
+    /* 日志来源：消息字段（msg.logs/toolLog/log）为主；仅当没有日志时退回当前进度行 */
+    var lines = buildLogLines(msg.logs != null ? msg.logs : (msg.toolLog != null ? msg.toolLog : msg.log));
+    if (!lines.length && info.line) lines = buildLogLines(info.line);
+    var key = lines.length + '|' + (lines.length ? lines[lines.length - 1] : '');
+    if (build.lastLogKey !== key) {
+      setToolBuildLog(refs, lines);
+      build.lastLogKey = key;
+    }
+  }
+
+  /** 追加日志行（同一行连续重复时去重：app.js 会同时调 setToolProgress(line) 与 appendToolLog） */
+  function pushToolLogLines(msg, text) {
+    if (text == null || String(text) === '') return false;
+    var logs = Array.isArray(msg.logs) ? msg.logs.slice() : [];
+    var added = false;
+    String(text).split('\n').forEach(function (piece) {
+      if (logs.length && logs[logs.length - 1] === piece) return;
+      logs.push(piece);
+      added = true;
+    });
+    if (added) msg.logs = logs.slice(-200);
+    return added;
+  }
+
+  function setToolProgress(msgId, data) {
+    if (msgId == null) return null;
+    var id = String(msgId);
+    var options = data && typeof data === 'object' ? data : { percent: data };
+    var msg = state.msgData[id];
+    if (!msg) {
+      msg = { id: msgId, role: 'tool', toolName: '', content: '' };
+      state.msgData[id] = msg;
+    }
+    var progress = msg.progress && typeof msg.progress === 'object' ? msg.progress : {};
+    var percent = options.percent != null ? clampPercent(options.percent) : null;
+    if (percent != null) {
+      progress.percent = percent;
+      msg.percent = percent;
+    }
+    if (options.status != null) progress.status = String(options.status);
+    if (options.line != null) progress.line = String(options.line);
+    msg.progress = progress;
+    if (options.line != null) pushToolLogLines(msg, options.line);
+    var refs = state.msgNodes[id];
+    if (refs && refs.toolCard) applyToolBuildFields(msg, refs);
+    return progress;
+  }
+
+  function appendToolLog(msgId, line) {
+    if (msgId == null || line == null) return null;
+    var id = String(msgId);
+    var msg = state.msgData[id];
+    if (!msg) {
+      msg = { id: msgId, role: 'tool', toolName: '', content: '' };
+      state.msgData[id] = msg;
+    }
+    var added = pushToolLogLines(msg, String(line));
+    var refs = state.msgNodes[id];
+    if (refs && refs.toolCard) applyToolBuildFields(msg, refs);
+    return added;
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -2217,7 +2760,8 @@
     settings: 'screen-settings',
     plugins: 'screen-plugins',
     agents: 'screen-agents',
-    audit: 'screen-audit'
+    audit: 'screen-audit',
+    mcp: 'screen-mcp'
   };
 
   function syncBottomNav(name) {
@@ -3854,6 +4398,12 @@
       showScreenImpl('profile');
       return;
     }
+    /* ARCH v2 P2：MCP 页返回设置页 */
+    if (state.screen === 'mcp') {
+      showScreenImpl('settings');
+      if (typeof state.cb.onCloseMcp === 'function') invoke('onCloseMcp');
+      return;
+    }
     /* 智能体预设管理页：优先用 onCloseAgents 恢复导航，否则交给 app.js 的 onBack */
     if (state.screen === 'agents' && typeof state.cb.onCloseAgents === 'function') {
       invoke('onCloseAgents');
@@ -3870,6 +4420,7 @@
     if (isModalOpen(r('risk-modal'))) { resolveRisk(false); return true; }
     if (isModalOpen(r('backup-modal'))) { closeModal(r('backup-modal')); return true; }
     if (isModalOpen(r('file-preview-modal'))) { closeFilePreview(); return true; }
+    if (isModalOpen(r('mcp-form-modal'))) { closeMcpForm(); return true; }
     if (state.fileDrawer.open) { closeFileDrawer(); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
     if (state.agentPicker.open) { closeAgentPickerPanel(true); return true; }
@@ -3877,6 +4428,7 @@
     if (state.emojiOpen) { closeEmojiPanel(); return true; }
     if (state.terminal.open) { toggleTerminal(false); return true; }
     if (state.screen === 'audit') { showScreenImpl('profile'); return true; }
+    if (state.screen === 'mcp') { showScreenImpl('settings'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -4038,6 +4590,45 @@
         break;
       case 'refresh-audit':
         refreshAudit();
+        break;
+      /* -------- ARCH v2 P2：MCP 服务器管理 -------- */
+      case 'open-mcp':
+        openMcpPage();
+        break;
+      case 'mcp-page-refresh':
+        refreshMcpPage();
+        break;
+      case 'mcp-add':
+        openMcpServerForm();
+        break;
+      case 'mcp-edit': {
+        var editId = node.getAttribute('data-id') || node.getAttribute('data-mcp-id');
+        openMcpServerForm(editId);
+        break;
+      }
+      case 'mcp-connect':
+        if (!invoke('onMcpConnect', node.getAttribute('data-id'))) UI.toast('MCP 服务尚未就绪');
+        break;
+      case 'mcp-disconnect':
+        if (!invoke('onMcpDisconnect', node.getAttribute('data-id'))) UI.toast('MCP 服务尚未就绪');
+        break;
+      case 'mcp-refresh':
+        if (!invoke('onMcpRefresh', node.getAttribute('data-id'))) UI.toast('MCP 服务尚未就绪');
+        break;
+      case 'mcp-test':
+        if (!invoke('onMcpTest', node.getAttribute('data-id'))) UI.toast('MCP 服务尚未就绪');
+        break;
+      case 'mcp-delete':
+        deleteMcpServer(node.getAttribute('data-id'));
+        break;
+      case 'mcp-form-save':
+        submitMcpForm();
+        break;
+      case 'mcp-form-cancel':
+        closeMcpForm();
+        break;
+      case 'mcp-toggle-token':
+        toggleMcpToken();
         break;
       case 'open-backup':
         openModal(r('backup-modal'));
@@ -4358,6 +4949,13 @@
       }
       return;
     }
+    if (target.id === 'mcp-form-name' || target.id === 'mcp-form-url' || target.id === 'mcp-form-token') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        submitMcpForm();
+      }
+      return;
+    }
     if (target.id === 'model-picker-custom-input') {
       if (key === 'Enter') {
         event.preventDefault();
@@ -4429,6 +5027,7 @@
     bindModalBackdrop(r('risk-modal'), function () { resolveRisk(false); });
     bindModalBackdrop(r('backup-modal'), function () { closeModal(r('backup-modal')); });
     bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
+    bindModalBackdrop(r('mcp-form-modal'), function () { closeMcpForm(); });
     bindModelPickerEvents();
     bindAgentPickerEvents();
     bindFileDrawerDrag();
@@ -4482,7 +5081,12 @@
       'login-phone-submit', 'login-phone-error', 'login-otp-hint',
       'set-workspace-row', 'set-workspace-value', 'set-workspace-writable',
       'set-workspace-access', 'set-workspace-reset', 'set-workspace-reset-hint',
-      'screen-audit', 'audit-list', 'audit-empty', 'audit-count'
+      'screen-audit', 'audit-list', 'audit-empty', 'audit-count',
+      /* ARCH v2 P2：MCP 服务器管理 + 构建进度 */
+      'screen-mcp', 'mcp-list', 'mcp-empty', 'mcp-count', 'mcp-add',
+      'set-mcp-row', 'set-mcp-count',
+      'mcp-form-modal', 'mcp-form-title', 'mcp-form-name', 'mcp-form-url',
+      'mcp-form-token', 'mcp-form-error', 'mcp-form-save'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -5015,5 +5619,17 @@
   UI.previewFile = openFilePreview;
   UI.closeFilePreview = closeFilePreview;
 
-  UI.version = '2.0.0';
+  /* ARCH v2 P2：MCP 服务器管理 + 构建进度工具卡 */
+  UI.renderMcpServers = function (list, statusMap) { return renderMcpServers(list, statusMap); };
+  UI.openMcpServerForm = openMcpServerForm;
+  UI.closeMcpForm = closeMcpForm;
+  UI.openMcpPage = openMcpPage;
+  UI.refreshMcpPage = refreshMcpPage;
+  UI.setMcpStatus = function (id, status) { return setMcpStatus(id, status); };
+  UI.getMcpServers = function () { return (state.mcp.servers || []).slice(); };
+  UI.getMcpStatusMap = function () { return state.mcp.statusMap || {}; };
+  UI.setToolProgress = function (msgId, data) { return setToolProgress(msgId, data); };
+  UI.appendToolLog = function (msgId, line) { return appendToolLog(msgId, line); };
+
+  UI.version = '2.1.0';
 })();

@@ -25,7 +25,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.0.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.1.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -45,20 +45,20 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.0.0.apk`
+产物：`dist/DeepSeekHouse-2.1.0.apk`
 
 ### 云端构建（GitHub Actions）
 
 推 tag 或手动触发 `Build & Release APK` workflow 即可：
 
 ```bash
-git tag v2.0.0 && git push origin v2.0.0
+git tag v2.1.0 && git push origin v2.1.0
 ```
 
 CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → `apksigner verify` → 上传 artifact →
 创建 Release 并附上 APK 与 SHA256。手机上直接从 Release 下载安装即可。
 
-## 🤖 Agent 工作站（P1，v2.0.0）
+## 🤖 Agent 工作站（P1，v2.1.0）
 
 从「聊天客户端」升级为手机端本地 Agent 工作站的第一阶段，**纯 Java + 现有手工构建链，无 Gradle/AndroidX**：
 

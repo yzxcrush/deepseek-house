@@ -391,3 +391,54 @@ void    logout()
 1. `node scripts/check-js.mjs` + `bash scripts/check-assets.sh` 通过；`javac` 0 error。
 2. 真机（root 安装）验证：文件树能列出工作区、终端能执行 `echo hi`、AI 触发 read_file 会走确认/结果卡片、手机号登录可用本地验证码完成、审计日志有记录。
 3. 无 AndroidX/Gradle/Kotlin 依赖；APK 体积增长 ≤300KB。
+
+---
+
+# ARCH v2 P2（2026-10-29）：MCP Client + Termux 构建服务
+模块二 + 模块六。目标版本 v2.1.0。纯 Java/WebView/Python 标准库，无第三方 SDK。
+
+## 写入归属
+- `native`：`app/src/main/java/com/deepseekhouse/app/mcp/**`（新包）+ JsBridge/Prefs/Agent 工具注册
+- `ui`：index.html / css/** / js/ui.js
+- `logic`：app.js / store.js / bridge.js
+- `mcp-server`：`termux-mcp/**`（Python MCP Server + 安装/启动脚本 + README）
+- 构建/发布/真机：Lead
+
+## N2. MCP Client（Java）
+- 协议：JSON-RPC 2.0 over **streamable-http**：POST `{url}`，Header `Content-Type: application/json`、`Accept: application/json, text/event-stream`、可选 `Authorization: Bearer <token>`；响应可能是 application/json 单对象，或 `text/event-stream`（逐行 `data: {json}`，取 responses）。
+- 生命周期：`initialize`（protocolVersion `2024-11-05`，capabilities {}，clientInfo {name:"DeepSeekHouse",version}）→ `notifications/initialized` → `tools/list` → `tools/call`。每服务器维护 requestId 递增、pending 表、后台线程。
+- 连接管理：connect/disconnect/reconnect（指数退避 1s/2s/4s/8s/最大 30s）/heartbeat（每 25s `tools/list` 或 `ping`）。
+- 工具发现：`tools/list` 结果 `{tools:[{name,description,inputSchema}]}` → 注册到 ToolRegistry：id `mcp:<serverId>:<name>`，显示名 `<name>`，risk=MID、needConfirm=true、remote=serverId；断开后注销。
+- 调用转发：execTool 命中 remote 工具 → `tools/call {name, arguments}` → 解析 `result.content[]` 里的 `{type:"text",text}` 拼接，返回 tool-result；失败返回错误串。审计记录 serverId。
+- 配置：`Prefs` 存 JSON `mcpServers:[{id,name,url,token,enabled}]`。
+- JsBridge 新方法：`String mcpServers()`；`boolean mcpSaveServer(String json)`（无 id 自动生成）；`void mcpDeleteServer(String id)`；`void mcpConnect(String id)`；`void mcpDisconnect(String id)`；`void mcpRefreshTools(String id)`。
+- 事件：`{"type":"mcp-status","id":..,"status":"connecting|connected|disconnected|error","message":".."}`；`{"type":"mcp-tools","id":..,"tools":[{name,description}]}`；调用结果复用 `tool-result`（result 为文本；meta.serverId 可选）。
+
+## U2. UI
+- 设置页新增「MCP 服务器」入口 → 管理页：列表行（名称、URL、状态圆点、工具数、连接/断开按钮、删除），底部「添加服务器」→ 弹层表单（名称/URL/Token/保存并连接）；支持编辑。
+- 聊天消息中的工具卡片：当工具名为 `pack_apk`/`repack_apk`/`decompile_apk`/`run_gradle` 时，卡片内显示进度条（UI.setToolProgress(msgId, percent, line)）与日志流（最多 200 行，折叠）。
+- UI API：`UI.renderMcpServers(list, statusMap)`、`UI.openMcpServerForm(server?)`、`UI.openMcpPage()`、`UI.setToolProgress(msgId, {percent,line})`；回调：`onMcpSave(server)`、`onMcpDelete(id)`、`onMcpConnect(id)`、`onMcpDisconnect(id)`、`onMcpRefresh(id)`、`onMcpTest(id)`。
+- 构建进度事件：原生转发 `{"type":"mcp-progress","id":..,"tool":..,"percent":0-100,"line":".."}`（Termux server 可选发；无则仅最终结果）。
+
+## L2. JS
+- bridge.js：封装 6 个 MCP 方法 + 事件 mcp-status/mcp-tools/mcp-progress；mock 内存实现（2 个示例服务器、连接成功、工具列表、pack_apk 模拟进度）。
+- app.js：MCP 配置 CRUD、连接流程、mcp-tools 刷新设置页、mcp-progress 映射到聊天中当前工具卡（按 toolName 匹配最近 running 工具消息）→ UI.setToolProgress；工具执行走 native execTool 已有路径（MCP 工具已在 ToolRegistry，无需额外逻辑）。
+- 保持 107 项测试全绿。
+
+## M2. Termux MCP Server（Python 标准库）
+目录 `termux-mcp/`：
+- `server.py`：零依赖（http.server + json + subprocess + threading + sse 手写）；路径 `/mcp`；JSON-RPC 2.0 方法：`initialize`、`notifications/initialized`（通知无响应）、`tools/list`、`tools/call`、`ping`；支持 `Authorization: Bearer <token>`（配置文件中 token）。
+- 工具（每个返回 content:[{type:"text",text:"<json 或日志>"}]）：
+  - `pack_apk {project_dir?, out_apk?}`：调用项目 `scripts/build.sh`（或本机 aapt/javac/d8），返回 JSON `{ok,apk_path,size,sha256,log}`；超时 300s。
+  - `decompile_apk {apk_path, out_dir?}`：优先 `apktool d`，未安装返回提示；返回 `{ok,out_dir,log}`。
+  - `repack_apk {dir, out_apk?}`：`apktool b` + 签名（apksigner），返回 `{ok,apk_path,log}`。
+  - `run_gradle {project_dir, task}`：`./gradlew <task>` 或 `gradle <task>`，返回 `{ok,task,log,tail}`。
+  - `list_workspace {path?}`：列出目录（便于调试）。
+- 安全：默认只监听 127.0.0.1；token 必填（除 --no-token 调试）；所有路径必须在 `--allow-root` 内（默认 `/data/data/com.termux/files/home`）。
+- `setup.sh`：`pkg install -y python openjdk-17 aapt d8 apksigner zipalign git`（apktool/gradle 可选提示），生成 `config.example.json`、`start.sh`（后台启动 + 日志）。
+- `README.md`：在 Termux 里运行、客户端填写 `http://127.0.0.1:8787/mcp` + Token、验证 `curl` 示例、故障排查。
+
+## 验收
+1. `javac` 0 error；`npm test` 107+ 全绿；Python `python3 -m py_compile termux-mcp/server.py` 通过。
+2. 真机：App 内添加 MCP 服务器 → 连接 Termux 本地 server → 看到 tools 列表 → 让 AI 调 `pack_apk`/`list_workspace` 返回结果（截图）。
+3. CI 构建 Release v2.1.0。

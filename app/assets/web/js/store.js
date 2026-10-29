@@ -273,6 +273,20 @@
     if (raw.confirmState) msg.confirmState = String(raw.confirmState);
     if (raw.confirmed !== undefined) msg.confirmed = !!raw.confirmed;
     if (raw.toolRisk) msg.toolRisk = String(raw.toolRisk);
+    /* ARCH v2 P2：构建/MCP 工具卡进度与日志（mcp-progress → UI.setToolProgress / appendToolLog） */
+    if (raw.progress !== undefined && raw.progress !== null) {
+      msg.progress = typeof raw.progress === 'object' ? clone(raw.progress) : (Number(raw.progress) || 0);
+    }
+    if (raw.percent !== undefined && raw.percent !== null) {
+      var pct = Number(raw.percent);
+      if (isFinite(pct)) msg.percent = Math.max(0, Math.min(100, Math.round(pct)));
+    }
+    if (raw.log !== undefined && raw.log !== null) msg.log = String(raw.log).slice(0, 40000);
+    if (Array.isArray(raw.toolLog)) {
+      msg.toolLog = raw.toolLog.slice(-200).map(function (line) { return String(line === null || line === undefined ? '' : line).slice(0, 500); });
+    } else if (Array.isArray(raw.logs)) {
+      msg.toolLog = raw.logs.slice(-200).map(function (line) { return String(line === null || line === undefined ? '' : line).slice(0, 500); });
+    }
     if (raw.error) msg.error = String(raw.error);
     if (raw.streaming) msg.streaming = true;
     if (raw.stopped) msg.stopped = true;

@@ -32,6 +32,8 @@ public final class Prefs {
     public static final String KEY_AUTH_TOKEN = "authToken";
     /** ARCH v2 P1：最近一次绑定的手机号（登出后保留，用于识别“已绑定未登录”）。 */
     public static final String KEY_AUTH_PHONE = "authPhone";
+    /** ARCH v2 P2：MCP 服务器配置 JSON 数组 [{id,name,url,token,enabled}]。 */
+    public static final String KEY_MCP_SERVERS = "mcpServers";
 
     public static final String DEFAULT_BASE_URL = "https://api.deepseek.com";
     public static final String DEFAULT_MODEL = "deepseek-chat";
@@ -143,6 +145,19 @@ public final class Prefs {
 
     public void setAuthPhone(String phone) {
         sp.edit().putString(KEY_AUTH_PHONE, phone == null ? "" : phone.trim()).apply();
+    }
+
+    // ---------------------------------------------------------------- ARCH v2 P2 MCP 配置
+
+    /** MCP 服务器配置原始 JSON 数组；缺省 {@code "[]"}。token 只在这里与原生层出现。 */
+    public String getMcpServersJson() {
+        String value = sp.getString(KEY_MCP_SERVERS, "[]");
+        return value == null || value.trim().isEmpty() ? "[]" : value;
+    }
+
+    public void setMcpServersJson(String json) {
+        String value = json == null || json.trim().isEmpty() ? "[]" : json.trim();
+        sp.edit().putString(KEY_MCP_SERVERS, value).apply();
     }
 
     // ---------------------------------------------------------------- 写

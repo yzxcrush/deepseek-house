@@ -22,6 +22,7 @@ import com.deepseekhouse.app.agent.ToolDef;
 import com.deepseekhouse.app.agent.ToolExecutor;
 import com.deepseekhouse.app.agent.ToolRegistry;
 import com.deepseekhouse.app.agent.Workspace;
+import com.deepseekhouse.app.mcp.McpManager;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -60,6 +61,12 @@ import java.util.regex.Pattern;
  * {@link #writeFile(String, String, String)} / {@link #runShell(String, String)} / {@link #setWorkspace(String)}、
  * 审计 {@link #auditRecent(int)}、手机号 OTP 登录 {@link #requestOtp(String)} / {@link #verifyOtp(String, String, String)} /
  * {@link #authState()} / {@link #logout()}（otp-sent / otp-verified / auth-changed）。</p>
+ *
+ * <p>ARCH v2 P2 追加：MCP Client {@link #mcpServers()} / {@link #mcpSaveServer(String)} /
+ * {@link #mcpDeleteServer(String)} / {@link #mcpConnect(String)} / {@link #mcpDisconnect(String)} /
+ * {@link #mcpRefreshTools(String)}（mcp-status / mcp-tools / mcp-progress）；MCP 工具注册进
+ * {@link ToolRegistry} 后由 {@link #execTool(String, String, String)} 按 {@code ToolDef.remote}
+ * 转发为 tools/call，结果复用 tool-result。</p>
  */
 public final class JsBridge {
 
@@ -80,6 +87,8 @@ public final class JsBridge {
     private final AuditDb auditDb;
     private final ToolExecutor toolExecutor;
     private final AuthManager auth;
+    /** ARCH v2 P2：MCP 客户端（连接管理 / tools/list 注册 / tools/call 转发）。 */
+    private final McpManager mcp;
     private final ExecutorService toolPool;
     /** requestId → 等待确认的工具调用（confirmTool 消费）。 */
     private final Map<String, PendingTool> pendingTools = new ConcurrentHashMap<>();
@@ -139,12 +148,24 @@ public final class JsBridge {
                 return t;
             }
         });
+        // ARCH v2 P2：MCP 连接管理器（配置来自 Prefs；页面就绪后自动连接 enabled 服务器）
+        this.mcp = new McpManager(activity, prefs, new McpManager.EventSink() {
+            @Override
+            public void emit(String json) {
+                emitEvent(json);
+            }
+        }, ToolRegistry.getInstance());
     }
 
     /** Activity 销毁时释放网络线程池与事件通道。 */
     public void release() {
         released = true;
         api.shutdown();
+        try {
+            mcp.shutdown();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
         try {
             toolPool.shutdownNow();
         } catch (Throwable ignored) {
@@ -499,7 +520,7 @@ public final class JsBridge {
             return;
         }
         if (!allow) {
-            auditTool(pending.def.name(), pending.args.toString(), "用户拒绝执行", false, false);
+            auditTool(pending.def.id(), pending.args.toString(), "用户拒绝执行", false, false);
             emitToolResult(rid, pending.def.name(), false, "用户拒绝执行", false);
             return;
         }
@@ -528,6 +549,21 @@ public final class JsBridge {
 
     private void executeToolAsync(final String requestId, final ToolDef def,
                                   final JSONObject args, final boolean confirmed) {
+        // ARCH v2 P2：MCP 远程工具 → tools/call 转发；结果文本复用 tool-result 事件
+        if (def != null && def.isRemote()) {
+            submitTool(new Runnable() {
+                @Override
+                public void run() {
+                    McpManager.ToolCallResult result =
+                            mcp.callTool(def.remote(), def.remoteTool(), def.name(), args);
+                    // 审计 tool 字段用稳定 id（含 serverId），事件里的 tool 仍是模型调用的函数名
+                    auditTool(def.id(), args.toString(), result.text, result.ok, confirmed);
+                    emitToolResult(requestId, def.name(), result.ok, result.text,
+                            confirmed, def.remote());
+                }
+            });
+            return;
+        }
         submitTool(new Runnable() {
             @Override
             public void run() {
@@ -719,6 +755,91 @@ public final class JsBridge {
             // 忽略
         }
         emitAuthChanged(false, auth.phone());
+    }
+
+    // ============================================================ ARCH v2 P2 MCP Client
+
+    /** SPEC N2 {@code mcpServers()}：配置数组 + status/message/toolCount/connected。 */
+    @JavascriptInterface
+    public String mcpServers() {
+        try {
+            return mcp.serversJson();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** SPEC N2 {@code mcpSaveServer(json)}：新增/更新（无 id 自动生成）；非法输入返回 false。 */
+    @JavascriptInterface
+    public boolean mcpSaveServer(String json) {
+        try {
+            return mcp.saveServer(json);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC N2 {@code mcpDeleteServer(id)}：断开并删除配置。 */
+    @JavascriptInterface
+    public void mcpDeleteServer(String id) {
+        try {
+            mcp.deleteServer(id);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** SPEC N2 {@code mcpConnect(id)}：后台握手（initialize → initialized → tools/list）。 */
+    @JavascriptInterface
+    public void mcpConnect(String id) {
+        try {
+            mcp.connect(id);
+        } catch (Throwable t) {
+            emitMcpStatus(id, McpManager.STATUS_ERROR, "连接失败：" + describe(t));
+        }
+    }
+
+    /** SPEC N2 {@code mcpDisconnect(id)}：断开并注销该服务器注册的工具。 */
+    @JavascriptInterface
+    public void mcpDisconnect(String id) {
+        try {
+            mcp.disconnect(id);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** SPEC N2 {@code mcpRefreshTools(id)}：重新 tools/list 并刷新 ToolRegistry。 */
+    @JavascriptInterface
+    public void mcpRefreshTools(String id) {
+        try {
+            mcp.refreshTools(id);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** 补充：某个服务器当前工具列表 JSON 数组（UI 初次渲染/调试用）。 */
+    @JavascriptInterface
+    public String mcpTools(String id) {
+        try {
+            return mcp.toolsJson(id);
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    private void emitMcpStatus(String id, String status, String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "mcp-status");
+            o.put("id", id == null ? "" : id);
+            o.put("status", status == null ? "error" : status);
+            o.put("message", message == null ? "" : message);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
     }
 
     // ------------------------------------------------------------ P1 内部工具
@@ -1093,6 +1214,12 @@ public final class JsBridge {
         pageReady = true;
         emitAppState(activity.isAppForeground());
         flushShare();
+        // ARCH v2 P2：页面就绪后再自动连接 enabled 的 MCP 服务器（保证事件不丢）
+        try {
+            mcp.onPageReady();
+        } catch (Throwable ignored) {
+            // MCP 自动连接失败不影响首屏
+        }
     }
 
     /**
@@ -1313,6 +1440,11 @@ public final class JsBridge {
             o.put("tool", def == null ? "" : def.name());
             o.put("args", args == null ? new JSONObject() : args);
             o.put("risk", def == null ? "high" : def.risk().wireName());
+            if (def != null && def.isRemote()) {
+                // 附加字段（不影响 SPEC 既有字段）：UI 可显示原始工具名与来源服务器
+                o.put("serverId", def.remote());
+                o.put("displayName", def.displayName());
+            }
         } catch (JSONException ignored) {
             return;
         }
@@ -1322,6 +1454,12 @@ public final class JsBridge {
     /** {@code {"type":"tool-result","requestId":..,"tool":..,"ok":true,"result":"..","confirmed":true}} */
     private void emitToolResult(String requestId, String tool, boolean ok,
                                 String result, boolean confirmed) {
+        emitToolResult(requestId, tool, ok, result, confirmed, "");
+    }
+
+    /** 同上；MCP 远程工具额外带 {@code serverId}（SPEC N2 可选 meta.serverId）。 */
+    private void emitToolResult(String requestId, String tool, boolean ok,
+                                String result, boolean confirmed, String serverId) {
         JSONObject o = new JSONObject();
         try {
             o.put("type", "tool-result");
@@ -1330,6 +1468,9 @@ public final class JsBridge {
             o.put("ok", ok);
             o.put("result", result == null ? "" : result);
             o.put("confirmed", confirmed);
+            if (serverId != null && !serverId.isEmpty()) {
+                o.put("serverId", serverId);
+            }
         } catch (JSONException ignored) {
             return;
         }

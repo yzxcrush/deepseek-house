@@ -16,6 +16,12 @@
  *   手机号登录（requestOtp/verifyOtp/authState/logout，API Key 模式保留）
  *   工作区文件树（listDir/readFile）、终端（runShell）、审计（auditRecent）、备份/恢复/fork 回调接线
  *
+ * ARCH v2 P2 追加（MCP Client + Termux 构建服务）：
+ *   bridge.js 封装 mcpServers/mcpSaveServer/mcpDeleteServer/mcpConnect/mcpDisconnect/mcpRefreshTools
+ *   + 事件 mcp-status/mcp-tools/mcp-progress（完整 mock：2 个示例服务器、工具发现、pack_apk 10→100 进度）
+ *   app.js：MCP 配置 CRUD / 连接 / 工具缓存（state.mcpTools/mcpToolMap）/ 构建进度映射到 running 工具卡
+ *   工具调用本身仍由原生 ToolRegistry 注册并走现有 execTool 路径（MCP 工具自动转发）
+ *
  * 约束：只通过 window.UI 改 DOM；不操作 index.html 中的节点。
  * 依赖：window.Util / Bridge / Store / Markdown / Api / DSPlugins / UI
  */
@@ -74,6 +80,9 @@
   var MAX_INPUT = 8000;
   /* ARCH v2 P1：工具调用最多 5 轮（插件工具 + 原生工具混合） */
   var MAX_TOOL_ROUNDS = 5;
+  /* ARCH v2 P2：MCP 构建类工具（工具卡显示进度条 + 日志流） */
+  var BUILD_TOOL_NAMES = { 'pack_apk': true, 'repack_apk': true, 'decompile_apk': true, 'run_gradle': true };
+  var MCP_LOG_MAX = 200;
   var AUTO_TITLE = false; /* 会话名=智能体名，默认「DeepSeek + 模型型号」，不随首条消息自动改名 */
   var FLUSH_INTERVAL = 50;
   var TOAST_THROTTLE = 700;
@@ -115,7 +124,20 @@
     pendingConfirm: null, /* UI 以 handler 方式确认时使用：allow => void */
     confirmChain: Promise.resolve(),
     loginPhone: '', /* 登录页手机号 tab 当前手机号 */
-    loginOtpSent: false
+    loginOtpSent: false,
+    /* ARCH v2 P2：MCP Client（配置/状态/工具缓存/构建进度） */
+    mcpServers: [], /* [{id,name,url,token,enabled,builtin?}] */
+    mcpStatus: {}, /* id -> {status,message,tools:[{name,description}],toolCount} */
+    mcpTools: {}, /* id -> [{name,description}]（mcp-tools 缓存快照） */
+    mcpToolMap: {}, /* 工具名（base） -> serverId（MCP 工具识别/进度匹配） */
+    mcpPageLoaded: false,
+    mcpOpening: false, /* 防 UI.openMcpPage → onOpenMcp 重入 */
+    /* 工具进度：running 工具消息栈（mcp-progress 事件无 requestId，按工具名/服务器匹配） */
+    runningToolMsgs: [], /* [{msgId,chatId,name,base,serverId}] */
+    currentToolMsgId: null,
+    currentToolName: '',
+    currentToolServerId: '',
+    mcpProgressByMsg: {} /* msgId -> {percent,line} */
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -649,7 +671,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.0.0' }
+      { label: '版本', value: '2.1.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -769,6 +791,16 @@
         showProfile();
         return;
       }
+      /* ARCH v2 P2：MCP 管理页是 UI 内部屏幕（nav.screen 仍是 settings/来源页）→ 硬件返回回设置页 */
+      if (uiScreen === 'mcp') {
+        closeDrawer();
+        if (state.nav.screen !== 'settings') {
+          state.nav = { screen: 'settings', drawerOpen: false, from: state.nav.screen || 'chats' };
+        }
+        ui('showScreen', 'settings');
+        setBackDepth(state.nav.from === 'chat' ? 2 : 1);
+        return;
+      }
     }
     if (screen === 'chats') {
       closeDrawer();
@@ -835,6 +867,10 @@
     });
     /* 原生 setWorkspace 异步完成后的补充事件 {ok,root,message,allFilesAccess} */
     B.onEvent('workspace-changed', function (evt) { onWorkspaceChanged(evt); });
+    /* ARCH v2 P2：MCP 状态 / 工具发现 / 构建进度事件 */
+    B.onEvent('mcp-status', function (evt) { onMcpStatus(evt); });
+    B.onEvent('mcp-tools', function (evt) { onMcpTools(evt); });
+    B.onEvent('mcp-progress', function (evt) { onMcpProgress(evt); });
   }
 
   function bindPluginFileFallback() {
@@ -972,7 +1008,23 @@
       onToolConfirm: safe(function (allow) {
         if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }
         return false;
-      }, 'onToolConfirm')
+      }, 'onToolConfirm'),
+      /* ARCH v2 P2：MCP 服务器管理 */
+      onOpenMcp: safe(function () {
+        if (state.mcpOpening) return state.mcpServers;
+        return openMcpPage();
+      }, 'onOpenMcp'),
+      onMcpList: safe(function () {
+        if (state.mcpOpening) return state.mcpServers;
+        return openMcpPage();
+      }, 'onMcpList'),
+      onCloseMcp: safe(function () { return true; }, 'onCloseMcp'),
+      onMcpSave: safe(function (server) { return saveMcpServer(server); }, 'onMcpSave'),
+      onMcpDelete: safe(function (id) { return deleteMcpServer(id); }, 'onMcpDelete'),
+      onMcpConnect: safe(function (id) { return connectMcpServer(id); }, 'onMcpConnect'),
+      onMcpDisconnect: safe(function (id) { return disconnectMcpServer(id); }, 'onMcpDisconnect'),
+      onMcpRefresh: safe(function (id) { return refreshMcpServerTools(id); }, 'onMcpRefresh'),
+      onMcpTest: safe(function (id) { return testMcpServer(id); }, 'onMcpTest')
     };
   }
 
@@ -1595,7 +1647,8 @@
     });
   }
 
-  /** 原生工具：Bridge.execTool → (tool-confirm → UI.confirmRisk → Bridge.confirmTool) → tool-result */
+  /** 原生工具：Bridge.execTool → (tool-confirm → UI.confirmRisk → Bridge.confirmTool) → tool-result
+   *  P2：构建类 / MCP 工具先 append 一条 running tool 消息（进度条 + 日志流复用同一条消息）。 */
   function execNativeTool(chat, name, args, toolCallId) {
     return new Promise(function (resolve) {
       var B = global.Bridge;
@@ -1604,6 +1657,7 @@
       var confirmAsked = false;
       var offs = [];
       var timer = null;
+      var progressEntry = null;
 
       function cleanup() {
         if (timer) { clearTimeout(timer); timer = null; }
@@ -1624,7 +1678,17 @@
         if (!resultText) resultText = ok ? '（工具未返回内容）' : '工具执行失败';
         var confirmed = evt ? !!evt.confirmed : false;
         var stateText = ok ? 'success' : (String(resultText).indexOf('用户拒绝') !== -1 ? 'rejected' : 'error');
-        resolve(appendToolResultMessage(chat, name, args, toolCallId, resultText, ok, stateText, confirmed));
+        if (progressEntry) {
+          resolve(finalizeProgressToolMessage(progressEntry, resultText, ok, stateText, confirmed));
+        } else {
+          resolve(appendToolResultMessage(chat, name, args, toolCallId, resultText, ok, stateText, confirmed));
+        }
+      }
+
+      /* P2：构建类工具 / MCP 工具先建 running 卡片，供 mcp-progress 映射 */
+      if (isMcpProgressTool(name)) {
+        var running = createRunningToolMessage(chat, name, args, toolCallId);
+        if (running) progressEntry = findRunningEntry(running.id);
       }
 
       offs.push(B.onEvent('tool-result', function (evt) {
@@ -1638,7 +1702,21 @@
         var tool = evt.tool ? String(evt.tool) : name;
         var eArgs = evt.args && typeof evt.args === 'object' ? evt.args : args;
         var risk = evt.risk ? String(evt.risk).toLowerCase() : (state.nativeTools[name] ? state.nativeTools[name].risk : 'high');
+        if (progressEntry) {
+          updateRunningToolMessage(progressEntry, {
+            confirmState: 'pending',
+            content: '等待确认…',
+            progress: { percent: 0, line: '' }
+          });
+        }
         askToolConfirm(tool, eArgs, risk).then(function (allow) {
+          if (progressEntry && allow) {
+            updateRunningToolMessage(progressEntry, {
+              confirmState: 'running',
+              content: '执行中…',
+              progress: { percent: 0, line: '开始执行…' }
+            });
+          }
           try { B.confirmTool(requestId, !!allow); } catch (e) { warn('confirmTool 失败：' + errText(e)); }
           if (!allow) {
             /* 兜底：原生拒绝后必须回 tool-result；300ms 内未回则本地结束，避免卡住 */
@@ -3610,6 +3688,558 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2 P2：MCP Client —— 配置 CRUD / 连接管理 / 工具缓存 / 构建进度
+   * 工具调用本身仍由原生 ToolRegistry 注册并走现有 execTool 路径；
+   * 这里只负责：服务器列表/状态、mcp-tools 缓存、mcp-progress → 工具卡进度/日志。
+   * ------------------------------------------------------------------ */
+
+  /** 工具名 → 基础名（兼容 `mcp:<serverId>:<tool>` 与原生重名去重后的 `mcp_<server>_<tool>` 形式） */
+  function mcpBaseName(name) {
+    var raw = String(name === null || name === undefined ? '' : name);
+    if (raw.indexOf('mcp:') === 0) {
+      var parts = raw.split(':');
+      if (parts.length >= 3) return parts[parts.length - 1];
+    }
+    /* 原始名直接命中构建工具 */
+    if (BUILD_TOOL_NAMES[raw]) return raw;
+    /* 原生 ToolRegistry 重名去重：mcp_<server>_<tool>（server 里可能有 -/_，用后缀匹配构建工具名） */
+    if (raw.indexOf('mcp') === 0) {
+      var keys = Object.keys(BUILD_TOOL_NAMES);
+      for (var i = 0; i < keys.length; i++) {
+        var suffix = '_' + keys[i];
+        if (raw.length > suffix.length && raw.slice(-suffix.length) === suffix) return keys[i];
+      }
+    }
+    return raw;
+  }
+
+  /** 解析 mcp:<serverId>:<tool>；非该形式时 serverId 为空 */
+  function parseMcpToolName(name) {
+    var raw = String(name === null || name === undefined ? '' : name);
+    if (raw.indexOf('mcp:') === 0) {
+      var parts = raw.split(':');
+      if (parts.length >= 3) return { serverId: parts[1], base: parts[parts.length - 1] };
+    }
+    return { serverId: '', base: raw };
+  }
+
+  function isBuildToolName(name) {
+    return !!BUILD_TOOL_NAMES[mcpBaseName(name)];
+  }
+
+  /** 是否需要 running 工具卡（构建类工具或来自 MCP 的工具） */
+  function isMcpProgressTool(name) {
+    var parsed = parseMcpToolName(name);
+    if (isBuildToolName(parsed.base)) return true;
+    if (parsed.serverId) return true;
+    return !!(state.mcpToolMap[parsed.base] || state.mcpToolMap[String(name === null || name === undefined ? '' : name)]);
+  }
+
+  function findMcpServer(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    for (var i = 0; i < state.mcpServers.length; i++) {
+      if (String(state.mcpServers[i].id) === key) return state.mcpServers[i];
+    }
+    return null;
+  }
+
+  /** 服务端 mcp-tools / 配置里的 tools 归一化 */
+  function normalizeMcpToolList(raw) {
+    if (!Array.isArray(raw)) return [];
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      var name = item.name === null || item.name === undefined ? '' : String(item.name);
+      if (!name) continue;
+      out.push({ name: name, description: item.description === null || item.description === undefined ? '' : String(item.description) });
+    }
+    return out;
+  }
+
+  function ensureMcpStatusEntries(list) {
+    for (var i = 0; i < list.length; i++) {
+      var server = list[i];
+      var st = state.mcpStatus[server.id];
+      if (!st) {
+        var initialStatus = server.status ? String(server.status) : (server.connected ? 'connected' : 'disconnected');
+        st = {
+          status: initialStatus,
+          message: server.message ? String(server.message) : '',
+          tools: normalizeMcpToolList(server.tools),
+          toolCount: 0
+        };
+        st.toolCount = st.tools.length || (Number(server.toolCount) || 0);
+        state.mcpStatus[server.id] = st;
+      } else {
+        if (!st.status) st.status = server.status ? String(server.status) : 'disconnected';
+        if ((!st.tools || !st.tools.length) && Array.isArray(server.tools) && server.tools.length) {
+          st.tools = normalizeMcpToolList(server.tools);
+          st.toolCount = st.tools.length;
+        }
+      }
+    }
+  }
+
+  /** 读取服务器配置（Bridge.mcpServers 同步 JSON），刷新 state.mcpServers/mcpStatus */
+  function loadMcpServers(force) {
+    var list = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.mcpServers === 'function') list = global.Bridge.mcpServers();
+    } catch (e) {
+      warn('读取 MCP 服务器失败：' + errText(e));
+    }
+    if (!Array.isArray(list)) list = [];
+    state.mcpServers = list;
+    ensureMcpStatusEntries(list);
+    rebuildMcpToolMap();
+    return state.mcpServers;
+  }
+
+  /** state.mcpStatus → 工具名（base）→ serverId 映射（MCP 工具识别/进度匹配） */
+  function rebuildMcpToolMap() {
+    var map = {};
+    var toolsById = {};
+    var ids = Object.keys(state.mcpStatus);
+    for (var i = 0; i < ids.length; i++) {
+      var st = state.mcpStatus[ids[i]];
+      var tools = st && Array.isArray(st.tools) ? st.tools : [];
+      toolsById[ids[i]] = tools.map(function (t) { return { name: t.name, description: t.description }; });
+      for (var j = 0; j < tools.length; j++) {
+        var name = tools[j] && tools[j].name ? String(tools[j].name) : '';
+        if (!name) continue;
+        map[name] = ids[i];
+      }
+    }
+    state.mcpToolMap = map;
+    state.mcpTools = toolsById;
+  }
+
+  /** UI.renderMcpServers 的第二参数：{id:{status,message,toolCount,tools}} */
+  function buildMcpStatusMap() {
+    var map = {};
+    for (var i = 0; i < state.mcpServers.length; i++) {
+      var server = state.mcpServers[i];
+      var st = state.mcpStatus[server.id] || {};
+      var tools = Array.isArray(st.tools) ? st.tools : normalizeMcpToolList(server.tools);
+      map[server.id] = {
+        status: st.status || (server.status ? String(server.status) : 'disconnected'),
+        message: st.message || '',
+        toolCount: tools.length || st.toolCount || Number(server.toolCount) || 0,
+        tools: tools
+      };
+    }
+    return map;
+  }
+
+  function renderMcpServers() {
+    if (!state.mcpPageLoaded) return;
+    ui('renderMcpServers', state.mcpServers, buildMcpStatusMap());
+  }
+
+  /** handlers.onOpenMcp / App.openMcpPage：加载配置 + 渲染列表（UI.openMcpPage 由 UI 负责显示屏幕） */
+  function openMcpPage() {
+    var list = loadMcpServers(true);
+    state.mcpPageLoaded = true;
+    /* 已连接但本地还没有工具缓存（如原生启动后自动连接）→ 同步 mcpTools 补全，UI 直接显示工具数 */
+    for (var i = 0; i < list.length; i++) {
+      var st = state.mcpStatus[list[i].id];
+      if (!st || (st.status !== 'connected' && st.status !== 'connecting')) continue;
+      if (Array.isArray(st.tools) && st.tools.length) continue;
+      try {
+        if (global.Bridge && typeof global.Bridge.mcpTools === 'function') {
+          var tools = global.Bridge.mcpTools(list[i].id);
+          if (Array.isArray(tools) && tools.length) {
+            st.tools = tools;
+            st.toolCount = tools.length;
+          }
+        }
+      } catch (e) { warn('读取 MCP 工具失败：' + errText(e)); }
+    }
+    rebuildMcpToolMap();
+    ui('renderMcpServers', list, buildMcpStatusMap());
+    return list;
+  }
+
+  /** App.showMcpPage()：从任意入口打开 MCP 页（必要时先让 UI 显示 #screen-mcp） */
+  function showMcpPage() {
+    if (state.mcpOpening) return state.mcpServers;
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'mcp') {
+      state.mcpOpening = true;
+      try { ui('openMcpPage'); } finally { state.mcpOpening = false; }
+    }
+    return openMcpPage();
+  }
+
+  /* ---------------- MCP 事件：状态 / 工具发现 / 构建进度 ---------------- */
+
+  function onMcpStatus(evt) {
+    if (!evt) return;
+    var id = evt.id === null || evt.id === undefined ? '' : String(evt.id);
+    if (!id) return;
+    var status = String(evt.status || 'disconnected');
+    if (status !== 'connecting' && status !== 'connected' && status !== 'disconnected' && status !== 'error') status = 'disconnected';
+    var st = state.mcpStatus[id];
+    if (!st) st = state.mcpStatus[id] = { status: 'disconnected', message: '', tools: [], toolCount: 0 };
+    st.status = status;
+    st.message = evt.message === null || evt.message === undefined ? '' : String(evt.message);
+    if (status === 'disconnected') {
+      st.tools = [];
+      st.toolCount = 0;
+      rebuildMcpToolMap();
+    }
+    if (status === 'connected' && (!Array.isArray(st.tools) || !st.tools.length)) {
+      try {
+        if (global.Bridge && typeof global.Bridge.mcpTools === 'function') {
+          var hydrated = global.Bridge.mcpTools(id);
+          if (Array.isArray(hydrated) && hydrated.length) {
+            st.tools = hydrated;
+            st.toolCount = hydrated.length;
+            rebuildMcpToolMap();
+          }
+        }
+      } catch (e) { /* ignore */ }
+    }
+    renderMcpServers();
+    if (status === 'connected') toast('MCP 服务器已连接' + (id ? '：' + id : ''));
+    else if (status === 'error') toast('MCP 连接失败：' + (st.message || id), true);
+  }
+
+  function onMcpTools(evt) {
+    if (!evt) return;
+    var id = evt.id === null || evt.id === undefined ? '' : String(evt.id);
+    if (!id) return;
+    var tools = normalizeMcpToolList(evt.tools);
+    var st = state.mcpStatus[id];
+    if (!st) st = state.mcpStatus[id] = { status: 'connected', message: '', tools: [], toolCount: 0 };
+    st.tools = tools;
+    st.toolCount = tools.length;
+    if (!st.status || st.status === 'disconnected' || st.status === 'connecting') {
+      /* 工具列表到达意味着连接可用（兼容只发 mcp-tools 的实现） */
+      if (tools.length) st.status = 'connected';
+    }
+    rebuildMcpToolMap();
+    renderMcpServers();
+  }
+
+  function findRunningEntry(msgId) {
+    for (var i = 0; i < state.runningToolMsgs.length; i++) {
+      if (state.runningToolMsgs[i].msgId === msgId) return state.runningToolMsgs[i];
+    }
+    return null;
+  }
+
+  /** 按工具名（兼容 mcp:server:tool 后缀）匹配最近一条 running 工具卡 */
+  function findRunningToolMsg(toolName, serverId) {
+    var base = mcpBaseName(toolName);
+    for (var i = state.runningToolMsgs.length - 1; i >= 0; i--) {
+      var item = state.runningToolMsgs[i];
+      if (item.base !== base) continue;
+      if (serverId && item.serverId && String(item.serverId) !== String(serverId)) continue;
+      return item;
+    }
+    /* 兜底：server 侧 progress.tool 为原始名，工具调用名可能是 mcp_<server>_<tool> → 后缀匹配 */
+    var rawTool = String(toolName === null || toolName === undefined ? '' : toolName);
+    for (var j = state.runningToolMsgs.length - 1; j >= 0; j--) {
+      var candidate = state.runningToolMsgs[j];
+      if (!candidate.base) continue;
+      var suffix = '_' + candidate.base;
+      if (rawTool.length > suffix.length && rawTool.slice(-suffix.length) === suffix) {
+        if (serverId && candidate.serverId && String(candidate.serverId) !== String(serverId)) continue;
+        return candidate;
+      }
+    }
+    if (state.currentToolMsgId) {
+      var cur = findRunningEntry(state.currentToolMsgId);
+      if (cur && cur.base === base && (!serverId || !cur.serverId || String(cur.serverId) === String(serverId))) return cur;
+    }
+    return null;
+  }
+
+  /** 建 running 工具卡（进度条/日志流后续 update 同一条消息） */
+  function createRunningToolMessage(chat, name, args, toolCallId) {
+    if (!chat) return null;
+    var parsed = parseMcpToolName(name);
+    var serverId = parsed.serverId || state.mcpToolMap[parsed.base] || state.mcpToolMap[String(name === null || name === undefined ? '' : name)] || '';
+    var msg = Store.appendMessage(chat.id, {
+      role: 'tool',
+      content: '执行中…',
+      toolName: name,
+      toolCallId: toolCallId,
+      args: args === undefined || args === null ? {} : args,
+      result: '',
+      confirmState: 'running',
+      progress: { percent: 0, line: '' },
+      toolLog: []
+    });
+    if (!msg) return null;
+    var entry = {
+      msgId: msg.id,
+      chatId: chat.id,
+      name: name,
+      base: parsed.base,
+      serverId: String(serverId || '')
+    };
+    state.runningToolMsgs.push(entry);
+    state.currentToolMsgId = msg.id;
+    state.currentToolName = name;
+    state.currentToolServerId = entry.serverId;
+    state.mcpProgressByMsg[msg.id] = { percent: 0, line: '' };
+    ui('appendMessage', msg);
+    ui('scrollBottom');
+    ui('setToolProgress', msg.id, { percent: 0, line: '' });
+    return msg;
+  }
+
+  function updateRunningToolMessage(entry, patch) {
+    if (!entry || !patch) return null;
+    try {
+      var updated = Store.updateMessage(entry.chatId, entry.msgId, patch);
+      if (updated) ui('updateMessage', entry.msgId, patch);
+      return updated || null;
+    } catch (e) {
+      warn('更新工具卡失败：' + errText(e));
+      return null;
+    }
+  }
+
+  function cleanupRunningToolMsg(entry) {
+    if (!entry) return;
+    for (var i = state.runningToolMsgs.length - 1; i >= 0; i--) {
+      if (state.runningToolMsgs[i].msgId === entry.msgId) state.runningToolMsgs.splice(i, 1);
+    }
+    if (state.currentToolMsgId === entry.msgId) {
+      state.currentToolMsgId = null;
+      state.currentToolName = '';
+      state.currentToolServerId = '';
+    }
+  }
+
+  /** tool-result 到达：把 running 卡 update 成完成/失败态（不新增消息） */
+  function finalizeProgressToolMessage(entry, resultText, ok, stateText, confirmed) {
+    if (!entry) return null;
+    var prog = state.mcpProgressByMsg[entry.msgId] || { percent: 0, line: '' };
+    var percent = Number(prog.percent) || 0;
+    if (ok && percent <= 0) percent = 100;
+    var line = prog.line || (ok ? '完成' : '执行失败');
+    var patch = {
+      content: resultText,
+      result: resultText,
+      ok: !!ok,
+      confirmState: stateText || (ok ? 'success' : 'error'),
+      confirmed: !!confirmed,
+      progress: { percent: percent, line: line }
+    };
+    var updated = updateRunningToolMessage(entry, patch);
+    delete state.mcpProgressByMsg[entry.msgId];
+    cleanupRunningToolMsg(entry);
+    return updated;
+  }
+
+  /** mcp-progress → 最近 running 的对应工具卡：进度条 + 日志（最多 200 行） */
+  function onMcpProgress(evt) {
+    if (!evt) return;
+    var toolName = evt.tool === null || evt.tool === undefined ? '' : String(evt.tool);
+    var serverId = evt.id === null || evt.id === undefined ? '' : String(evt.id);
+    var percent = Number(evt.percent);
+    if (!isFinite(percent)) percent = 0;
+    percent = Math.max(0, Math.min(100, Math.round(percent)));
+    var line = evt.line === null || evt.line === undefined ? '' : String(evt.line);
+    var entry = findRunningToolMsg(toolName, serverId);
+    if (!entry) return; /* 没有对应 running 工具卡：忽略（可能已完成或非工具发起的进度） */
+    var prev = state.mcpProgressByMsg[entry.msgId] || { percent: 0, line: '' };
+    state.mcpProgressByMsg[entry.msgId] = { percent: percent, line: line || prev.line };
+    var logs = [];
+    try {
+      var chat = Store.getChat(entry.chatId);
+      var msg = null;
+      if (chat) {
+        for (var i = 0; i < chat.messages.length; i++) {
+          if (chat.messages[i].id === entry.msgId) { msg = chat.messages[i]; break; }
+        }
+      }
+      if (msg && Array.isArray(msg.toolLog)) logs = msg.toolLog.slice();
+    } catch (e) { logs = []; }
+    var patch = {
+      progress: { percent: percent, line: line || prev.line },
+      percent: percent
+    };
+    if (line) {
+      logs.push(line);
+      while (logs.length > MCP_LOG_MAX) logs.shift();
+      patch.toolLog = logs;
+      patch.log = logs.join('\n');
+    }
+    try { Store.updateMessage(entry.chatId, entry.msgId, patch); } catch (e2) { /* ignore */ }
+    ui('setToolProgress', entry.msgId, { percent: percent, line: line });
+    if (line) ui('appendToolLog', entry.msgId, line);
+  }
+
+  /* ---------------- MCP 配置 CRUD / 连接 ---------------- */
+
+  function normalizeMcpServerPayload(server) {
+    if (!server || typeof server !== 'object') return null;
+    var name = String(server.name === null || server.name === undefined ? '' : server.name).replace(/^\s+|\s+$/g, '');
+    var url = String(server.url === null || server.url === undefined ? '' : server.url).replace(/^\s+|\s+$/g, '');
+    if (!name) return null;
+    if (!/^https?:\/\/\S+/i.test(url)) return null;
+    var out = {
+      name: name,
+      url: url,
+      token: server.token === null || server.token === undefined ? '' : String(server.token),
+      enabled: server.enabled !== false
+    };
+    if (server.id) out.id = String(server.id);
+    return out;
+  }
+
+  /** handlers.onMcpSave(server)：新增/编辑；server.connect=true 时保存后自动连接 */
+  function saveMcpServer(server) {
+    var payload = normalizeMcpServerPayload(server);
+    if (!payload) { toast('请填写名称与 http(s):// URL', true); return false; }
+    var beforeIds = {};
+    for (var i = 0; i < state.mcpServers.length; i++) beforeIds[state.mcpServers[i].id] = true;
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.mcpSaveServer === 'function') ok = global.Bridge.mcpSaveServer(payload) !== false;
+    } catch (e) {
+      warn('保存 MCP 服务器失败：' + errText(e));
+      ok = false;
+    }
+    if (!ok) { toast('保存 MCP 服务器失败', true); return false; }
+    var list = loadMcpServers(true);
+    var savedId = payload.id || '';
+    if (!savedId) {
+      for (var j = 0; j < list.length; j++) {
+        if (!beforeIds[list[j].id]) { savedId = list[j].id; break; }
+      }
+      if (!savedId) {
+        for (var k = 0; k < list.length; k++) {
+          if (String(list[k].name) === payload.name && String(list[k].url) === payload.url) { savedId = list[k].id; break; }
+        }
+      }
+    }
+    renderMcpServers();
+    toast(payload.id ? 'MCP 服务器已更新' : 'MCP 服务器已添加', true);
+    var wantConnect = !!server.connect;
+    if (wantConnect && savedId) {
+      /* 原生 mcpSaveServer 会对 enabled 服务器自动连接（status connecting/connected）；
+         只有原生没有自动连接时才由 JS 补一次 mcpConnect，避免重复连接。 */
+      var savedServer = findMcpServer(savedId);
+      var autoConnecting = !!(savedServer && (savedServer.connected === true
+        || savedServer.status === 'connecting' || savedServer.status === 'connected'
+        || (state.mcpStatus[savedId] && (state.mcpStatus[savedId].status === 'connecting' || state.mcpStatus[savedId].status === 'connected'))));
+      if (!autoConnecting) connectMcpServer(savedId);
+    }
+    return true;
+  }
+
+  /** handlers.onMcpDelete(id) */
+  function deleteMcpServer(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.mcpDeleteServer === 'function') ok = global.Bridge.mcpDeleteServer(key) !== false;
+    } catch (e) { warn('删除 MCP 服务器失败：' + errText(e)); }
+    if (!ok) { toast('删除 MCP 服务器失败', true); return false; }
+    delete state.mcpStatus[key];
+    loadMcpServers(true);
+    renderMcpServers();
+    toast('已删除 MCP 服务器', true);
+    return true;
+  }
+
+  /** handlers.onMcpConnect(id)：connecting 状态由 mcp-status 事件推进 */
+  function connectMcpServer(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    if (!findMcpServer(key)) { toast('服务器不存在', true); return false; }
+    var st = state.mcpStatus[key];
+    if (!st) st = state.mcpStatus[key] = { status: 'disconnected', message: '', tools: [], toolCount: 0 };
+    st.status = 'connecting';
+    st.message = '';
+    renderMcpServers();
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.mcpConnect === 'function') ok = global.Bridge.mcpConnect(key) !== false;
+    } catch (e) { warn('连接 MCP 服务器失败：' + errText(e)); }
+    if (!ok) {
+      st.status = 'error';
+      st.message = '无法连接（原生不可用）';
+      renderMcpServers();
+      toast('连接 MCP 服务器失败', true);
+      return false;
+    }
+    return true;
+  }
+
+  function disconnectMcpServer(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.mcpDisconnect === 'function') ok = global.Bridge.mcpDisconnect(key) !== false;
+    } catch (e) { warn('断开 MCP 服务器失败：' + errText(e)); }
+    var st = state.mcpStatus[key];
+    if (st) { st.status = 'disconnected'; st.message = ''; st.tools = []; st.toolCount = 0; }
+    rebuildMcpToolMap();
+    renderMcpServers();
+    if (ok) toast('已断开 MCP 服务器');
+    return ok;
+  }
+
+  function refreshMcpServerTools(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.mcpRefreshTools === 'function') ok = global.Bridge.mcpRefreshTools(key) !== false;
+    } catch (e) { warn('刷新 MCP 工具失败：' + errText(e)); }
+    if (ok) toast('正在刷新 MCP 工具列表…');
+    else toast('刷新 MCP 工具失败', true);
+    return ok;
+  }
+
+  /** handlers.onMcpTest(id)：连接并等待 mcp-tools（成功提示工具数，失败/超时提示） */
+  function testMcpServer(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    if (!findMcpServer(key)) { toast('服务器不存在', true); return false; }
+    if (!connectMcpServer(key)) return false;
+    var B = global.Bridge;
+    if (!B || typeof B.waitMcpTools !== 'function') return true;
+    var finished = false;
+    function finish(message, force) {
+      if (finished) return;
+      finished = true;
+      toast(message, !!force);
+    }
+    var statusWait = typeof B.waitMcpStatus === 'function'
+      ? B.waitMcpStatus(key, 12000)
+      : null;
+    var toolsWait = B.waitMcpTools(key, 12000);
+    if (statusWait && typeof statusWait.then === 'function') {
+      statusWait.then(function (evt) {
+        if (evt && evt.status === 'error') finish('MCP 连接失败：' + (evt.message || '未知错误'), true);
+      });
+    }
+    if (toolsWait && typeof toolsWait.then === 'function') {
+      toolsWait.then(function (evt) {
+        if (evt && Array.isArray(evt.tools)) {
+          onMcpTools(evt);
+          finish('MCP 连接成功，发现 ' + evt.tools.length + ' 个工具', true);
+        } else {
+          finish('MCP 连接超时，请检查 URL / Token', true);
+        }
+      });
+    }
+    return true;
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -3688,6 +4318,33 @@
   App.openAudit = safe(function () { return openAudit(); }, 'App.openAudit');
   App.setWorkspace = safe(function (path) { return setWorkspace(path); }, 'App.setWorkspace');
   App.resetWorkspace = safe(function () { return resetWorkspace(); }, 'App.resetWorkspace');
+  /* ARCH v2 P2：MCP 对外接口（UI 回调 / QA 可直接调用） */
+  App.openMcpPage = safe(function () { return openMcpPage(); }, 'App.openMcpPage');
+  App.showMcpPage = safe(function () { return showMcpPage(); }, 'App.showMcpPage');
+  App.getMcpServers = function () { return state.mcpServers.slice(); };
+  App.getMcpStatus = function () { return buildMcpStatusMap(); };
+  App.getMcpToolMap = function () { return state.mcpToolMap; };
+  App.getMcpTools = function (id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    var tools = state.mcpTools[key];
+    if (Array.isArray(tools)) return tools.slice();
+    var st = state.mcpStatus[key];
+    return st && Array.isArray(st.tools) ? st.tools.slice() : [];
+  };
+  App.getMcpToolCounts = function () {
+    var out = {};
+    var ids = Object.keys(state.mcpTools);
+    for (var i = 0; i < ids.length; i++) out[ids[i]] = (state.mcpTools[ids[i]] || []).length;
+    return out;
+  };
+  App.saveMcpServer = safe(function (server) { return saveMcpServer(server); }, 'App.saveMcpServer');
+  App.deleteMcpServer = safe(function (id) { return deleteMcpServer(id); }, 'App.deleteMcpServer');
+  App.connectMcp = safe(function (id) { return connectMcpServer(id); }, 'App.connectMcp');
+  App.disconnectMcp = safe(function (id) { return disconnectMcpServer(id); }, 'App.disconnectMcp');
+  App.refreshMcpTools = safe(function (id) { return refreshMcpServerTools(id); }, 'App.refreshMcpTools');
+  App.testMcp = safe(function (id) { return testMcpServer(id); }, 'App.testMcp');
+  App.isBuildToolName = function (name) { return isBuildToolName(name); };
+  App.isMcpProgressTool = function (name) { return isMcpProgressTool(name); };
   App.getFilePreview = function () { return state.filePreview; };
   App.confirmTool = safe(function (allow) {
     if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }

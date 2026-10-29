@@ -337,7 +337,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.0.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.1.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -610,6 +610,23 @@
           </button>
         </div>
 
+        <!-- ARCH v2 P2：MCP 服务器入口 -->
+        <div class="section-label">MCP 与构建</div>
+        <div class="section">
+          <button class="form-row form-row--button" id="set-mcp-row" type="button" data-action="open-mcp" aria-label="MCP 服务器">
+            <span class="form-label">MCP 服务器</span>
+            <span class="form-control form-control--value">
+              <span class="form-value" id="set-mcp-count">未配置</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+          <div class="form-row form-row--col">
+            <span class="form-hint">连接 Termux MCP Server 后，可让 AI 调用打包 / 反编译 / Gradle 构建等本机工具。</span>
+          </div>
+        </div>
+
         <div class="section-label">账户</div>
         <div class="section">
           <div class="form-row">
@@ -626,7 +643,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>2.0.0</span></div>
+          <div class="about-row"><span>版本</span><span>2.1.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -776,6 +793,53 @@
         </div>
       </div>
     </section>
+
+    <!-- ---------------------------- MCP 服务器管理（ARCH v2 P2） ---------------------------- -->
+    <section class="screen screen--page screen--mcp" id="screen-mcp" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title">MCP 服务器</div>
+          <div class="subtitle" id="mcp-count">管理外部工具服务器</div>
+        </div>
+        <button class="icon-btn" type="button" data-action="mcp-page-refresh" aria-label="刷新 MCP 服务器">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"></path>
+            <path d="M20.5 4v7h-7"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="page-scroll mcp-scroll">
+        <div class="section-label">已配置的服务器</div>
+        <div class="mcp-list" id="mcp-list" role="list"></div>
+
+        <div class="plugins-empty mcp-empty" id="mcp-empty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="5" cy="12" r="2.6"></circle>
+            <circle cx="19" cy="5" r="2.6"></circle>
+            <circle cx="19" cy="19" r="2.6"></circle>
+            <path d="M7.4 11 16.5 6M7.4 13l9.1 5"></path>
+          </svg>
+          <p>还没有 MCP 服务器</p>
+          <small>在 Termux 运行 MCP Server 后，填入地址 http://127.0.0.1:8787/mcp 即可连接。</small>
+        </div>
+
+        <div class="page-actions">
+          <button class="btn btn--primary" id="mcp-add" type="button" data-action="mcp-add">添加服务器</button>
+        </div>
+
+        <div class="plugins-tip">
+          <b>MCP 说明</b>
+          <p>MCP（Model Context Protocol）把 Termux 侧的工具（打包 APK、反编译、Gradle 构建、列工作区等）接入模型。服务器只监听本机回环地址，Token 与配置只保存在本机。连接成功后，工具会出现在模型的可用工具列表中。</p>
+          <p class="mcp-tip-code">http://127.0.0.1:8787/mcp</p>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- ============================ 底部导航（聊天 / 联系人 / 个人资料） ============================ -->
@@ -869,7 +933,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v2.0.0</span>
+      <span class="drawer-version">v2.1.0</span>
     </div>
   </aside>
 
@@ -1013,6 +1077,54 @@
       <div class="modal-actions">
         <button class="btn btn--ghost" type="button" data-action="copy-file-preview">复制内容</button>
         <button class="btn btn--primary" type="button" data-action="close-file-preview">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ MCP 服务器表单弹窗（ARCH v2 P2） ============================ -->
+  <div class="modal modal--center" id="mcp-form-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="mcp-form-title">
+    <div class="modal-panel modal-panel--small mcp-form-panel">
+      <div class="modal-head">
+        <div class="modal-title" id="mcp-form-title">添加 MCP 服务器</div>
+        <button class="icon-btn" type="button" data-action="mcp-form-cancel" aria-label="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="mcp-form-fields">
+          <label class="field" for="mcp-form-name">
+            <span class="field-label">名称</span>
+            <span class="field-input">
+              <input id="mcp-form-name" type="text" maxlength="60" placeholder="例如 Termux 构建服务" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            </span>
+          </label>
+          <label class="field" for="mcp-form-url">
+            <span class="field-label">服务器 URL</span>
+            <span class="field-input">
+              <input id="mcp-form-url" type="url" inputmode="url" placeholder="http://127.0.0.1:8787/mcp" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            </span>
+          </label>
+          <label class="field" for="mcp-form-token">
+            <span class="field-label">Token（可选）</span>
+            <span class="field-input">
+              <input id="mcp-form-token" type="password" placeholder="Bearer Token" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+              <button class="field-suffix" type="button" data-action="mcp-toggle-token" aria-label="显示或隐藏 Token">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+              </button>
+            </span>
+          </label>
+          <div class="modal-error" id="mcp-form-error" role="alert" hidden></div>
+          <p class="modal-hint">保存后会立即尝试连接。Token 只保存在本机，不会上传。</p>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="mcp-form-cancel">取消</button>
+        <button class="btn btn--primary" type="button" id="mcp-form-save" data-action="mcp-form-save">保存并连接</button>
       </div>
     </div>
   </div>

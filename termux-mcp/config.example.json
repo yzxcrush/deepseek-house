@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "token": "CHANGE_ME_RUN_SETUP_SH_TO_GENERATE_RANDOM_TOKEN",
+  "allow_root": "/data/data/com.termux/files/home",
+  "project": "",
+  "keystore": "",
+  "ks_pass": "deepseekhouse",
+  "ks_alias": "deepseekhouse"
+}

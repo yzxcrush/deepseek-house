@@ -91,7 +91,11 @@
     'otp-sent': true,
     'otp-verified': true,
     'auth-changed': true,
-    'workspace-changed': true
+    'workspace-changed': true,
+    /* ARCH v2 P2：MCP Client 事件 */
+    'mcp-status': true,
+    'mcp-tools': true,
+    'mcp-progress': true
   };
 
   var eventWaiters = Object.create(null); // type -> [{predicate, finish}]
@@ -429,7 +433,7 @@
           parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }
         }
       }
-    ];
+    ].concat(mockMcpSchemaList());
   }
 
   function mockFindTool(name) {
@@ -510,26 +514,414 @@
     return true;
   }
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P2：MCP Client —— mock 实现
+   * 触发条件：无 DSNative，或原生缺少 mcp* 方法（旧版本/半 mock 联调）。
+   * 2 个示例服务器 + 连接/断开/刷新 + 工具发现 + pack_apk 构建进度 10→100。
+   * ------------------------------------------------------------------ */
+
+  var MOCK_MCP_DEFAULT_SERVERS = [
+    {
+      id: 'mcp-termux',
+      name: 'Termux 本地构建',
+      url: 'http://127.0.0.1:8787/mcp',
+      token: 'demo-token',
+      enabled: true,
+      builtin: true
+    },
+    {
+      id: 'mcp-remote-demo',
+      name: '示例远程 MCP',
+      url: 'https://mcp.example.com/mcp',
+      token: '',
+      enabled: true,
+      builtin: true
+    }
+  ];
+
+  var MOCK_MCP_TOOLS = {
+    'mcp-termux': [
+      { name: 'pack_apk', description: '打包 APK（调用 Termux 项目 scripts/build.sh，返回 ok/apk_path/size/sha256/log）' },
+      { name: 'decompile_apk', description: '反编译 APK（apktool d；未安装时返回提示）' },
+      { name: 'repack_apk', description: '回编译并签名 APK（apktool b + apksigner）' },
+      { name: 'run_gradle', description: '执行 Gradle 任务（./gradlew <task>）' },
+      { name: 'list_workspace', description: '列出 Termux 工作区目录内容' }
+    ],
+    'mcp-remote-demo': [
+      { name: 'echo', description: '回显传入的文本' },
+      { name: 'get_time', description: '返回服务器当前时间（ISO）' }
+    ]
+  };
+
+  var MOCK_MCP_PROGRESS_STEPS = [
+    { percent: 10, line: '准备构建环境…' },
+    { percent: 25, line: '读取项目配置…' },
+    { percent: 45, line: 'aapt 打包资源…' },
+    { percent: 65, line: 'javac 编译 Java…' },
+    { percent: 80, line: 'd8 生成 dex…' },
+    { percent: 92, line: 'apksigner 签名…' },
+    { percent: 100, line: '构建完成' }
+  ];
+
+  var mockMcpServers = [];
+  var mockMcpStatus = Object.create(null); // id -> {status,message,tools:[{name,description}]}
+  var mockMcpTimers = Object.create(null); // id -> 连接定时器
+
+  function mockSeedMcp() {
+    mockMcpServers = MOCK_MCP_DEFAULT_SERVERS.map(function (s) {
+      return { id: s.id, name: s.name, url: s.url, token: s.token, enabled: s.enabled !== false, builtin: !!s.builtin };
+    });
+    mockMcpStatus = Object.create(null);
+    mockMcpTimers = Object.create(null);
+    for (var i = 0; i < mockMcpServers.length; i++) {
+      mockMcpStatus[mockMcpServers[i].id] = { status: 'disconnected', message: '', tools: [] };
+    }
+  }
+  mockSeedMcp();
+
+  function mockMcpFindServer(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    for (var i = 0; i < mockMcpServers.length; i++) if (mockMcpServers[i].id === key) return mockMcpServers[i];
+    return null;
+  }
+
+  function mockMcpStatusOf(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!mockMcpStatus[key]) mockMcpStatus[key] = { status: 'disconnected', message: '', tools: [] };
+    return mockMcpStatus[key];
+  }
+
+  function mockMcpToolsFor(id) {
+    var list = MOCK_MCP_TOOLS[String(id === null || id === undefined ? '' : id)] || [];
+    return list.map(function (t) { return { name: t.name, description: t.description }; });
+  }
+
+  /** 已连接服务器的工具（[{serverId,name,description}]） */
+  function mockMcpConnectedTools() {
+    var out = [];
+    for (var i = 0; i < mockMcpServers.length; i++) {
+      var server = mockMcpServers[i];
+      if (mockMcpStatusOf(server.id).status !== 'connected') continue;
+      var tools = mockMcpToolsFor(server.id);
+      for (var j = 0; j < tools.length; j++) {
+        out.push({ serverId: server.id, name: tools[j].name, description: tools[j].description });
+      }
+    }
+    return out;
+  }
+
+  function mockMcpToolBaseName(name) {
+    var raw = String(name === null || name === undefined ? '' : name);
+    if (raw.indexOf('mcp:') === 0) {
+      var parts = raw.split(':');
+      if (parts.length >= 3) return parts[parts.length - 1];
+    }
+    return raw;
+  }
+
+  /** 按 name（或 mcp:<serverId>:<name> 形式）查找已连接的 MCP 工具 */
+  function mockMcpFindTool(name) {
+    var key = String(name === null || name === undefined ? '' : name);
+    var list = mockMcpConnectedTools();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].name === key) return list[i];
+      if (('mcp:' + list[i].serverId + ':' + list[i].name) === key) return list[i];
+    }
+    return null;
+  }
+
+  /** MCP 工具 schema（risk=MID，needConfirm=true；注册语义与原生 ToolRegistry 一致） */
+  function mockMcpSchemaList() {
+    var list = mockMcpConnectedTools();
+    var seen = Object.create(null);
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var tool = list[i];
+      if (seen[tool.name]) continue;
+      seen[tool.name] = true;
+      out.push({
+        type: 'function',
+        risk: 'mid',
+        mcp: { serverId: tool.serverId },
+        function: {
+          name: tool.name,
+          description: tool.description || ('MCP 工具 ' + tool.name),
+          parameters: { type: 'object', properties: {}, required: [] }
+        }
+      });
+    }
+    return out;
+  }
+
+  function mockMcpEmitStatus(id, status, message) {
+    emitAgentLater(10, {
+      type: 'mcp-status',
+      id: String(id === null || id === undefined ? '' : id),
+      status: String(status || 'disconnected'),
+      message: message === null || message === undefined ? '' : String(message)
+    });
+  }
+
+  function mockMcpEmitTools(id) {
+    var tools = mockMcpToolsFor(id);
+    mockMcpStatusOf(id).tools = tools;
+    emitAgentLater(10, {
+      type: 'mcp-tools',
+      id: String(id === null || id === undefined ? '' : id),
+      tools: tools.map(function (t) { return { name: t.name, description: t.description }; })
+    });
+  }
+
+  function mockMcpConnect(id) {
+    var server = mockMcpFindServer(id);
+    if (!server) return false;
+    var st = mockMcpStatusOf(server.id);
+    if (mockMcpTimers[server.id]) { clearTimeout(mockMcpTimers[server.id]); mockMcpTimers[server.id] = 0; }
+    st.status = 'connecting';
+    st.message = '';
+    mockMcpEmitStatus(server.id, 'connecting', '正在连接 MCP 服务器…');
+    mockMcpTimers[server.id] = setTimeout(function () {
+      mockMcpTimers[server.id] = 0;
+      var cur = mockMcpStatusOf(server.id);
+      if (cur.status !== 'connecting') return; /* 期间断开/删除 */
+      cur.status = 'connected';
+      cur.message = '';
+      mockMcpEmitStatus(server.id, 'connected', '已连接（mock）');
+      mockMcpEmitTools(server.id);
+    }, 160);
+    return true;
+  }
+
+  function mockMcpDisconnect(id) {
+    var server = mockMcpFindServer(id);
+    if (!server) return false;
+    if (mockMcpTimers[server.id]) { clearTimeout(mockMcpTimers[server.id]); mockMcpTimers[server.id] = 0; }
+    var st = mockMcpStatusOf(server.id);
+    st.status = 'disconnected';
+    st.message = '';
+    st.tools = [];
+    mockMcpEmitStatus(server.id, 'disconnected', '已断开连接');
+    emitAgentLater(20, { type: 'mcp-tools', id: server.id, tools: [] });
+    return true;
+  }
+
+  function mockMcpRefreshTools(id) {
+    var server = mockMcpFindServer(id);
+    if (!server) return false;
+    var st = mockMcpStatusOf(server.id);
+    if (st.status === 'connected') {
+      mockMcpEmitTools(server.id);
+      return true;
+    }
+    emitAgentLater(10, {
+      type: 'mcp-status',
+      id: server.id,
+      status: st.status || 'disconnected',
+      message: '未连接，请先连接后再刷新工具'
+    });
+    return true;
+  }
+
+  function mockMcpSave(payload) {
+    var data = payload && typeof payload === 'object' ? payload : {};
+    var name = String(data.name === null || data.name === undefined ? '' : data.name).replace(/^\s+|\s+$/g, '');
+    var url = String(data.url === null || data.url === undefined ? '' : data.url).replace(/^\s+|\s+$/g, '');
+    if (!name) return false;
+    if (!/^https?:\/\/\S+/i.test(url)) return false;
+    var id = data.id ? String(data.id) : ('mcp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5));
+    var existing = mockMcpFindServer(id);
+    if (existing) {
+      existing.name = name;
+      existing.url = url;
+      existing.token = data.token === undefined || data.token === null ? existing.token : String(data.token);
+      existing.enabled = data.enabled !== false;
+    } else {
+      mockMcpServers.push({
+        id: id,
+        name: name,
+        url: url,
+        token: data.token === undefined || data.token === null ? '' : String(data.token),
+        enabled: data.enabled !== false
+      });
+      mockMcpStatus[id] = { status: 'disconnected', message: '', tools: [] };
+    }
+    return true;
+  }
+
+  function mockMcpDelete(id) {
+    var server = mockMcpFindServer(id);
+    if (!server) return false;
+    var idx = mockMcpServers.indexOf(server);
+    if (idx >= 0) mockMcpServers.splice(idx, 1);
+    if (mockMcpTimers[server.id]) { clearTimeout(mockMcpTimers[server.id]); delete mockMcpTimers[server.id]; }
+    delete mockMcpStatus[server.id];
+    return true;
+  }
+
+  function mockMcpServersJson() {
+    return mockMcpServers.map(function (server) {
+      var st = mockMcpStatusOf(server.id);
+      return {
+        id: server.id,
+        name: server.name,
+        url: server.url,
+        token: server.token,
+        enabled: server.enabled !== false,
+        builtin: !!server.builtin,
+        status: st.status,
+        tools: (st.tools || []).map(function (t) { return { name: t.name, description: t.description }; })
+      };
+    });
+  }
+
+  function mockMcpBuildResult(name, args) {
+    var a = args && typeof args === 'object' ? args : {};
+    var out = { ok: true, tool: name, log: '（mock）' + name + ' 执行完成' };
+    if (name === 'pack_apk') {
+      out.apk_path = '/sdcard/house-workspace/build/deepseek-house-mock.apk';
+      out.size = 1234567;
+      out.sha256 = 'mock-sha256-0123456789abcdef';
+    } else if (name === 'decompile_apk') {
+      out.out_dir = '/sdcard/house-workspace/build/decompiled';
+    } else if (name === 'repack_apk') {
+      out.apk_path = '/sdcard/house-workspace/build/repacked-mock.apk';
+    } else if (name === 'run_gradle') {
+      out.task = String(a.task || 'assembleDebug');
+      out.tail = 'BUILD SUCCESSFUL（mock）';
+    }
+    try { return JSON.stringify(out, null, 2); } catch (e) { return '{"ok":true}'; }
+  }
+
+  function mockMcpToolResult(name, args) {
+    var base = mockMcpToolBaseName(name);
+    var a = args && typeof args === 'object' ? args : {};
+    if (base === 'list_workspace') {
+      return JSON.stringify(mockListDir(a.path === undefined || a.path === null ? '' : a.path));
+    }
+    if (base === 'echo') return String(a.text === undefined || a.text === null ? '(echo)' : a.text);
+    if (base === 'get_time') return new Date().toISOString();
+    if (base === 'pack_apk' || base === 'decompile_apk' || base === 'repack_apk' || base === 'run_gradle') {
+      return mockMcpBuildResult(base, a);
+    }
+    return '（mock MCP 工具）' + name + ' 执行完成';
+  }
+
+  function mockMcpIsBuildTool(name) {
+    var base = mockMcpToolBaseName(name);
+    return base === 'pack_apk' || base === 'decompile_apk' || base === 'repack_apk' || base === 'run_gradle';
+  }
+
+  /** mock MCP 工具执行：构建类按 MOCK_MCP_PROGRESS_STEPS 发 mcp-progress 10→100，再回 tool-result */
+  function mockExecMcpToolFlow(requestId, pending) {
+    var rid = String(requestId);
+    var name = pending.name;
+    var args = pending.args && typeof pending.args === 'object' ? pending.args : {};
+    var confirmed = !!pending.confirmed;
+    var meta = mockMcpFindTool(name);
+    var serverId = pending.serverId || (meta ? meta.serverId : '');
+    if (!meta) {
+      mockAuditPush(name, args, 'MCP 工具不可用', false, confirmed);
+      emitAgentLater(15, {
+        type: 'tool-result',
+        requestId: rid,
+        tool: name,
+        ok: false,
+        result: 'MCP 工具不可用（服务器未连接）：' + name,
+        confirmed: confirmed,
+        serverId: serverId
+      });
+      return;
+    }
+    if (!mockMcpIsBuildTool(name)) {
+      var text = mockMcpToolResult(name, args);
+      mockAuditPush(name, args, text, true, confirmed);
+      emitAgentLater(40, {
+        type: 'tool-result',
+        requestId: rid,
+        tool: name,
+        ok: true,
+        result: String(text),
+        confirmed: confirmed,
+        serverId: serverId
+      });
+      return;
+    }
+    var idx = 0;
+    function step() {
+      if (idx >= MOCK_MCP_PROGRESS_STEPS.length) {
+        var out = mockMcpBuildResult(mockMcpToolBaseName(name), args);
+        mockAuditPush(name, args, out, true, confirmed);
+        emitAgentLater(20, {
+          type: 'tool-result',
+          requestId: rid,
+          tool: name,
+          ok: true,
+          result: String(out),
+          confirmed: confirmed,
+          serverId: serverId
+        });
+        return;
+      }
+      var st = MOCK_MCP_PROGRESS_STEPS[idx++];
+      emitAgentLater(idx === 1 ? 10 : 85, {
+        type: 'mcp-progress',
+        id: serverId,
+        tool: name,
+        percent: st.percent,
+        line: st.line
+      });
+      setTimeout(step, 90);
+    }
+    step();
+  }
+
+  /** 执行一条已确认（或无需确认）的 mock 工具调用：内置 native 工具 / MCP 工具二选一 */
+  function mockExecutePendingTool(rid) {
+    var pending = mockPendingTools[rid];
+    if (!pending) return false;
+    delete mockPendingTools[rid];
+    if (mockMcpFindTool(pending.name)) {
+      mockExecMcpToolFlow(rid, pending);
+      return true;
+    }
+    var outcome = mockExecNativeTool(pending.name, pending.args || {});
+    mockAuditPush(pending.name, pending.args || {}, outcome.result, outcome.ok, !!pending.confirmed);
+    emitAgentLater(18, {
+      type: 'tool-result',
+      requestId: String(rid),
+      tool: pending.name,
+      ok: !!outcome.ok,
+      result: String(outcome.result === null || outcome.result === undefined ? '' : outcome.result),
+      confirmed: !!pending.confirmed
+    });
+    return true;
+  }
+
   /** mock 下模拟「同一 requestId 的 execTool → tool-confirm → tool-result」完整事件流 */
   function mockExecToolFlow(requestId, name, argsJson) {
     var rid = String(requestId);
     var toolName = String(name === null || name === undefined ? '' : name);
     var args = parseJSON(argsJson, {}) || {};
-    var risk = mockRiskOf(toolName);
-    var outcome = null;
+    var mcp = mockMcpFindTool(toolName);
+    var schema = mockFindTool(toolName);
     /* 名称未知：直接失败结果，避免调用方一直等 */
-    if (!mockFindTool(toolName)) {
-      outcome = { ok: false, result: '未知原生工具：' + toolName };
-      mockAuditPush(toolName, args, outcome.result, false, false);
-      emitAgentLater(10, { type: 'tool-result', requestId: rid, tool: toolName, ok: false, result: outcome.result, confirmed: false });
+    if (!schema && !mcp) {
+      mockAuditPush(toolName, args, '未知工具', false, false);
+      emitAgentLater(10, { type: 'tool-result', requestId: rid, tool: toolName, ok: false, result: '未知原生工具：' + toolName, confirmed: false });
       return true;
     }
-    var cfg = Bridge.__mockConfig || {};
+    var risk = mcp ? 'mid' : mockRiskOf(toolName);
     var needConfirm;
     if (risk === 'high') needConfirm = true;
     else if (risk === 'mid') needConfirm = !mockConfirmedMidTools[toolName];
     else needConfirm = false;
-    mockPendingTools[rid] = { name: toolName, args: args, risk: risk, confirmNeeded: needConfirm, confirmed: false };
+    mockPendingTools[rid] = {
+      name: toolName,
+      args: args,
+      risk: risk,
+      confirmed: false,
+      serverId: mcp ? mcp.serverId : ''
+    };
     if (needConfirm) {
       emitAgentLater(10, {
         type: 'tool-confirm',
@@ -541,17 +933,7 @@
       });
       return true;
     }
-    outcome = mockExecNativeTool(toolName, args);
-    delete mockPendingTools[rid];
-    mockAuditPush(toolName, args, outcome.result, outcome.ok, false);
-    emitAgentLater(18, {
-      type: 'tool-result',
-      requestId: rid,
-      tool: toolName,
-      ok: !!outcome.ok,
-      result: String(outcome.result === null || outcome.result === undefined ? '' : outcome.result),
-      confirmed: false
-    });
+    mockExecutePendingTool(rid);
     return true;
   }
 
@@ -733,6 +1115,50 @@
       loggedIn: !!raw.loggedIn,
       phone: raw.phone === undefined || raw.phone === null ? '' : String(raw.phone)
     };
+  }
+
+  /* ARCH v2 P2：MCP 配置/工具返回值归一化 */
+  function normalizeMcpTools(raw) {
+    if (!Array.isArray(raw)) return [];
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      var name = item.name === undefined || item.name === null ? '' : String(item.name);
+      if (!name) continue;
+      out.push({
+        name: name,
+        description: item.description === undefined || item.description === null ? '' : String(item.description)
+      });
+    }
+    return out;
+  }
+
+  function normalizeMcpServers(raw) {
+    if (!Array.isArray(raw)) return [];
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      var id = item.id === undefined || item.id === null ? '' : String(item.id);
+      if (!id) continue;
+      var server = {
+        id: id,
+        name: item.name === undefined || item.name === null ? id : String(item.name),
+        url: item.url === undefined || item.url === null ? '' : String(item.url),
+        token: item.token === undefined || item.token === null ? '' : String(item.token),
+        enabled: item.enabled !== false
+      };
+      if (item.builtin) server.builtin = true;
+      /* 原生 serversJson 附带的状态字段（status/message/toolCount/connected） */
+      if (item.status !== undefined && item.status !== null) server.status = String(item.status);
+      if (item.message !== undefined && item.message !== null) server.message = String(item.message);
+      if (item.connected !== undefined) server.connected = !!item.connected;
+      if (Array.isArray(item.tools)) server.tools = normalizeMcpTools(item.tools);
+      if (item.toolCount !== undefined) server.toolCount = parseInt(item.toolCount, 10) || 0;
+      out.push(server);
+    }
+    return out;
   }
 
   var Bridge = {
@@ -1221,12 +1647,27 @@
     },
 
     /* ------------------------------------------------------------------ *
-     * ARCH v2 P1：原生 Agent 工具框架
+     * ARCH v2 P1/P2：原生 Agent 工具框架（内置工具 + MCP 远程工具）
      * ------------------------------------------------------------------ */
     toolSchemas: function () {
       if (hasNative && hasNativeMethod('toolSchemas')) {
         var raw = callNative('toolSchemas', [], true);
-        return Array.isArray(raw) ? raw.filter(function (t) { return !!(t && t.function && t.function.name); }) : [];
+        var list = Array.isArray(raw)
+          ? raw.filter(function (t) { return !!(t && t.function && t.function.name); })
+          : [];
+        /* 半 mock 联调：原生没有 MCP 方法时，把 Bridge mock 已连接的 MCP 工具补进 tools */
+        if (!hasNativeMethod('mcpServers')) {
+          var names = Object.create(null);
+          for (var i = 0; i < list.length; i++) names[String(list[i].function.name)] = true;
+          var extra = mockMcpSchemaList();
+          for (var j = 0; j < extra.length; j++) {
+            var en = String(extra[j].function.name);
+            if (names[en]) continue;
+            names[en] = true;
+            list.push(extra[j]);
+          }
+        }
+        return list;
       }
       return mockToolSchemas();
     },
@@ -1239,6 +1680,10 @@
       if (typeof argsJson === 'string') argsStr = argsJson;
       else {
         try { argsStr = JSON.stringify(argsJson === undefined || argsJson === null ? {} : argsJson); } catch (e) { argsStr = '{}'; }
+      }
+      /* 原生没有 MCP 方法（旧原生/半 mock），且工具来自 Bridge mock MCP：走 mock 执行（含进度事件） */
+      if (mockMcpFindTool(toolName) && !(hasNative && hasNativeMethod('mcpServers'))) {
+        return mockExecToolFlow(rid, toolName, argsStr);
       }
       if (hasNative && hasNativeMethod('execTool')) {
         try {
@@ -1255,7 +1700,9 @@
     confirmTool: function (requestId, allow) {
       var rid = String(requestId === null || requestId === undefined ? '' : requestId);
       if (!rid) return false;
-      if (hasNative && hasNativeMethod('confirmTool')) {
+      /* 半 mock 联调：execTool 被 Bridge mock 接管（如 mock MCP 工具）时，确认也必须回到 mock */
+      var pending = mockPendingTools[rid];
+      if (!pending && hasNative && hasNativeMethod('confirmTool')) {
         try {
           DSNative.confirmTool(rid, !!allow);
           return true;
@@ -1264,28 +1711,24 @@
           return false;
         }
       }
-      var pending = mockPendingTools[rid];
       if (!pending) return false;
-      delete mockPendingTools[rid];
-      var outcome;
       if (!allow) {
-        outcome = { ok: false, result: '用户拒绝执行' };
-      } else {
-        var res = mockExecNativeTool(pending.name, pending.args || {});
-        outcome = { ok: !!res.ok, result: String(res.result === null || res.result === undefined ? '' : res.result) };
-        if (String(pending.risk) === 'mid') mockConfirmedMidTools[pending.name] = true;
+        delete mockPendingTools[rid];
+        mockAuditPush(pending.name, pending.args || {}, '用户拒绝执行', false, false);
+        emitAgentLater(12, {
+          type: 'tool-result',
+          requestId: rid,
+          tool: pending.name,
+          ok: false,
+          result: '用户拒绝执行',
+          confirmed: false,
+          serverId: pending.serverId || ''
+        });
+        return true;
       }
-      var confirmed = !!allow;
-      mockAuditPush(pending.name, pending.args || {}, outcome.result, outcome.ok, confirmed);
-      emitAgentLater(12, {
-        type: 'tool-result',
-        requestId: rid,
-        tool: pending.name,
-        ok: outcome.ok,
-        result: outcome.result,
-        confirmed: confirmed
-      });
-      return true;
+      pending.confirmed = true;
+      if (String(pending.risk) === 'mid') mockConfirmedMidTools[pending.name] = true;
+      return mockExecutePendingTool(rid);
     },
 
     /* ------------------------------------------------------------------ *
@@ -1565,6 +2008,121 @@
     },
 
     /* ------------------------------------------------------------------ *
+     * ARCH v2 P2：MCP Client（配置 CRUD / 连接管理 / 工具刷新）
+     * 事件：mcp-status / mcp-tools / mcp-progress（native JsBridge 或 mock 发出）
+     * ------------------------------------------------------------------ */
+    mcpServers: function () {
+      if (hasNative && hasNativeMethod('mcpServers')) {
+        var raw = callNative('mcpServers', [], true);
+        return normalizeMcpServers(raw);
+      }
+      return normalizeMcpServers(mockMcpServersJson());
+    },
+
+    mcpSaveServer: function (json) {
+      var server = typeof json === 'string' ? parseJSON(json, null) : (json || null);
+      if (!server || typeof server !== 'object' || Array.isArray(server)) return false;
+      if (hasNative && hasNativeMethod('mcpSaveServer')) {
+        try {
+          var str = typeof json === 'string' ? json : JSON.stringify(server);
+          return !!DSNative.mcpSaveServer(str);
+        } catch (e) {
+          warn('mcpSaveServer 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockMcpSave(server);
+    },
+
+    mcpDeleteServer: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      if (hasNative && hasNativeMethod('mcpDeleteServer')) {
+        try {
+          DSNative.mcpDeleteServer(key);
+          return true;
+        } catch (e) {
+          warn('mcpDeleteServer 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockMcpDelete(key);
+    },
+
+    mcpConnect: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      if (hasNative && hasNativeMethod('mcpConnect')) {
+        try {
+          DSNative.mcpConnect(key);
+          return true;
+        } catch (e) {
+          warn('mcpConnect 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockMcpConnect(key);
+    },
+
+    mcpDisconnect: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      if (hasNative && hasNativeMethod('mcpDisconnect')) {
+        try {
+          DSNative.mcpDisconnect(key);
+          return true;
+        } catch (e) {
+          warn('mcpDisconnect 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockMcpDisconnect(key);
+    },
+
+    mcpRefreshTools: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      if (hasNative && hasNativeMethod('mcpRefreshTools')) {
+        try {
+          DSNative.mcpRefreshTools(key);
+          return true;
+        } catch (e) {
+          warn('mcpRefreshTools 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockMcpRefreshTools(key);
+    },
+
+    /** 补充（arch-native）：同步返回某服务器当前工具列表 JSON 数组（页面初次渲染/调试用） */
+    mcpTools: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return [];
+      if (hasNative && hasNativeMethod('mcpTools')) {
+        var raw = callNative('mcpTools', [key], true);
+        return normalizeMcpTools(raw);
+      }
+      var st = mockMcpStatusOf(key);
+      return (st.status === 'connected' ? mockMcpToolsFor(key) : []).map(function (t) {
+        return { name: t.name, description: t.description };
+      });
+    },
+
+    /** 等待某服务器状态/工具事件（app.onMcpTest 用）：predicate 收到 (statusEvt) / (toolsEvt) */
+    waitMcpStatus: function (id, timeoutMs) {
+      var key = String(id === null || id === undefined ? '' : id);
+      return waitForEvent('mcp-status', function (evt) {
+        return !!evt && String(evt.id) === key;
+      }, timeoutMs || 15000);
+    },
+    waitMcpTools: function (id, timeoutMs) {
+      var key = String(id === null || id === undefined ? '' : id);
+      return waitForEvent('mcp-tools', function (evt) {
+        return !!evt && String(evt.id) === key;
+      }, timeoutMs || 15000);
+    },
+
+    /* ------------------------------------------------------------------ *
      * ARCH v2 P1：事件 Promise 辅助（app.js / QA 使用）
      * ------------------------------------------------------------------ */
     waitForEvent: waitForEvent,
@@ -1644,8 +2202,25 @@
       mockPendingTools = Object.create(null);
       mockConfirmedMidTools = Object.create(null);
       mockWorkspace = { root: MOCK_WORKSPACE_ROOT, writable: true, allFilesAccess: false };
+      mockSeedMcp();
       return true;
     }
+  };
+
+  /* ARCH v2 P2：MCP mock 调试/QA 入口（仅测试使用） */
+  Bridge.__mockMcp = {
+    servers: function () { return normalizeMcpServers(mockMcpServersJson()); },
+    statusOf: function (id) {
+      var st = mockMcpStatusOf(id);
+      return { status: st.status, message: st.message, tools: (st.tools || []).slice() };
+    },
+    connectedTools: function () { return mockMcpConnectedTools(); },
+    connect: function (id) { return mockMcpConnect(id); },
+    disconnect: function (id) { return mockMcpDisconnect(id); },
+    refresh: function (id) { return mockMcpRefreshTools(id); },
+    save: function (server) { return mockMcpSave(server); },
+    remove: function (id) { return mockMcpDelete(id); },
+    reset: function () { mockSeedMcp(); return true; }
   };
 
   Bridge.clipboard = {
