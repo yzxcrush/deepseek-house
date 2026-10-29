@@ -3375,3 +3375,37 @@ body { background-color: #181818; }
   font-size: 13.5px;
 }
 .info-row--history .info-value { font-size: 12.5px; color: #8b8b8b; }
+
+/* ==========================================================================
+   v1.1.2 修复：根页（聊天/分享/个人资料）层叠与显示
+   —— 之前 share/profile 的 .topbar(z-index:5) 会盖到聊天列表上，
+      而它们的主体（z-index:auto）又被 .screen--chats(z-index:1) 盖住，
+      表现为「点开后只有标题、内容空白/仍是聊天列表」。
+   ========================================================================== */
+.screen--chats { z-index: 1; }
+.screen--share { z-index: 3; }
+.screen--profile { z-index: 3; }
+
+.screen--chats:not(.is-active),
+.screen--share:not(.is-active),
+.screen--profile:not(.is-active) {
+  visibility: hidden;
+  pointer-events: none;
+}
+.screen--chats.is-active,
+.screen--share.is-active,
+.screen--profile.is-active {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.screen--share, .screen--profile {
+  overflow: hidden;
+  background-color: var(--bg);
+}
+
+/* v1.1.2 追加：根页底部留白，避免被底部导航遮住 */
+.share-scroll,
+.profile-scroll {
+  padding-bottom: calc(112px + var(--safe-bottom));
+}

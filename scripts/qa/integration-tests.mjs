@@ -683,6 +683,14 @@ export function registerIntegrationTests() {
     clickAction('nav-share');
     await waitFor(() => isScreenActive(w, 'screen-share'), { timeout: 3000, label: '分享页显示' });
     ok($id('nav-share').classList.contains('is-active'), '分享标签未高亮');
+    // 层叠回归：分享页必须在聊天页之上（z-index 更大），且聊天页应隐藏
+    const zShare = parseInt(w.getComputedStyle($id('screen-share')).zIndex, 10);
+    const zChats = parseInt(w.getComputedStyle($id('screen-chats')).zIndex, 10);
+    ok(zShare > zChats, `分享页 z-index(${zShare}) 应大于聊天页(${zChats})`);
+    equal(String(w.getComputedStyle($id('screen-chats')).visibility), 'hidden', '非当前根页应隐藏（避免叠层露出聊天列表）');
+    // 页面主体内容必须真实渲染，而不是只有标题
+    ok($$('#option-list, .option-list .option-row').length >= 3, '分享页选项未渲染');
+    ok($$('#share-list .chat-item--share').length >= 1 || $id('share-empty').hidden === false, '分享页会话列表未渲染');
     // 统计卡片
     ok(parseInt($id('share-chat-count').textContent, 10) >= 1, '分享页会话统计不正确');
     ok(parseInt($id('share-msg-count').textContent, 10) >= 0, '分享页消息统计不正确');

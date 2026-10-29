@@ -574,7 +574,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '1.1.1' }
+      { label: '版本', value: '1.1.2' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
