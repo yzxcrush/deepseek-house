@@ -242,7 +242,7 @@ App 侧通过 `DSPlugins.runHook(name, arg1, arg2)` 调用钩子（见 §4.3）�
 |---|---|---|
 | `toolSchemas()` | `Array` | 所有「已启用且有 tools」的插件的 OpenAI tools 数组 |
 | `runTool(name, args, ctx?)` | `Promise<string>` | 执行工具；找不到返回中文提示串，异常返回中文错误串 |
-| `runCommand(cmd, args, ctx?)` | `Promise<string\|null>` | 执行斜杠命令；无匹配返回 `null` |
+| `runCommand(cmd, args, ctx?)` | `Promise<string\|null>` | 执行斜杠命令；无匹配返回 `null`。兼容 `runCommand("/calc 1+2")` 与 `runCommand("calc", "1+2")` 两种风格 |
 | `runHook(name, arg1?, arg2?, ctx?)` | `Promise<Array>` | 依次执行各启用插件的钩子，返回结果数组（失败项为 `undefined`） |
 | `createContext(extra?)` | `object` | 构造一个 ctx（需要手动运行插件时用，一般不需要） |
 
@@ -442,7 +442,7 @@ try {
 
 | 项目 | 限制 |
 |---|---|
-| 外部插件 id | 必须 `user.` 开头，`[A-Za-z0-9_-]`，总长 ≤ 56（`user.` + 1~48） |
+| 外部插件 id | 必须 `user.` 开头，`[A-Za-z0-9_-]`，总长 ≤ 53（`user.` 前缀 + 1~48 个字符） |
 | 插件名称 | 1~60 字符 |
 | 版本号 | `[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}`，如 `1.0.0` |
 | 源码大小 | ≤ 512KB |

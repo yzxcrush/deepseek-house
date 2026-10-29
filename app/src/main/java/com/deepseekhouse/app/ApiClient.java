@@ -184,11 +184,12 @@ public final class ApiClient {
         boolean stream = payload.optBoolean("stream", true);
         HttpURLConnection conn = null;
         try {
-            conn = open(url, "POST", stream ? "text/event-stream" : "application/json");
+            conn = open(url, "POST", stream ? "text/event-stream" : "application/json", true);
             req.conn = conn;
             if (req.cancelled) {
                 return;
             }
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
             conn.setDoOutput(true);
             conn.setFixedLengthStreamingMode(bytes.length);
@@ -449,7 +450,7 @@ public final class ApiClient {
         }
         HttpURLConnection conn = null;
         try {
-            conn = open(url, "GET", "application/json");
+            conn = open(url, "GET", "application/json", true);
             req.conn = conn;
             if (req.cancelled) {
                 return;
@@ -557,7 +558,7 @@ public final class ApiClient {
         }
         HttpURLConnection conn = null;
         try {
-            conn = open(url, method, "application/json, text/plain, */*");
+            conn = open(url, method, "application/json, text/plain, */*", false);
             conn.setInstanceFollowRedirects(true);
             if (headers != null) {
                 Iterator<String> keys = headers.keys();
@@ -619,7 +620,12 @@ public final class ApiClient {
 
     // ------------------------------------------------------------ HTTP 基础
 
-    private HttpURLConnection open(String url, String method, String accept) throws IOException {
+    /**
+     * @param withAuth true 时附上 API Key（仅 DeepSeek 官方端点）；通用 httpFetch 绝不能带，
+     *                 否则插件请求第三方 URL 会泄漏用户 Key。
+     */
+    private HttpURLConnection open(String url, String method, String accept, boolean withAuth)
+            throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setRequestMethod(method);
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -630,11 +636,12 @@ public final class ApiClient {
         // 手动处理 gzip：见 wrapStream，兼容部分服务端/代理的压缩行为
         conn.setRequestProperty("Accept-Encoding", "gzip");
         conn.setRequestProperty("User-Agent", USER_AGENT);
-        String apiKey = prefs.getApiKey();
-        if (apiKey != null && !apiKey.trim().isEmpty()) {
-            conn.setRequestProperty("Authorization", "Bearer " + apiKey.trim());
+        if (withAuth) {
+            String apiKey = prefs.getApiKey();
+            if (apiKey != null && !apiKey.trim().isEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer " + apiKey.trim());
+            }
         }
-        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         return conn;
     }
 

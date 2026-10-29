@@ -665,11 +665,12 @@
       enabled: isEnabled(def.id),
       error: def.error || null,
       fileName: def.fileName || "",
+      // 命令/工具以对象形式返回，便于 UI 生成帮助列表
       commands: (def.commands || []).map(function (c) {
-        return c.name;
+        return { name: c.name, description: c.description, usage: c.usage };
       }),
       tools: (def.tools || []).map(function (t) {
-        return t.name;
+        return { name: t.name, description: t.description };
       })
     };
   }
@@ -758,7 +759,8 @@
           warn("同步插件开关到原生失败：" + errText(e));
         }
       }
-      if (on && def.external && !def._loaded && !def.error) {
+      // 未加载或上次加载失败时，重新启用会再次尝试加载源码
+      if (on && def.external && !def._loaded) {
         loadExternalOne(def).then(
           function () {
             emitChange();
@@ -809,15 +811,26 @@
   /* ------------------------------------------------------------------ *
    * 斜杠命令 / 钩子（SPEC §5.2）
    * ------------------------------------------------------------------ */
-  function normalizeCommandName(cmd) {
+  // 兼容两种调用风格：runCommand("/calc 1+2") 或 runCommand("calc", "1+2")
+  function parseCommandInput(cmd) {
     var s = trimStr(cmd).replace(/^\/+/, "");
-    var m = /^[^\s]+/.exec(s);
-    return m ? m[0].toLowerCase() : "";
+    var m = /^(\S+)\s*([\s\S]*)$/.exec(s);
+    if (!m) return { name: "", rest: "" };
+    return { name: m[1].toLowerCase(), rest: m[2].trim() };
+  }
+
+  function argsEmpty(args) {
+    if (args == null) return true;
+    if (typeof args === "string") return !args.trim();
+    if (Array.isArray(args)) return args.length === 0;
+    return false;
   }
 
   async function runCommand(cmd, args, ctx) {
-    var name = normalizeCommandName(cmd);
+    var parsed = parseCommandInput(cmd);
+    var name = parsed.name;
     if (!name) return null;
+    var cmdArgs = argsEmpty(args) ? parsed.rest : args;
     var i;
     var j;
 
@@ -828,7 +841,7 @@
       var hook = hdef.hooks && hdef.hooks.onCommand;
       if (!isFn(hook)) continue;
       try {
-        var hookRes = await hook.call(hdef, makeCtx(hdef.id, ctx), name, args);
+        var hookRes = await hook.call(hdef, makeCtx(hdef.id, ctx), name, cmdArgs);
         if (hookRes != null && hookRes !== false && hookRes !== "") {
           return normalizeResult(hookRes);
         }
@@ -847,7 +860,7 @@
         var matched = c.name === name || c.aliases.indexOf(name) >= 0;
         if (!matched) continue;
         try {
-          var out = await c.run.call(c, makeCtx(def.id, ctx), args);
+          var out = await c.run.call(c, makeCtx(def.id, ctx), cmdArgs);
           return normalizeResult(out);
         } catch (e2) {
           warn("插件命令执行失败（" + def.id + " / /" + c.name + "）：" + errText(e2));

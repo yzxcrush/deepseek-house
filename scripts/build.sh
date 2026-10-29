@@ -60,12 +60,7 @@ fi
 
 if command -v node >/dev/null 2>&1; then
   step "Checking JS syntax"
-  bad=0
-  while IFS= read -r f; do
-    node --check "$f" >/dev/null 2>&1 || { echo "syntax error: $f"; bad=1; }
-  done < <(find "$APP/assets/web" -name '*.js' | sort)
-  [ "$bad" -eq 0 ] || die "JS syntax check failed"
-  echo "node --check: OK"
+  node "$ROOT/scripts/check-js.mjs" || die "JS syntax check failed"
 else
   echo "node not found: skipping JS syntax check"
 fi

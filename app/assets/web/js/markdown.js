@@ -204,7 +204,7 @@
     var i;
     var html = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
     for (i = 0; i < headerCells.length; i++) {
-      html += '<th' + alignAttr(alignCells[i]) + '>' + renderInline(headerCells[i]) + '</th>';
+      html += '<th' + alignAttr(alignCells[i]) + '>' + renderInline(escapeHtml(headerCells[i])) + '</th>';
     }
     html += '</tr></thead><tbody>';
     for (var r = 0; r < rows.length; r++) {
@@ -212,7 +212,7 @@
       html += '<tr>';
       for (i = 0; i < headerCells.length; i++) {
         var cell = row[i] === undefined ? '' : row[i];
-        html += '<td' + alignAttr(alignCells[i]) + '>' + renderInline(cell) + '</td>';
+        html += '<td' + alignAttr(alignCells[i]) + '>' + renderInline(escapeHtml(cell)) + '</td>';
       }
       html += '</tr>';
     }
@@ -230,8 +230,9 @@
       .replace(/\r\n?/g, '\n')
       .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u0001\u0002]/g, '');
     if (!src) return '';
-    var escaped = escapeHtml(src);
-    var lines = escaped.split('\n');
+    // 注意：块级解析基于「未转义」的原始行（否则 > 会变成 &gt;、表格 | 仍可用），
+    // 行内内容在 renderInline 前才逐段 escapeHtml，代码块内容单独转义。
+    var lines = src.split('\n');
     var out = [];
     var i = 0;
     var n = lines.length;
@@ -257,7 +258,7 @@
           buf.push(lines[i]);
           i++;
         }
-        out.push(renderCodeBlock(buf.join('\n'), lang, closed));
+        out.push(renderCodeBlock(escapeHtml(buf.join('\n')), lang, closed));
         continue;
       }
 
@@ -273,7 +274,7 @@
       if (hm) {
         var level = Math.min(6, Math.max(1, hm[1].length));
         var htext = hm[2].replace(/\s+#+\s*$/, '');
-        out.push('<h' + level + ' class="md-h">' + renderInline(htext) + '</h' + level + '>');
+        out.push('<h' + level + ' class="md-h">' + renderInline(escapeHtml(htext)) + '</h' + level + '>');
         i++;
         continue;
       }
@@ -299,7 +300,7 @@
           quoteLines.push(lines[i].replace(/^\s{0,3}>\s?/, ''));
           i++;
         }
-        var quoteHtml = quoteLines.map(function (q) { return renderInline(q); }).join('<br>');
+        var quoteHtml = quoteLines.map(function (q) { return renderInline(escapeHtml(q)); }).join('<br>');
         out.push('<blockquote class="md-quote">' + quoteHtml + '</blockquote>');
         continue;
       }
@@ -325,7 +326,7 @@
         }
         var tag = ordered ? 'ol' : 'ul';
         var listHtml = items.map(function (item) {
-          return '<li>' + renderInline(item).replace(/\n/g, '<br>') + '</li>';
+          return '<li>' + renderInline(escapeHtml(item)).replace(/\n/g, '<br>') + '</li>';
         }).join('');
         out.push('<' + tag + ' class="md-list">' + listHtml + '</' + tag + '>');
         continue;
@@ -338,7 +339,7 @@
         para.push(lines[i]);
         i++;
       }
-      out.push('<p class="md-p">' + para.map(function (p) { return renderInline(p); }).join('<br>') + '</p>');
+      out.push('<p class="md-p">' + para.map(function (p) { return renderInline(escapeHtml(p)); }).join('<br>') + '</p>');
     }
 
     return out.join('\n');

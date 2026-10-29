@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
 /**
  * JS ⇄ 原生的唯一桥（注入名 {@code DSNative}，见 SPEC §3）。
  *
- * <p>所有同步方法都返回 JSON 字符串（��败返回 {@code {"error":"..."}}），自定义异常绝不外抛；
+ * <p>所有同步方法都返回 JSON 字符串（失败返回 {@code {"error":"..."}}），自定义异常绝不外抛；
  * 异步方法立即返回，结果通过 {@code window.DSHost.onEvent(json)} 回传（切主线程执行）。</p>
  */
 public final class JsBridge {
@@ -245,6 +245,12 @@ public final class JsBridge {
         int safe = Math.max(0, depth);
         activity.setBackDepth(safe);
         prefs.setBackDepth(safe);
+    }
+
+    /** bridge.js 会读取当前层级（SPEC 未强制，但 JS 侧在用，缺失时会退化为 0）。 */
+    @JavascriptInterface
+    public int getBackDepth() {
+        return activity.getBackDepth();
     }
 
     @JavascriptInterface

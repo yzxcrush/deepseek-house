@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#17212B">
+  <meta name="color-scheme" content="dark">
+  <meta name="format-detection" content="telephone=no, email=no, address=no">
+  <title>DeepSeek House</title>
+  <link rel="stylesheet" href="css/theme.css">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/markdown.css">
+</head>
+<body>
+<div id="app" class="app" data-screen="chat">
+
+  <!-- ============================ 屏幕容器 ============================ -->
+  <div class="screens" id="screens">
+
+    <!-- ---------------------------- 登录 / 引导 ---------------------------- -->
+    <section class="screen screen--login" id="screen-login" aria-hidden="true">
+      <div class="login-glow" aria-hidden="true"></div>
+      <div class="login-wrap">
+        <div class="login-logo" aria-hidden="true">
+          <svg viewBox="0 0 64 64">
+            <defs>
+              <linearGradient id="logoGradLogin" x1="10" y1="8" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6AB2F2"></stop>
+                <stop offset="1" stop-color="#5288C1"></stop>
+              </linearGradient>
+            </defs>
+            <rect x="1" y="1" width="62" height="62" rx="18" fill="#0E1621" stroke="rgba(255,255,255,0.09)"></rect>
+            <rect x="14" y="13" width="36" height="27" rx="9" fill="url(#logoGradLogin)"></rect>
+            <path d="M22 38.5 15.5 49l14.5-6.5Z" fill="url(#logoGradLogin)"></path>
+            <circle cx="24" cy="26.5" r="2.4" fill="#0E1621"></circle>
+            <circle cx="32" cy="26.5" r="2.4" fill="#0E1621"></circle>
+            <circle cx="40" cy="26.5" r="2.4" fill="#0E1621"></circle>
+          </svg>
+        </div>
+        <h1 class="login-title">DeepSeek House</h1>
+        <p class="login-sub">在手机上，与 DeepSeek 对话</p>
+
+        <form class="login-form" id="login-form" novalidate>
+          <label class="field" for="login-key">
+            <span class="field-label">API Key</span>
+            <span class="field-input">
+              <input id="login-key" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
+              <button class="field-suffix" type="button" data-action="toggle-key" aria-label="显示或隐藏 Key">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+              </button>
+            </span>
+          </label>
+
+          <label class="field field--advanced" id="login-advanced" for="login-baseurl">
+            <span class="field-label">Base URL</span>
+            <span class="field-input">
+              <input id="login-baseurl" type="url" placeholder="https://api.deepseek.com" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url">
+            </span>
+          </label>
+          <button class="login-advanced-toggle" type="button" data-action="toggle-baseurl">自定义服务器地址</button>
+
+          <div class="login-error" id="login-error" role="alert" hidden></div>
+
+          <button class="login-submit" id="login-submit" type="submit">登录</button>
+
+          <div class="login-links">
+            <button class="link" type="button" data-action="paste-key">从剪贴板粘贴</button>
+            <span class="link-dot" aria-hidden="true">·</span>
+            <button class="link" type="button" data-action="open-signup">获取 API Key</button>
+          </div>
+        </form>
+
+        <p class="login-note">Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。</p>
+      </div>
+    </section>
+
+    <!-- ---------------------------- 主聊天界面 ---------------------------- -->
+    <section class="screen screen--chat is-active" id="screen-chat" aria-hidden="false">
+      <header class="topbar" id="chat-header">
+        <button class="icon-btn" type="button" data-action="open-drawer" aria-label="打开会话菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title" id="header-title">DeepSeek House</div>
+          <div class="subtitle" id="header-subtitle"></div>
+        </div>
+        <button class="icon-btn" type="button" data-action="open-search" aria-label="搜索会话">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20 20-3.4-3.4"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="chat-main">
+        <!-- 空状态：logo + 4 个建议提示词卡片 -->
+        <div class="empty" id="empty-state">
+          <div class="empty-logo" aria-hidden="true">
+            <svg viewBox="0 0 64 64">
+              <defs>
+                <linearGradient id="logoGradEmpty" x1="10" y1="8" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#6AB2F2"></stop>
+                  <stop offset="1" stop-color="#5288C1"></stop>
+                </linearGradient>
+              </defs>
+              <rect x="1" y="1" width="62" height="62" rx="18" fill="#0E1621" stroke="rgba(255,255,255,0.09)"></rect>
+              <rect x="14" y="13" width="36" height="27" rx="9" fill="url(#logoGradEmpty)"></rect>
+              <path d="M22 38.5 15.5 49l14.5-6.5Z" fill="url(#logoGradEmpty)"></path>
+              <circle cx="24" cy="26.5" r="2.4" fill="#0E1621"></circle>
+              <circle cx="32" cy="26.5" r="2.4" fill="#0E1621"></circle>
+              <circle cx="40" cy="26.5" r="2.4" fill="#0E1621"></circle>
+            </svg>
+          </div>
+          <h2 class="empty-title">DeepSeek House</h2>
+          <p class="empty-sub">有什么可以帮你？</p>
+          <div class="suggestions">
+            <button class="suggestion" type="button" data-action="suggest" data-text="用简单的语言解释一下 Transformer 的工作原理">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"></path>
+              </svg>
+              <span>解释 Transformer 的原理</span>
+            </button>
+            <button class="suggestion" type="button" data-action="suggest" data-text="帮我写一个 Python 脚本，批量重命名文件夹里的图片">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m8 6-5 6 5 6M16 6l5 6-5 6"></path>
+              </svg>
+              <span>写一个 Python 小脚本</span>
+            </button>
+            <button class="suggestion" type="button" data-action="suggest" data-text="对比一下 REST 与 GraphQL 的优缺点，并给出选型建议">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="7" height="7" rx="1.5"></rect>
+                <rect x="14" y="13" width="7" height="7" rx="1.5"></rect>
+                <path d="M10 7.5h4.5a2 2 0 0 1 2 2V13"></path>
+              </svg>
+              <span>对比 REST 与 GraphQL</span>
+            </button>
+            <button class="suggestion" type="button" data-action="suggest" data-text="给我一个 3 天的东京旅行计划，包含交通和美食推荐">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11Z"></path>
+                <circle cx="12" cy="10" r="2.6"></circle>
+              </svg>
+              <span>规划东京三日游</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="messages" id="messages" role="log" aria-live="polite" aria-label="消息列表"></div>
+
+        <button class="scroll-bottom" id="scroll-bottom" type="button" data-action="scroll-bottom" aria-label="滚动到底部" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9l6 6 6-6"></path>
+          </svg>
+        </button>
+      </div>
+
+      <footer class="composer" id="composer">
+        <button class="round-btn" type="button" data-action="composer-plugins" aria-label="插件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
+          </svg>
+        </button>
+        <div class="composer-field">
+          <textarea id="composer-input" class="composer-input" rows="1" placeholder="发消息…" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="消息输入框"></textarea>
+        </div>
+        <button class="round-btn round-btn--send" id="btn-send" type="button" data-action="send" aria-label="发送">
+          <svg class="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.3 3.7 3.6 10.9c-.7.3-.7 1.3.1 1.5l6.2 1.7 1.7 6.2c.2.8 1.2.8 1.5.1L20.3 3.7Z"></path>
+            <path d="M10 14 20 4"></path>
+          </svg>
+          <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="6.5" y="6.5" width="11" height="11" rx="2"></rect>
+          </svg>
+        </button>
+      </footer>
+    </section>
+
+    <!-- ---------------------------- 设置页 ---------------------------- -->
+    <section class="screen screen--page" id="screen-settings" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title" id="settings-title">设置</div>
+        </div>
+      </header>
+
+      <div class="page-scroll" id="settings-body">
+        <div class="section-label">模型与生成</div>
+        <div class="section">
+          <div class="form-row">
+            <span class="form-label">模型</span>
+            <div class="form-control">
+              <div class="select-wrap">
+                <select id="set-model" class="select" aria-label="模型"></select>
+                <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6"></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div class="form-row form-row--col">
+            <div class="form-row-head">
+              <span class="form-label">温度</span>
+              <span class="form-value" id="set-temperature-val">1.0</span>
+            </div>
+            <input class="range" id="set-temperature" type="range" min="0" max="2" step="0.1" value="1" aria-label="温度">
+            <span class="form-hint">0 更稳定，2 更发散。推理模型建议 1.0。</span>
+          </div>
+          <div class="form-row">
+            <span class="form-label">最大 Token</span>
+            <div class="form-control form-control--num">
+              <input class="input input--num" id="set-maxtokens" type="number" min="16" max="8192" step="1" inputmode="numeric" aria-label="最大 Token">
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="form-label">流式输出</span>
+            <div class="form-control">
+              <label class="switch">
+                <input type="checkbox" id="set-stream" aria-label="流式输出">
+                <span class="switch-track"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-label">服务器</div>
+        <div class="section">
+          <div class="form-row form-row--col">
+            <span class="form-label">Base URL</span>
+            <input class="input" id="set-baseurl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://api.deepseek.com">
+            <span class="form-hint">默认 https://api.deepseek.com，也支持自建 OpenAI 兼容端点。</span>
+          </div>
+        </div>
+
+        <div class="section-label">系统提示词</div>
+        <div class="section">
+          <div class="form-row form-row--col">
+            <textarea class="input input--textarea" id="set-systemprompt" rows="4" placeholder="你是 DeepSeek House 助手…" spellcheck="false"></textarea>
+          </div>
+        </div>
+
+        <div class="section-label">账户</div>
+        <div class="section">
+          <div class="form-row">
+            <span class="form-label">API Key</span>
+            <span class="form-control form-control--hint">已保存在设备私有存储</span>
+          </div>
+          <button class="form-row form-row--button" type="button" data-action="logout">
+            <span class="form-label danger-text">退出登录</span>
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 5l7 7-7 7"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="section-label">关于</div>
+        <div class="section about">
+          <div class="about-row"><span>版本</span><span>1.0.0</span></div>
+          <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
+          <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。</p>
+        </div>
+
+        <div class="page-actions">
+          <button class="btn btn--primary" type="button" data-action="save-settings">保存设置</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------- 插件页 ---------------------------- -->
+    <section class="screen screen--page" id="screen-plugins" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title">插件</div>
+          <div class="subtitle" id="plugins-count"></div>
+        </div>
+        <button class="icon-btn" type="button" data-action="refresh-plugins" aria-label="刷新插件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"></path>
+            <path d="M20.5 4v7h-7"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" type="button" data-action="open-install" aria-label="安装插件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="page-scroll" id="plugins-body">
+        <button class="install-card" type="button" data-action="open-install">
+          <span class="install-card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14"></path>
+            </svg>
+          </span>
+          <span class="install-card-text">
+            <b>安装插件</b>
+            <small>粘贴 .js 代码，或从文件导入</small>
+          </span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 5l7 7-7 7"></path>
+          </svg>
+        </button>
+
+        <div class="section-label">已安装</div>
+        <div class="plugins-list" id="plugins-list"></div>
+
+        <div class="plugins-empty" id="plugins-empty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
+          </svg>
+          <p>还没有安装插件</p>
+          <small>插件可以添加斜杠命令和工具调用，全部在本机运行。</small>
+        </div>
+
+        <div class="plugins-tip">
+          <b>插件说明</b>
+          <p>在输入框以 / 开头可调用插件命令；启用插件的工具会通过 function calling 暴露给模型（最多 3 轮）。外部插件只在你主动安装后才执行，请只安装可信来源的代码。</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============================ 抽屉 + 遮罩 ============================ -->
+  <div class="overlay" id="overlay" data-action="close-drawer" aria-hidden="true"></div>
+
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-label="会话列表">
+    <div class="drawer-head">
+      <div class="user">
+        <div class="avatar" id="user-avatar" aria-hidden="true">D</div>
+        <div class="user-info">
+          <div class="user-name" id="user-name">DeepSeek House</div>
+          <div class="user-status" id="user-status">API Key 已配置</div>
+        </div>
+      </div>
+      <button class="icon-btn drawer-close" type="button" data-action="close-drawer" aria-label="关闭菜单">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18"></path>
+        </svg>
+      </button>
+    </div>
+
+    <div class="drawer-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.4-3.4"></path>
+      </svg>
+      <input id="search-input" class="drawer-search-input" type="search" placeholder="搜索会话" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="搜索会话">
+      <button class="icon-btn drawer-search-clear" id="search-clear" type="button" data-action="clear-search" aria-label="清除搜索" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18"></path>
+        </svg>
+      </button>
+    </div>
+
+    <nav class="drawer-menu" aria-label="菜单">
+      <button class="drawer-item drawer-item--accent" type="button" data-action="new-chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M12 8v8M8 12h8"></path>
+        </svg>
+        <span>新建会话</span>
+      </button>
+      <button class="drawer-item" type="button" data-action="open-settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 7h-9M14 17H5"></path>
+          <circle cx="17" cy="17" r="3"></circle>
+          <circle cx="7" cy="7" r="3"></circle>
+        </svg>
+        <span>设置</span>
+      </button>
+      <button class="drawer-item" type="button" data-action="open-plugins">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
+        </svg>
+        <span>插件管理</span>
+      </button>
+    </nav>
+
+    <div class="drawer-divider"></div>
+    <div class="drawer-list" id="chat-list"></div>
+    <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
+    <div class="drawer-foot">
+      <span class="drawer-brand">DeepSeek House</span>
+      <span class="drawer-version">v1.0.0</span>
+    </div>
+  </aside>
+
+  <!-- ============================ 安装插件弹窗 ============================ -->
+  <div class="modal" id="install-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="install-title">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div class="modal-title" id="install-title">安装插件</div>
+        <button class="icon-btn" type="button" data-action="close-install" aria-label="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint">粘贴插件代码（.js），或插件包（.json）。插件只在本机执行，请只安装可信来源的代码。</p>
+        <textarea id="install-code" class="code-input" rows="7" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="// @id user.myplugin&#10;window.DSPlugins.register({&#10;  id: 'user.myplugin',&#10;  name: '我的插件',&#10;  version: '1.0.0',&#10;  commands: [], tools: []&#10;})"></textarea>
+        <div class="modal-error" id="install-error" role="alert" hidden></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="pick-plugin-file">从文件导入</button>
+        <button class="btn btn--primary" type="button" data-action="install-plugin">安装</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 确认对话框 ============================ -->
+  <div class="modal modal--center" id="confirm-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="confirm-title">
+    <div class="modal-panel modal-panel--small">
+      <div class="modal-title" id="confirm-title">确认</div>
+      <div class="modal-body">
+        <p class="modal-text" id="confirm-text"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="confirm-cancel">取消</button>
+        <button class="btn btn--danger" type="button" id="confirm-ok" data-action="confirm-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 重命名弹窗 ============================ -->
+  <div class="modal modal--center" id="rename-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="rename-title">
+    <div class="modal-panel modal-panel--small">
+      <div class="modal-title" id="rename-title">重命名会话</div>
+      <div class="modal-body">
+        <input class="input" id="rename-input" type="text" maxlength="60" placeholder="输入会话标题" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="rename-cancel">取消</button>
+        <button class="btn btn--primary" type="button" data-action="rename-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 长按菜单 / Toast ============================ -->
+  <div class="longpress" id="longpress" role="menu" aria-hidden="true"></div>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+</div>
+
+<!-- SPEC §2 顺序：util → bridge → store → markdown → api → plugins → plugins_builtin → ui → app -->
+<script defer src="js/util.js"></script>
+<script defer src="js/bridge.js"></script>
+<script defer src="js/store.js"></script>
+<script defer src="js/markdown.js"></script>
+<script defer src="js/api.js"></script>
+<script defer src="js/plugins.js"></script>
+<script defer src="js/plugins_builtin.js"></script>
+<script defer src="js/ui.js"></script>
+<script defer src="js/app.js"></script>
+</body>
+</html>

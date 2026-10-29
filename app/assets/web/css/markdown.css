@@ -283,3 +283,12 @@
 .md .md-quote + .md-p {
   margin-top: 7px;
 }
+
+/* Markdown 渲染器缺失时的降级纯文本（ui.js 兜底） */
+.md .md-fallback,
+.md-fallback {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font-family: var(--font);
+}
