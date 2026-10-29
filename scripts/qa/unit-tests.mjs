@@ -805,4 +805,96 @@ window.DSPlugins.register({id:'user.temp',name:'临时',version:'1.0.0',builtin:
     equal(after.phone, '13800000000', 'logout 后应保留绑定手机号');
   });
 
+  /* ================================================================== *
+   * bridge.js · ARCH v2 P2 MCP 原生封装（DSNative 可用分支）
+   * ================================================================== */
+  suite('单元测试 · bridge.js P2 MCP 原生封装');
+
+  function p2BridgeWindow() {
+    const ctx = createUnitWindow();
+    const native = createMockNative({
+      p2: {
+        servers: [
+          { id: 'mcp-termux', name: 'Termux 本地构建', url: 'http://127.0.0.1:8787/mcp', token: 'demo-token', enabled: true, status: 'connected' },
+          { id: 'mcp-remote-demo', name: '示例远程 MCP', url: 'https://mcp.example.com/mcp', token: '', enabled: true, status: 'disconnected' },
+        ],
+      },
+    });
+    native.__bind(ctx.win);
+    ctx.win.DSNative = native;
+    runWebScripts(ctx, ['util.js', 'bridge.js']);
+    return { ...ctx, native };
+  }
+
+  test('MCP 返回值归一化：mcpServers（状态/工具数/工具列表）与 mcpTools', () => {
+    const { win, native } = p2BridgeWindow();
+    const B = win.Bridge;
+    equal(B.__isMock, false, '注入 DSNative 后不应处于 mock 模式');
+
+    const list = B.mcpServers();
+    isArray(list, 'mcpServers() 应返回数组');
+    equal(list.length, 2, 'mcpServers 应返回 2 个服务器');
+    const term = list.find((s) => s.id === 'mcp-termux');
+    isObject(term, '缺少 mcp-termux 服务器');
+    equal(term.name, 'Termux 本地构建', '服务器名称未归一化');
+    equal(term.url, 'http://127.0.0.1:8787/mcp', '服务器 URL 未归一化');
+    equal(term.token, 'demo-token', '服务器 Token 未归一化');
+    equal(term.status, 'connected', '服务器 status 未归一化');
+    equal(term.connected, true, '服务器 connected 未归一化');
+    equal(term.toolCount, 5, '已连接服务器 toolCount 应为 5');
+    isArray(term.tools, '服务器 tools 应为数组');
+    equal(term.tools.length, 5, '已连接服务器 tools 长度应为 5');
+    includes(term.tools.map((t) => t.name).join(','), 'pack_apk', '工具列表缺少 pack_apk');
+    const remote = list.find((s) => s.id === 'mcp-remote-demo');
+    equal(remote.status, 'disconnected', '未连接服务器 status 应为 disconnected');
+    equal(remote.toolCount, 0, '未连接服务器工具数应为 0');
+    ok(native.__calls.some((c) => c.method === 'mcpServers'), 'Bridge.mcpServers 未调用原生');
+
+    const tools = B.mcpTools('mcp-termux');
+    isArray(tools, 'mcpTools() 应返回数组');
+    equal(tools.length, 5, 'mcpTools 应返回 5 个工具');
+    includes(tools.map((t) => t.name).join(','), 'list_workspace', 'mcpTools 缺少 list_workspace');
+    deepEqual(B.mcpTools('mcp-remote-demo'), [], '未连接服务器 mcpTools 应为空');
+    ok(native.__calls.some((c) => c.method === 'mcpTools'), 'Bridge.mcpTools 未调用原生');
+  });
+
+  test('MCP 方法转发 + waitMcpStatus/waitMcpTools 事件通道（mock 原生自动连接事件）', async () => {
+    const { win, native } = p2BridgeWindow();
+    const B = win.Bridge;
+
+    // save / delete
+    equal(B.mcpSaveServer({ name: 'QA 构建服务', url: 'http://127.0.0.1:9999/mcp', token: 'qa-token', enabled: true, connect: true }), true, 'mcpSaveServer 应返回 true');
+    const saveCall = native.__calls.filter((c) => c.method === 'mcpSaveServer').pop();
+    const saved = JSON.parse(saveCall.args[0]);
+    equal(saved.name, 'QA 构建服务', 'mcpSaveServer 参数未透传（name）');
+    equal(saved.url, 'http://127.0.0.1:9999/mcp', 'mcpSaveServer 参数未透传（url）');
+    equal(B.mcpServers().length, 3, '保存后服务器数量应为 3');
+    const newId = native.__p2.servers.find((s) => s.name === 'QA 构建服务').id;
+    equal(B.mcpDeleteServer(newId), true, 'mcpDeleteServer 应返回 true');
+    equal(native.__calls.filter((c) => c.method === 'mcpDeleteServer').pop().args[0], newId, 'mcpDeleteServer 参数未透传');
+    equal(B.mcpServers().length, 2, '删除后服务器数量应为 2');
+
+    // connect → 自动 mcp-status（connecting→connected）+ mcp-tools
+    equal(B.mcpConnect('mcp-remote-demo'), true, 'mcpConnect 应返回 true');
+    equal(native.__calls.filter((c) => c.method === 'mcpConnect').pop().args[0], 'mcp-remote-demo', 'mcpConnect 参数未透传');
+    const statusWait = B.waitMcpStatus('mcp-remote-demo', 2000);
+    const toolsWait = B.waitMcpTools('mcp-remote-demo', 2000);
+    const statusEvt = await statusWait;
+    isObject(statusEvt, 'waitMcpStatus 未收到事件');
+    equal(statusEvt.id, 'mcp-remote-demo', 'mcp-status id 不正确');
+    ok(statusEvt.status === 'connecting' || statusEvt.status === 'connected', `mcp-status.status 不正确：${statusEvt.status}`);
+    const toolsEvt = await toolsWait;
+    isObject(toolsEvt, 'waitMcpTools 未收到事件');
+    equal(toolsEvt.id, 'mcp-remote-demo', 'mcp-tools id 不正确');
+    equal(toolsEvt.tools.length, 2, 'mcp-tools 应返回 2 个工具');
+
+    // refresh / disconnect
+    equal(B.mcpRefreshTools('mcp-remote-demo'), true, 'mcpRefreshTools 应返回 true');
+    equal(native.__calls.filter((c) => c.method === 'mcpRefreshTools').pop().args[0], 'mcp-remote-demo', 'mcpRefreshTools 参数未透传');
+    equal(B.mcpDisconnect('mcp-remote-demo'), true, 'mcpDisconnect 应返回 true');
+    equal(native.__calls.filter((c) => c.method === 'mcpDisconnect').pop().args[0], 'mcp-remote-demo', 'mcpDisconnect 参数未透传');
+    // 断开后状态回 disconnected（mock 自动事件）
+    const offEvt = await B.waitMcpStatus('mcp-remote-demo', 2000);
+    equal(offEvt && offEvt.status, 'disconnected', '断开后 mcp-status 应为 disconnected');
+  });
 }

@@ -33,17 +33,21 @@ scripts/qa/
 ├── run-tests.mjs          # 主入口：注册并运行全部 suite
 ├── lib/harness.mjs        # 零依赖测试框架（suite/test/断言/超时/汇总）
 ├── lib/env.mjs            # jsdom 窗口、真实 index.html 加载、DSNative mock、stub、等待/可见性工具
-├── static-checks.mjs      # 静态契约扫描（前端 + Java/Manifest 跨端核对；含 ARCH v2 P1）
-├── unit-tests.mjs         # 单元测试（util/markdown/store/bridge mock/plugins + Bridge P1 原生封装）
+├── static-checks.mjs      # 静态契约扫描（前端 + Java/Manifest 跨端核对 + P1/P2 + python py_compile）
+├── unit-tests.mjs         # 单元测试（util/markdown/store/bridge mock/plugins + Bridge P1/P2 原生封装）
 ├── integration-tests.mjs  # jsdom 集成冒烟（真实 index.html + 全部脚本 + DSNative mock）
-└── p1-integration-tests.mjs # ARCH v2 P1 集成：工具循环/文件树/终端/审计/OTP/工作区（每条独立窗口）
+├── p1-integration-tests.mjs # ARCH v2 P1 集成：工具循环/文件树/终端/审计/OTP/工作区（每条独立窗口）
+└── p2-integration-tests.mjs # ARCH v2 P2 集成：MCP 服务器管理/连接/工具发现/构建进度卡（每条独立窗口）
 ```
 
 > `lib/env.mjs` 的 `createMockNative()` 同时实现了 SPEC §3 旧方法与 **ARCH v2 P1 的 14 个新方法**
 > （`toolSchemas/execTool/confirmTool/workspaceInfo/listDir/readFile/writeFile/runShell/auditRecent/
 > setWorkspace/requestOtp/verifyOtp/authState/logout`）；P1 事件默认不自动产生，由用例通过
 > `app.native.__emit(evt)` 精确注入；运行时状态（`listDirError`/`dirs`/`files`/`audit`/`auth` 等）
-> 可通过 `app.native.__p1` 读写。旧用例（82 项）在扩展后保持全绿。
+> 可通过 `app.native.__p1` 读写。**ARCH v2 P2 的 6 个 MCP 方法与 `mcpTools`** 也已加入
+> `createMockNative()`（默认 2 个示例服务器、连接后自动发 `mcp-status`/`mcp-tools`，
+> 已连接服务器的工具以 risk=MID 合并进 `toolSchemas()`；运行时状态经 `app.native.__p2` 读写）。
+> 旧用例（82 项）在两次扩展后均保持全绿。
 
 ## 3. 覆盖矩阵（对应 SPEC 章节）
 
@@ -82,6 +86,20 @@ scripts/qa/
 | P1 单元（Bridge 原生分支） | 原生返回值归一化：`toolSchemas/workspaceInfo/listDir/auditRecent/authState`；`listDir {error}` → `[]` + `getLastError('listDir')`；方法转发参数透传：`execTool/confirmTool/readFile/writeFile/runShell/setWorkspace/requestOtp/verifyOtp/logout`；`waitOtpVerified/waitToolResult` 事件 Promise 通道 | 单元 · bridge.js P1 原生封装 2 项 |
 | P1 收尾 | P1 全流程后无未捕获脚本错误；Bridge 保持真实模式；API Key 不落 localStorage | P1 集成 · 收尾 1 项 |
 
+### 3.3 ARCH v2 P2：MCP Client + Termux 构建服务（本次新增 15 项）
+
+| P2 章节 | 验证内容 | 测试位置 |
+|---|---|---|
+| P2 U2 MCP 管理页渲染 | 设置页 `#set-mcp-row`（data-action=open-mcp）→ `#screen-mcp` 可见 → `mcpServers()` 返回 2 个服务器 → `#mcp-list` 2 行；名称/URL/状态圆点（`.mcp-dot--connected/--disconnected`）/状态徽章（已连接/未连接）/工具数（`工具 5 个`、`工具 0 个`）/连接·断开·刷新·测试·编辑·删除按钮；`#mcp-count` 与设置页 `#set-mcp-count` 统计（2 个 · 1 已连接）；空状态隐藏 | P2 集成 · MCP 管理 1 项 |
+| P2 U2 添加/保存服务器 | `#mcp-add` → `#mcp-form-modal` 打开；名称+非法 URL 保存 → `#mcp-form-error` 提示需 `http(s)://` 且**不调用原生**；改为合法 URL+Token 保存 → UI 回调 `onMcpSave({name,url,token,connect:true})` → `mcpSaveServer(json)` 参数透传（app 归一化后原生入参不含 connect）→ 表单关闭 → 列表 3 行 → mock 原生自动连接（状态点变绿、徽章已连接）→ 设置页统计 3 个 | P2 集成 · MCP 管理 1 项 |
+| P2 N2/L2 连接与工具发现 | 点未连接行的「连接」→ `mcpConnect(id)`；mock 原生自动发 `mcp-status connecting→connected` → 状态点变绿、徽章已连接；`mcp-tools` 到达 → 工具数 2、`App.getMcpTools()`/`App.getMcpToolMap()`（echo→serverId）正确；连接后 `toolSchemas()` 包含 MCP 工具 `echo`；`mcpTools()` 补全调用 | P2 集成 · MCP 管理 1 项 |
+| P2 N2 mcp-tools 事件 | 注入 `mcp-tools`（3 个工具）→ 对应行工具数实时更新为 3、状态升为 connected、`custom_tool` 映射重建；再注入另一服务器 2 个工具 → 工具数/映射同步；`#mcp-count` 刷新 | P2 集成 · MCP 管理 1 项 |
+| P2 U2/L2 构建进度卡（成功） | 已连接 MCP 服务器 → `startChat` 的 tools 含 `pack_apk`（risk=mid）；模型 toolCalls → `execTool('pack_apk')` → 先建 running 工具卡（`confirmState=running`、进度 0%）；`tool-confirm(risk=mid)` → 风险弹窗 → 允许 → `confirmTool(true)`；注入 `mcp-progress` 10/45/75/100 + 日志行 → 进度条宽度/百分比、`.tool-log` 日志、行数、Store `progress/toolLog` 同步；`tool-result ok` → 工具卡「完成」/`.is-done`/100%/徽章成功、running 栈清空 → 继续请求历史含工具结果 | P2 集成 · 构建进度卡 1 项 |
+| P2 U2/L2 构建进度卡（失败） | 同上流程，注入 `mcp-progress` 45% 后 `tool-result ok:false` → 工具消息 `confirmState=error`、保留最后进度 45%、`.tool-progress.is-error`、标签「构建失败」、徽章「失败」、running 栈清空、继续请求 | P2 集成 · 构建进度卡 1 项 |
+| P2 静态契约 | `index.html` MCP 页/表单 id（`screen-mcp/mcp-list/mcp-add/mcp-form-modal/...`）与静态 data-action + 动态行动作；`ui.js` API（`renderMcpServers/openMcpServerForm/closeMcpForm/setMcpStatus/setToolProgress/appendToolLog/openMcpPage`）与构建卡实现；`app.js` MCP handlers/对外接口/事件监听/进度卡映射；`bridge.js` 6 个 MCP 封装 + `mcpTools/waitMcpStatus/waitMcpTools` + 3 类事件 + mock（2 示例服务器/pack_apk 进度）；`JsBridge.java` 6 个 `mcp*` `@JavascriptInterface` + `mcpTools` + `emitMcpStatus` + execTool→`mcp.callTool`；`mcp/` 包（JsonRpcClient 的 2024-11-05/streamable-http/Bearer/tools.list·call、McpManager 心跳/重连/MID+needConfirm/ToolRegistry、McpServerConfig、Prefs.mcpServers）；`termux-mcp/`（server.py 5 工具 + 5 个 JSON-RPC 方法 + Token/allow-root 安全默认、setup.sh 包清单、start.sh、README）；**实际执行 `python3 -m py_compile termux-mcp/server.py`（exit 0，缓存重定向到临时目录）** | P2 静态 6 项 |
+| P2 单元（Bridge 原生分支） | MCP 返回值归一化（`mcpServers` 状态/工具数/tools、`mcpTools`）；方法转发（save/delete/connect/disconnect/refreshTools 参数透传）；`waitMcpStatus/waitMcpTools` 事件 Promise 通道（mock 原生自动 connecting→connected + tools；断开回 disconnected） | 单元 · bridge.js P2 原生封装 2 项 |
+| P2 收尾 | P2 全流程后无未捕获脚本错误；Bridge 保持真实模式 | P2 集成 · 收尾 1 项 |
+
 ## 4. jsdom 局限与测试 stub
 
 jsdom 没有真实布局/渲染/原生桥，集成测试用以下 stub 保证可测（见 `lib/env.mjs`）：
@@ -116,6 +134,20 @@ jsdom 没有真实布局/渲染/原生桥，集成测试用以下 stub 保证可
 
 P1 用例**每条使用独立 jsdom 窗口**（`loadAppWindow` + `close()`），不共享会话状态，可单独复现；窗口内页面错误（排除 jsdom 已知噪音）按失败处理。
 
+### 4.2 ARCH v2 P2 mock 原生 MCP（`createMockNative(opts.p2)`）
+
+| 方法 | mock 行为 | 测试注入/断言方式 |
+|---|---|---|
+| `mcpServers()` | 返回服务器数组 JSON：`{id,name,url,token,enabled,status,message,connected,toolCount,tools}`；默认 2 个示例服务器（`mcp-termux` / `mcp-remote-demo`，默认 disconnected），`opts.p2.servers` 可覆盖 | 管理页列表/统计/状态点断言；`__p2.servers` 读写 |
+| `mcpSaveServer(json)` | 校验 name + `http(s)://` URL；无 id 自动生成；`enabled` 且 `saveConnect!==false` 时自动连接（同步置 connecting，异步发 connected+tools）；返回 boolean | 断言原生入参 JSON；保存后列表 +1 / 自动连接 |
+| `mcpDeleteServer(id)` | 删除配置（记录 `__p2.deleted`） | 删除流程断言 |
+| `mcpConnect(id)` | 置 connecting 并异步发 `mcp-status connecting→connected` + `mcp-tools`（`autoConnect:false` 可关闭自动事件） | 连接流程 / 状态点 / 工具数断言 |
+| `mcpDisconnect(id)` | 置 disconnected 并异步发 `mcp-status disconnected` + 空 `mcp-tools` | 断开流程断言 |
+| `mcpRefreshTools(id)` | 已连接 → 重发 `mcp-tools`；未连接 → 发 `mcp-status`（message=未连接…） | 刷新流程断言 |
+| `mcpTools(id)` | 返回该服务器已连接工具 JSON 数组；未连接返回 `[]` | 工具缓存/映射断言 |
+| `toolSchemas()` | 在 P1 5 个本地工具基础上，把**已连接** MCP 工具以 risk=MID 合并（名称去重、本地优先）；默认 2 个服务器 disconnected 故不影响旧用例 | `startChat` body.tools / `App.getToolSchemas()` |
+| 事件 | `mcp-status`/`mcp-tools`/`mcp-progress` 经 `app.native.__emit` 注入或 mock 自动产生；`mcp-progress` 固定由用例注入以精确断言进度/日志 | 进度卡/工具数/状态断言 |
+
 ## 5. 已知说明 / SPEC 解释
 
 1. **返回值不属 SPEC 契约**：`Store.deleteChat` 返回被删除会话对象（非 `true`）、`DSPlugins.installFromFile` 返回插件 public view（非 id 字符串）——SPEC 未规定返回类型，测试按真值/取 `id` 兼容，不视为缺陷。
@@ -131,7 +163,14 @@ P1 用例**每条使用独立 jsdom 窗口**（`loadAppWindow` + `close()`），
    - `app/assets/web/js/ui.js:4608-4624` `UI.init` 未显式调用 `setTerminalOpen(false)` 初始化终端面板：初始收起仅依赖 `index.html` 的 `aria-hidden="true"` + CSS。jsdom/真机若 CSS 加载失败，终端面板可能闪现。建议 init 末尾补一次 `setTerminalOpen(false)`（防御性，不影响现有用例）。
    - `app/assets/web/js/app.js:3403-3418` `listDir` 失败时同时渲染文件树错误行 **和** toast（`toast('无法列出目录：...')`）；真机上属重复提示，建议只保留错误行或改为单条 toast（UX 细节）。
    - 未发现阻断性/功能性缺陷；P1 实现与 SPEC N1/U1/L1 契约一致（详见覆盖矩阵）。
-6. 测试不做 APK 打包与真实网络请求：`scripts/build.sh`、`apksigner`、真实 DeepSeek SSE、原生 Toast/剪贴板/SAF 由 Lead 与人工验收覆盖（见 §8）。
+6. **P2 测试假设（非 SPEC 契约，已按实现兼容）**：
+   - UI 回调 `onMcpSave(server)` 参数含 `connect:true`（SPEC U2「保存并连接」），但 app 归一化后写入原生的 JSON 不含 `connect` 字段（原生按 enabled+页面就绪自动连接）——测试分别断言回调与原生入参。
+   - mock 原生 `mcpSaveServer`/`mcpConnect` 自动发 `mcp-status`/`mcp-tools` 以等价真实原生异步行为；`mcp-progress` 由 Termux server 可选发送（SPEC「无则仅最终结果」），测试用显式注入。
+   - 已连接 MCP 工具以 OpenAI function 原始名（如 `pack_apk`）暴露；重名/非法字符时才回退 `mcp_<server>_<tool>`（`McpManager.resolveFunctionName`），JS 侧 `mcpBaseName` 两种都能识别。
+7. **P2 QA 观察（低风险，仅报告，未改产品代码）**：
+   - `app/assets/web/js/ui.js:1778-1802` `toolStatusOf()` 把**非空 content 一律视为「已有结果」**（`hasResult` 在 success 判定中优先于 `running`）。P2 构建进度卡的 running 消息 content 固定为「执行中…」（`app.js:1716`、`:3968`），导致构建/等待确认期间工具卡状态徽章显示「成功」（实测 `tool-badge--success`），与进度区「构建中…/等待确认…」矛盾。建议：把 `confirmState==='running'/'executing'` 判定提前到 `hasResult` 之前，或 `hasResult` 只认 `result` 字段/`ok===true`。属视觉状态误导，不影响进度条/日志/最终结果。
+   - `app/assets/web/js/ui.js:2304-2318` `updateMcpCounts()` 只在 `renderMcpRows()`（进入 MCP 管理页）时执行：冷启动后直接打开设置页时「MCP 服务器」行仍显示「未配置」，直到进过一次 MCP 管理页才显示真实数量。建议 app 启动/进入设置页时调用 `UI.renderMcpServers` 或单独刷新统计。低优先级 UX。
+8. 测试不做 APK 打包与真实网络请求：`scripts/build.sh`、`apksigner`、真实 DeepSeek SSE、原生 Toast/剪贴板/SAF 由 Lead 与人工验收覆盖（见 §8）。
 
 ## 6. CI 命令（GitHub Actions 片段）
 
@@ -184,14 +223,16 @@ test('行为描述', () => {
 - **构建验收**：`bash scripts/build.sh`、`apksigner verify`、`aapt dump badging`、`unzip -l` 资源清单（Lead 负责）。
 - **APK 安装冒烟**：安装/首次启动/登录/退出登录后保留会话。
 - **ARCH v2 P1 真机验证**（jsdom 无法覆盖）：AI 触发 `read_file/list_dir` 的确认/结果卡片；`write_file`（MID 首次确认）与 `run_shell`（HIGH 每次确认）真机弹窗与审计落库（`filesDir/audit.db`）；PathPolicy 拒绝 `..`/symlink 越界与 `/sdcard` 未授权场景；文件树列出 `/sdcard/house-workspace`、点击预览；终端执行 `echo hi`；手机号登录通知渠道「登录验证码」显示 OTP、60s 限频/错 3 次锁 5 分钟；`setWorkspace('/sdcard/house-workspace')` 在授予 MANAGE_EXTERNAL_STORAGE 后生效；Android 11+ 「所有文件访问权限」跳转。
+- **ARCH v2 P2 真机验证**（jsdom 无法覆盖）：Termux 内 `./termux-mcp/setup.sh` + `./start.sh` 启动 Python MCP Server（127.0.0.1:8787 + Token）；App 设置 → MCP 服务器 → 添加 `http://127.0.0.1:8787/mcp` + Token → 显示已连接与 5 个工具；让 AI 调 `list_workspace` / `pack_apk`，确认弹窗（MID）→ 结果卡片与进度条/日志（Termux server 是否发 `mcp-progress` 决定进度是否实时）→ 审计落库与 tool-result；断网/Token 错误时的 error 状态与重连（1s/2s/4s/8s/30s）；`python3 -m py_compile`、`curl initialize`、`tools/list` 手工验证。
 
 ## 9. 最近一次执行结果
 
 ```
-ALL TESTS PASSED (107)
+ALL TESTS PASSED (122)
 ```
 
-- 覆盖：静态 23 项（SPEC 基线静态 10 + 跨端核对 8 + **ARCH v2 P1 静态 5**）+ 单元 41 项（基线 39 + **Bridge P1 原生封装 2**）+ 集成冒烟 25 项（v1.x 基线）+ **P1 集成 18 项** = 107 项 / 25 个 suite。
-- 本次 P1 新增 **25 项**：工具链 4（tools 去重 / LOW 直执 / MID 允许 / HIGH 拒绝）、文件树 3、终端 1、审计 1、手机号登录 6、工作区 2、P1 收尾 1、P1 静态 5、Bridge P1 单元 2。
-- 运行耗时约 7s；无需网络；退出码 0；旧 82 项用例在 mock 原生扩展后无回归。
+- 覆盖：静态 29 项（SPEC 基线静态 10 + 跨端核对 8 + **P1 静态 5** + **P2 静态 6**）+ 单元 43 项（基线 39 + **Bridge P1 2** + **Bridge P2 2**）+ 集成冒烟 25 项（v1.x 基线）+ **P1 集成 18 项** + **P2 集成 7 项** = 122 项 / 30 个 suite。
+- 本次 P2 新增 **15 项**：MCP 管理页列表 1、添加/保存 1、连接+工具发现 1、mcp-tools 1、构建进度成功 1、构建失败 1、P2 静态 6（含实际 `python3 -m py_compile`）、Bridge P2 单元 2、收尾 1。
+- 此前 P1 新增 25 项，基线 82 项；三次扩展均保持旧用例全绿。
+- 运行耗时约 9s；无需网络；退出码 0（仅 `py_compile` 用例需要本机 `python3`，缺失会给出明确失败信息）。
 - 若产品代码后续变更导致失败，`npm test` 会列出每个失败项的 suite/测试名/断言信息，退出码非 0。

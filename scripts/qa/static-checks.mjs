@@ -5,8 +5,10 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import { execFileSync } from 'node:child_process';
 import { suite, test, ok, equal, includes, notIncludes, match, isString } from './lib/harness.mjs';
 import { ROOT, WEB_DIR, JS_DIR, SPEC_JS_ORDER, readWeb, hasWebFile, listJsFiles } from './lib/env.mjs';
 
@@ -642,6 +644,190 @@ export function registerStaticTests() {
     ok(qaDoc, 'docs/QA.md 不存在');
     for (const keyword of ['ARCH v2 P1', 'P1 集成', 'p1-integration-tests.mjs', 'tool-confirm', 'requestOtp', 'listDir', 'setWorkspace']) {
       ok(qaDoc.indexOf(keyword) !== -1, `docs/QA.md 覆盖矩阵缺少 P1 关键词：${keyword}`);
+    }
+  });
+
+  /* ================================================================== *
+   * ARCH v2 P2：MCP Client + Termux 构建服务
+   * ================================================================== */
+  suite('ARCH v2 P2 静态契约（MCP UI / Bridge / Java / Termux Server）');
+
+  test('index.html 含 MCP 管理页/表单弹窗 id、data-action 与构建进度样式', () => {
+    const html = readWeb('index.html');
+    const requiredIds = [
+      'screen-mcp', 'mcp-count', 'mcp-list', 'mcp-empty', 'mcp-add', 'set-mcp-row', 'set-mcp-count',
+      'mcp-form-modal', 'mcp-form-title', 'mcp-form-name', 'mcp-form-url', 'mcp-form-token', 'mcp-form-error', 'mcp-form-save',
+    ];
+    const missing = requiredIds.filter((id) => !new RegExp(`id\\s*=\\s*["']${id}["']`).test(html));
+    ok(missing.length === 0, `index.html 缺少 P2 关键 id：${missing.join(', ')}`);
+    for (const action of ['open-mcp', 'mcp-page-refresh', 'mcp-add', 'mcp-form-save', 'mcp-form-cancel', 'mcp-toggle-token']) {
+      ok(html.indexOf(`data-action="${action}"`) !== -1, `index.html 缺少 data-action="${action}"`);
+    }
+    // 列表行动作由 ui.js 动态创建（mcp-edit/连接/断开/刷新/测试/删除）
+    const uiCode0 = stripComments(readJs('ui.js'));
+    for (const action of ['mcp-edit', 'mcp-connect', 'mcp-disconnect', 'mcp-refresh', 'mcp-test', 'mcp-delete']) {
+      ok(uiCode0.indexOf(`'${action}'`) !== -1, `ui.js 未处理动态 data-action="${action}"`);
+    }
+    const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';
+    for (const cls of ['.mcp-row', '.mcp-dot', '.mcp-dot--connected', '.mcp-status-badge', '.mcp-row-sub', '.tool-progress', '.tool-progress-track', '.tool-progress-fill', '.tool-progress-percent', '.tool-log', '.tool-log-details']) {
+      ok(css.indexOf(cls) !== -1, `app.css 缺少 P2 样式类 ${cls}`);
+    }
+  });
+
+  test('ui.js / app.js / bridge.js 导出 P2 MCP API、事件与 mock 能力', () => {
+    const uiCode = stripComments(readJs('ui.js'));
+    const appCode = stripComments(readJs('app.js'));
+    const bridgeCode = stripComments(readJs('bridge.js'));
+
+    // UI：MCP 列表/表单/状态/构建进度卡
+    for (const name of ['renderMcpServers', 'openMcpServerForm', 'closeMcpForm', 'setMcpStatus', 'setToolProgress', 'appendToolLog', 'openMcpPage']) {
+      const exposed = definesMethod(uiCode, name) || new RegExp(`UI\\\\.${name}\\\\s*=`).test(uiCode);
+      ok(exposed, `ui.js 缺少 P2 API：UI.${name}`);
+    }
+    for (const name of ['renderMcpRows', 'buildMcpRow', 'submitMcpForm', 'applyToolBuildFields', 'ensureToolBuildNodes', 'setToolBuildLog', 'refreshMcpPage', 'updateMcpCounts']) {
+      ok(definesMethod(uiCode, name), `ui.js 缺少 P2 内部实现 ${name}`);
+    }
+
+    // app.js：MCP handlers / 对外接口 / 事件处理 / 进度卡映射
+    for (const name of ['onOpenMcp', 'onMcpList', 'onMcpSave', 'onMcpDelete', 'onMcpConnect', 'onMcpDisconnect', 'onMcpRefresh', 'onMcpTest']) {
+      ok(new RegExp(`\\b${name}\\s*:`).test(appCode), `app.js handlers 缺少 ${name}`);
+    }
+    for (const name of [
+      'openMcpPage', 'showMcpPage', 'getMcpServers', 'getMcpStatus', 'getMcpToolMap', 'getMcpTools',
+      'getMcpToolCounts', 'saveMcpServer', 'deleteMcpServer', 'connectMcp', 'disconnectMcp', 'refreshMcpTools',
+      'testMcp', 'isBuildToolName', 'isMcpProgressTool',
+    ]) {
+      ok(new RegExp(`App\\.${name}\\s*=`).test(appCode), `app.js 缺少对外接口 App.${name}`);
+    }
+    for (const name of ['onMcpStatus', 'onMcpTools', 'onMcpProgress', 'loadMcpServers', 'rebuildMcpToolMap', 'createRunningToolMessage', 'finalizeProgressToolMessage', 'findRunningToolMsg', 'openMcpPage']) {
+      ok(definesMethod(appCode, name), `app.js 缺少 P2 实现函数 ${name}`);
+    }
+
+    // bridge.js：6 个封装 + mcpTools + 事件等待 + mock 行为
+    for (const name of ['mcpServers', 'mcpSaveServer', 'mcpDeleteServer', 'mcpConnect', 'mcpDisconnect', 'mcpRefreshTools']) {
+      ok(definesMethod(bridgeCode, name), `bridge.js 缺少 P2 原生封装 Bridge.${name}`);
+    }
+    for (const name of ['mcpTools', 'waitMcpStatus', 'waitMcpTools']) {
+      ok(definesMethod(bridgeCode, name), `bridge.js 缺少 P2 辅助 API Bridge.${name}`);
+    }
+    for (const evt of ['mcp-status', 'mcp-tools', 'mcp-progress']) {
+      ok(bridgeCode.indexOf(`'${evt}'`) !== -1, `bridge.js 未注册 P2 事件类型 ${evt}`);
+      ok(appCode.indexOf(`'${evt}'`) !== -1, `app.js 未监听 P2 事件 ${evt}`);
+    }
+    ok(bridgeCode.indexOf('mockMcp') !== -1, 'bridge.js 缺少 MCP mock 实现');
+    ok(bridgeCode.indexOf('mockMcpEmitStatus') !== -1 && bridgeCode.indexOf('mockMcpEmitTools') !== -1, 'bridge.js MCP mock 缺少状态/工具事件');
+    ok(bridgeCode.indexOf('MOCK_MCP_DEFAULT_SERVERS') !== -1, 'bridge.js mock 缺少 2 个示例服务器');
+    ok(bridgeCode.indexOf('MOCK_MCP_PROGRESS_STEPS') !== -1, 'bridge.js mock 缺少 pack_apk 进度步骤');
+    equal((bridgeCode.match(/pack_apk/g) || []).length > 0, true, 'bridge.js mock 未涉及 pack_apk');
+  });
+
+  test('JsBridge.java 实现 6 个 mcp* 方法 + 事件；mcp 包 JSON-RPC/生命周期/工具注册齐全', () => {
+    const bridge = readOrNull(JS_BRIDGE);
+    ok(bridge, 'JsBridge.java 不存在');
+    const expected = [
+      ['mcpServers', 'String'], ['mcpSaveServer', 'boolean'], ['mcpDeleteServer', 'void'],
+      ['mcpConnect', 'void'], ['mcpDisconnect', 'void'], ['mcpRefreshTools', 'void'],
+    ];
+    for (const [name, type] of expected) {
+      const re = new RegExp(`public\\s+${type}\\s+${name}\\s*\\(`);
+      ok(re.test(bridge), `JsBridge.java 缺少 ${type} ${name}()`);
+      const idx = bridge.search(re);
+      ok(bridge.slice(Math.max(0, idx - 260), idx).indexOf('@JavascriptInterface') !== -1, `JsBridge.${name} 缺少 @JavascriptInterface`);
+    }
+    ok(/public\s+String\s+mcpTools\s*\(/.test(bridge), 'JsBridge.java 缺少补充方法 mcpTools(id)');
+    ok(bridge.indexOf('"mcp-status"') !== -1, 'JsBridge.java 缺少事件 "mcp-status"');
+    ok(/emitMcpStatus/.test(bridge), 'JsBridge.java 缺少 emitMcpStatus');
+    ok(/mcp\.callTool\s*\(/.test(bridge) && /def\.remote\s*\(\)/.test(bridge), 'execTool 未把 remote 工具转发给 McpManager.callTool');
+
+    const mcpDir = path.join(JAVA_DIR, 'mcp');
+    for (const file of ['JsonRpcClient.java', 'McpManager.java', 'McpServerConfig.java']) {
+      ok(readOrNull(path.join(mcpDir, file)), `缺少原生 MCP 类：mcp/${file}`);
+    }
+    const client = readOrNull(path.join(mcpDir, 'JsonRpcClient.java')) || '';
+    for (const token of ['PROTOCOL_VERSION = "2024-11-05"', 'text/event-stream', 'application/json', 'Authorization', 'Bearer ', '"tools/list"', '"tools/call"', '"notifications/initialized"', '"initialize"', '"ping"']) {
+      ok(client.indexOf(token) !== -1, `JsonRpcClient 缺少契约元素 ${token}`);
+    }
+    ok(/Streamable|streamable-http/i.test(client) || /POST/.test(client), 'JsonRpcClient 未实现 streamable-http POST');
+    const manager = readOrNull(path.join(mcpDir, 'McpManager.java')) || '';
+    for (const token of ['HEARTBEAT_INTERVAL_MS', 'reconnect', 'ToolDef.Risk.MID', 'true', 'ToolRegistry', 'mcp:', 'callTool', 'serversJson', 'saveServer', 'deleteServer', 'toolsJson']) {
+      ok(manager.indexOf(token) !== -1, `McpManager 缺少契约元素 ${token}`);
+    }
+    ok(/reconnect/i.test(manager) && /(1|2|4|8|30)/.test(manager), 'McpManager 未实现指数退避重连');
+    for (const evt of ['"mcp-tools"', '"mcp-progress"']) {
+      ok(manager.indexOf(evt) !== -1, `McpManager 缺少事件 ${evt}`);
+    }
+    ok(/emitProgress\s*\(/.test(manager), 'McpManager 缺少 emitProgress（mcp-progress）');
+    const config = readOrNull(path.join(mcpDir, 'McpServerConfig.java')) || '';
+    for (const token of ['isValidUrl', 'fromJson', 'toJson', 'sanitizeId']) {
+      ok(config.indexOf(token) !== -1, `McpServerConfig 缺少 ${token}`);
+    }
+    const prefs = readOrNull(path.join(JAVA_DIR, 'Prefs.java')) || '';
+    ok(prefs.indexOf('mcpServers') !== -1, 'Prefs.java 未持久化 mcpServers 配置');
+  });
+
+  test('termux-mcp/server.py 契约：5 个构建工具 + JSON-RPC 生命周期 + Token/allow-root 安全默认', () => {
+    const serverFile = path.join(ROOT, 'termux-mcp', 'server.py');
+    const server = readOrNull(serverFile);
+    ok(server, 'termux-mcp/server.py 不存在');
+    for (const tool of ['pack_apk', 'decompile_apk', 'repack_apk', 'run_gradle', 'list_workspace']) {
+      ok(server.indexOf(`"name": "${tool}"`) !== -1, `server.py 未定义工具 ${tool}`);
+    }
+    for (const method of ['initialize', 'notifications/initialized', 'tools/list', 'tools/call', 'ping']) {
+      ok(server.indexOf(method) !== -1, `server.py 缺少 JSON-RPC 方法 ${method}`);
+    }
+    for (const token of ['Authorization', 'Bearer', '--allow-root', '--no-token', '--token', '127.0.0.1', 'ThreadingHTTPServer', '/mcp', 'sha256', 'apktool', 'apksigner', 'gradlew', '300']) {
+      ok(server.indexOf(token) !== -1, `server.py 缺少契约元素 ${token}`);
+    }
+    ok(/is_within|realpath/.test(server), 'server.py 未做 allow-root 路径越界校验');
+    ok(/content/.test(server) && /"type": "text"/.test(server) || server.indexOf('"text"') !== -1, 'server.py 工具结果未按 content:[{type:"text"}] 返回');
+    for (const file of ['setup.sh', 'start.sh', 'README.md', 'config.example.json']) {
+      ok(readOrNull(path.join(ROOT, 'termux-mcp', file)), `缺少 termux-mcp/${file}`);
+    }
+    const setup = readOrNull(path.join(ROOT, 'termux-mcp', 'setup.sh')) || '';
+    for (const pkg of ['python', 'openjdk-17', 'aapt', 'd8', 'apksigner', 'zipalign', 'git']) {
+      ok(setup.indexOf(pkg) !== -1, `setup.sh 安装清单缺少 ${pkg}`);
+    }
+    const start = readOrNull(path.join(ROOT, 'termux-mcp', 'start.sh')) || '';
+    ok(start.indexOf('server.py') !== -1 && start.indexOf('8787') !== -1, 'start.sh 未启动 server.py 或未使用 8787 端口');
+    const readme = readOrNull(path.join(ROOT, 'termux-mcp', 'README.md')) || '';
+    ok(readme.indexOf('http://127.0.0.1:8787/mcp') !== -1, 'README 缺少客户端连接地址');
+    ok(readme.indexOf('curl') !== -1 && readme.indexOf('Token') !== -1, 'README 缺少 curl 验证/Token 说明');
+  });
+
+  test('termux-mcp/server.py 实际通过 python3 -m py_compile（缓存重定向到临时目录，不污染仓库）', () => {
+    const serverFile = path.join(ROOT, 'termux-mcp', 'server.py');
+    ok(fs.existsSync(serverFile), 'termux-mcp/server.py 不存在');
+    const pycache = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-qa-pyc-'));
+    try {
+      const output = execFileSync('python3', ['-m', 'py_compile', serverFile], {
+        cwd: ROOT,
+        env: Object.assign({}, process.env, { PYTHONPYCACHEPREFIX: pycache }),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+      });
+      equal(String(output).trim(), '', 'py_compile 应无输出（成功时静默）');
+    } catch (err) {
+      const stderr = String((err && (err.stderr || err.message)) || '');
+      if (err && err.code === 'ENOENT') {
+        throw new Error('环境缺少 python3，无法执行 SPEC 验收要求的 `python3 -m py_compile termux-mcp/server.py`');
+      }
+      throw new Error(`python3 -m py_compile termux-mcp/server.py 失败：\n${stderr}`);
+    } finally {
+      try {
+        fs.rmSync(pycache, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    ok(!fs.existsSync(path.join(ROOT, 'termux-mcp', '__pycache__')), 'py_compile 不应在仓库内生成 __pycache__');
+  });
+
+  test('QA 覆盖矩阵已包含 ARCH v2 P2 用例说明（docs/QA.md）', () => {
+    const qaDoc = readOrNull(path.join(ROOT, 'docs', 'QA.md')) || '';
+    ok(qaDoc, 'docs/QA.md 不存在');
+    for (const keyword of ['ARCH v2 P2', 'P2 集成', 'p2-integration-tests.mjs', 'MCP', 'mcp-progress', 'py_compile', 'termux-mcp/server.py']) {
+      ok(qaDoc.indexOf(keyword) !== -1, `docs/QA.md 覆盖矩阵缺少 P2 关键词：${keyword}`);
     }
   });
 }

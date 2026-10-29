@@ -347,6 +347,198 @@ export function createMockNative(opts = {}) {
     return body;
   }
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P2：mock 原生 MCP Client（JSON-RPC over streamable-http 的本地替身）
+   *
+   * 与 JsBridge.java 契约一致：
+   *   mcpServers()/mcpTools(id) 同步返回 JSON 字符串；mcpSaveServer(json) 返回 boolean；
+   *   mcpDeleteServer/mcpConnect/mcpDisconnect/mcpRefreshTools 为 void + 异步事件
+   *   （mcp-status / mcp-tools / mcp-progress）。
+   * 默认 2 个示例服务器（Termux 本地构建 / 示例远程 MCP），状态默认 disconnected，
+   * 因此 **不改变旧用例的 toolSchemas**；连接后的 MCP 工具会以 risk=MID 合并进
+   * toolSchemas()（与原生 ToolRegistry 注册语义一致）。
+   * 事件既可由 mock 自动产生（连接成功 / 工具列表），也可由测试 __emit 注入；
+   * opts.p2 可覆盖：{ servers, tools, autoConnect:true, saveConnect:true, connectDelay:10 }。
+   * ------------------------------------------------------------------ */
+  const P2_DEFAULT_SERVERS = [
+    {
+      id: 'mcp-termux',
+      name: 'Termux 本地构建',
+      url: 'http://127.0.0.1:8787/mcp',
+      token: 'demo-token',
+      enabled: true,
+      status: 'disconnected',
+      message: '',
+    },
+    {
+      id: 'mcp-remote-demo',
+      name: '示例远程 MCP',
+      url: 'https://mcp.example.com/mcp',
+      token: '',
+      enabled: true,
+      status: 'disconnected',
+      message: '',
+    },
+  ];
+  const P2_DEFAULT_TOOLS = {
+    'mcp-termux': [
+      { name: 'pack_apk', description: '打包 APK（调用 Termux 项目 scripts/build.sh）' },
+      { name: 'decompile_apk', description: '反编译 APK（apktool d）' },
+      { name: 'repack_apk', description: '回编译并签名 APK（apktool b + apksigner）' },
+      { name: 'run_gradle', description: '执行 Gradle 任务（./gradlew <task>）' },
+      { name: 'list_workspace', description: '列出 Termux 工作区目录内容' },
+    ],
+    'mcp-remote-demo': [
+      { name: 'echo', description: '回显传入的文本' },
+      { name: 'get_time', description: '返回服务器当前时间（ISO）' },
+    ],
+  };
+  const p2cfg = opts.p2 && typeof opts.p2 === 'object' ? opts.p2 : {};
+
+  function p2Clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  const p2 = {
+    servers: Array.isArray(p2cfg.servers) ? p2Clone(p2cfg.servers) : p2Clone(P2_DEFAULT_SERVERS),
+    tools: p2cfg.tools && typeof p2cfg.tools === 'object' ? p2Clone(p2cfg.tools) : p2Clone(P2_DEFAULT_TOOLS),
+    autoConnect: p2cfg.autoConnect !== false,
+    saveConnect: p2cfg.saveConnect !== false,
+    connectDelay: Number.isFinite(p2cfg.connectDelay) ? p2cfg.connectDelay : 10,
+    seq: 0,
+    deleted: [],
+    saveCalls: [],
+    connectCalls: [],
+    disconnectCalls: [],
+    refreshCalls: [],
+  };
+
+  function p2FindServer(id) {
+    const key = String(id == null ? '' : id);
+    return p2.servers.find((server) => String(server.id) === key) || null;
+  }
+
+  function p2StatusOf(server) {
+    if (!server) return 'disconnected';
+    const status = String(server.status || (server.connected ? 'connected' : 'disconnected')).toLowerCase();
+    if (status === 'connected' || status === 'connecting' || status === 'error') return status;
+    return 'disconnected';
+  }
+
+  function p2ToolsFor(id) {
+    const key = String(id == null ? '' : id);
+    const list = Array.isArray(p2.tools[key]) ? p2.tools[key] : [];
+    const server = p2FindServer(key);
+    const extra = server && Array.isArray(server.tools) ? server.tools : [];
+    const out = [];
+    const seen = Object.create(null);
+    for (const item of list.concat(extra)) {
+      if (!item || item.name == null || item.name === '') continue;
+      const name = String(item.name);
+      if (seen[name]) continue;
+      seen[name] = true;
+      out.push({ name, description: item.description == null ? '' : String(item.description) });
+    }
+    return out;
+  }
+
+  function p2ServerJson(server) {
+    const status = p2StatusOf(server);
+    const tools = status === 'connected' ? p2ToolsFor(server.id) : [];
+    const declaredCount = Number(server && server.toolCount);
+    return {
+      id: String(server.id),
+      name: server.name == null ? String(server.id) : String(server.name),
+      url: server.url == null ? '' : String(server.url),
+      token: server.token == null ? '' : String(server.token),
+      enabled: server.enabled !== false,
+      status,
+      message: server.message == null ? '' : String(server.message),
+      connected: status === 'connected',
+      toolCount: tools.length || (Number.isFinite(declaredCount) ? declaredCount : 0),
+      tools,
+    };
+  }
+
+  function p2ServersJson() {
+    return p2.servers.map((server) => p2ServerJson(server));
+  }
+
+  /** 已连接服务器的 MCP 工具 schema（原生 ToolRegistry 注册语义：risk=MID、needConfirm=true）。 */
+  function p2McpToolSchemas() {
+    const out = [];
+    const seen = Object.create(null);
+    for (const server of p2.servers) {
+      if (p2StatusOf(server) !== 'connected') continue;
+      for (const tool of p2ToolsFor(server.id)) {
+        if (seen[tool.name]) continue;
+        seen[tool.name] = true;
+        out.push({
+          type: 'function',
+          risk: 'mid',
+          mcp: { serverId: String(server.id) },
+          function: {
+            name: tool.name,
+            description: tool.description || ('MCP 工具 ' + tool.name),
+            parameters: { type: 'object', properties: {}, required: [] },
+          },
+        });
+      }
+    }
+    return out;
+  }
+
+  /** toolSchemas = 本地工具 + 已连接 MCP 工具（按 function.name 去重，本地优先）。 */
+  function p2MergedToolSchemas() {
+    const out = p1.tools.slice();
+    const seen = Object.create(null);
+    for (const item of out) {
+      const name = (item && item.function && item.function.name) || (item && item.name) || '';
+      if (name) seen[String(name)] = true;
+    }
+    for (const item of p2McpToolSchemas()) {
+      if (seen[item.function.name]) continue;
+      seen[item.function.name] = true;
+      out.push(item);
+    }
+    return out;
+  }
+
+  function p2EmitStatus(id, status, message, delay) {
+    setTimeout(() => emit({
+      type: 'mcp-status',
+      id: String(id == null ? '' : id),
+      status: String(status || 'disconnected'),
+      message: message == null ? '' : String(message),
+    }), Math.max(0, Number(delay) || 0));
+  }
+
+  function p2EmitTools(id, delay) {
+    setTimeout(() => emit({
+      type: 'mcp-tools',
+      id: String(id == null ? '' : id),
+      tools: p2ToolsFor(id).map((tool) => ({ name: tool.name, description: tool.description })),
+    }), Math.max(0, Number(delay) || 0));
+  }
+
+  /** 连接流程：connecting（同步改状态，供 app 判定“原生已自动连接”）→ connected + mcp-tools。 */
+  function p2StartConnect(server) {
+    if (!server) return;
+    const id = String(server.id);
+    server.status = 'connecting';
+    server.message = '';
+    if (!p2.autoConnect) return;
+    p2EmitStatus(id, 'connecting', '正在连接 MCP 服务器…', 5);
+    setTimeout(() => {
+      const current = p2FindServer(id);
+      if (!current || p2StatusOf(current) !== 'connecting') return;
+      current.status = 'connected';
+      current.message = '';
+      emit({ type: 'mcp-status', id, status: 'connected', message: '已连接（mock）' });
+      emit({ type: 'mcp-tools', id, tools: p2ToolsFor(id).map((tool) => ({ name: tool.name, description: tool.description })) });
+    }, p2.connectDelay);
+  }
+
   function record(method, args) {
     calls.push({ method, args, at: Date.now() });
   }
@@ -489,7 +681,8 @@ export function createMockNative(opts = {}) {
     /* ---------------- ARCH v2 P1：原生 Agent 工具框架（JsBridge 契约） ---------------- */
     toolSchemas() {
       record('toolSchemas', []);
-      return JSON.stringify(p1.tools);
+      /* P2：已连接的 MCP 工具会注册进 ToolRegistry → 合并进 tools 数组（本地工具优先去重） */
+      return JSON.stringify(p2MergedToolSchemas());
     },
     execTool(requestId, name, argsJson) {
       record('execTool', [requestId, name, argsJson]);
@@ -605,10 +798,98 @@ export function createMockNative(opts = {}) {
       if (p1.autoAuthChanged) setTimeout(() => emit({ type: 'auth-changed', loggedIn: false, phone }), 5);
     },
 
+    /* ---------------- ARCH v2 P2：原生 MCP Client（JsBridge 契约） ---------------- */
+    mcpServers() {
+      record('mcpServers', []);
+      return JSON.stringify(p2ServersJson());
+    },
+    mcpSaveServer(json) {
+      record('mcpSaveServer', [json]);
+      let data = null;
+      try {
+        data = typeof json === 'string' ? JSON.parse(json) : json;
+      } catch {
+        data = null;
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+      const name = String(data.name == null ? '' : data.name).replace(/^\s+|\s+$/g, '');
+      const url = String(data.url == null ? '' : data.url).replace(/^\s+|\s+$/g, '');
+      if (!name || !/^https?:\/\/\S+/i.test(url)) return false;
+      p2.saveCalls.push({ name, url, token: data.token == null ? '' : String(data.token), connect: !!data.connect, enabled: data.enabled !== false });
+      let server = data.id ? p2FindServer(data.id) : null;
+      if (server) {
+        server.name = name;
+        server.url = url;
+        if (data.token !== undefined) server.token = data.token == null ? '' : String(data.token);
+        server.enabled = data.enabled !== false;
+        server.status = 'disconnected';
+        server.message = '';
+      } else {
+        p2.seq += 1;
+        server = {
+          id: 'mcp-mock-' + Date.now().toString(36) + '-' + p2.seq,
+          name,
+          url,
+          token: data.token == null ? '' : String(data.token),
+          enabled: data.enabled !== false,
+          status: 'disconnected',
+          message: '',
+        };
+        p2.servers.push(server);
+      }
+      if (p2.saveConnect && server.enabled) p2StartConnect(server);
+      return true;
+    },
+    mcpDeleteServer(id) {
+      record('mcpDeleteServer', [id]);
+      const server = p2FindServer(id);
+      if (server) {
+        p2.servers = p2.servers.filter((item) => item !== server);
+        p2.deleted.push(String(server.id));
+      }
+    },
+    mcpConnect(id) {
+      record('mcpConnect', [id]);
+      const server = p2FindServer(id);
+      if (!server) return;
+      p2.connectCalls.push(String(server.id));
+      p2StartConnect(server);
+    },
+    mcpDisconnect(id) {
+      record('mcpDisconnect', [id]);
+      const server = p2FindServer(id);
+      if (!server) return;
+      p2.disconnectCalls.push(String(server.id));
+      server.status = 'disconnected';
+      server.message = '';
+      if (p2.autoConnect) {
+        p2EmitStatus(server.id, 'disconnected', '已断开连接', 5);
+        p2EmitTools(server.id, 10);
+      }
+    },
+    mcpRefreshTools(id) {
+      record('mcpRefreshTools', [id]);
+      const server = p2FindServer(id);
+      if (!server) return;
+      p2.refreshCalls.push(String(server.id));
+      const status = p2StatusOf(server);
+      if (!p2.autoConnect) return;
+      if (status === 'connected') p2EmitTools(server.id, 5);
+      else p2EmitStatus(server.id, status, '未连接，请先连接后再刷新工具', 5);
+    },
+    mcpTools(id) {
+      record('mcpTools', [id]);
+      const server = p2FindServer(id);
+      if (!server || p2StatusOf(server) !== 'connected') return '[]';
+      return JSON.stringify(p2ToolsFor(server.id));
+    },
+
     __calls: calls,
     __pending: pending,
     __prefs: prefs,
     __plugins: plugins,
+    /** P2 mock 运行时状态（测试可读写：servers/tools/autoConnect/saveConnect/...） */
+    __p2: p2,
     /** P1 mock 运行时状态（测试可读写：listDirError / dirs / files / audit / auth / workspace ...） */
     __p1: p1,
     __setClipboard: (t) => {

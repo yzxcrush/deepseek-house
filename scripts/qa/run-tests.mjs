@@ -43,6 +43,15 @@ try {
   process.exitCode = 1;
 }
 
+// ARCH v2 P2 集成用例（MCP 服务器管理 / 连接 / 工具发现 / 构建进度卡）
+try {
+  const p2 = await import('./p2-integration-tests.mjs');
+  p2.registerP2IntegrationTests();
+} catch (err) {
+  console.error('\n⚠ 无法加载 P2 集成测试模块 p2-integration-tests.mjs：', err && err.message);
+  process.exitCode = 1;
+}
+
 const results = await runAll({ filter, defaultTimeout: 30000 });
 const code = printSummary(results);
 const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
