@@ -3225,3 +3225,26 @@ body { background-color: #181818; }
 .chat-pin svg { width: 12px; height: 12px; }
 .share-icon svg { width: 16px; height: 16px; }
 .chatlist { padding-top: 2px; }
+
+/* ==========================================================================
+   v1.0.9 修复：会话行横排布局（头像左，名称+简介右）
+   之前 .chat-item 残留 flex-direction: column，导致头像在文字上方、行过高
+   ========================================================================== */
+.chat-item {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+.chat-item-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.chat-item-meta {
+  flex-direction: column;
+  align-items: flex-end;
+  align-self: center;
+  gap: 3px;
+}

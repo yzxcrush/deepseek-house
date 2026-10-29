@@ -825,6 +825,10 @@ export function registerIntegrationTests() {
     ok(item.querySelector('.chat-item-title'), '会话项缺少标题');
     ok(item.querySelector('.chat-item-preview'), '会话项缺少预览');
     ok(item.querySelector('.chat-item-time'), '会话项缺少时间');
+    // 布局回归：头像必须在左侧、文字在右侧（横排），不能是纵向堆叠
+    equal(String(w.getComputedStyle(item).flexDirection || ''), 'row', '会话行应为横排：头像在左、名称/简介在右');
+    const kids = Array.from(item.children).map((n) => n.className);
+    ok(kids[0].indexOf('chat-avatar') !== -1, '第一个子元素应为头像');
     const id = item.getAttribute('data-id');
     click(w, item);
     await waitFor(() => isScreenActive(w, 'screen-chat'), { timeout: 5000, label: '点击会话进入对话页' });

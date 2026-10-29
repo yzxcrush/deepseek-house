@@ -2,7 +2,7 @@
 # DeepSeek House APK builder: aapt -> javac -> d8 -> zipalign -> apksigner
 # Works in Termux (on-device) and on Linux/CI runners with an Android SDK.
 #
-#   bash scripts/build.sh              # build dist/DeepSeekHouse-1.0.8.apk
+#   bash scripts/build.sh              # build dist/DeepSeekHouse-1.0.9.apk
 #   ANDROID_HOME=/opt/android bash scripts/build.sh
 #   DSH_STRICT_CHECKS=1 bash scripts/build.sh   # fail on asset contract violations
 set -euo pipefail
@@ -14,7 +14,7 @@ DIST="$ROOT/dist"
 KEYSTORE="${DSH_KEYSTORE:-$ROOT/keystore/dsh-release.keystore}"
 KS_PASS="${DSH_KS_PASS:-deepseekhouse}"
 KS_ALIAS="deepseekhouse"
-APK_NAME="DeepSeekHouse-1.0.8.apk"
+APK_NAME="DeepSeekHouse-1.0.9.apk"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
