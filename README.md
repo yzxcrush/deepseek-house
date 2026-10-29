@@ -25,7 +25,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.1.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.2.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -45,20 +45,20 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.1.0.apk`
+产物：`dist/DeepSeekHouse-2.2.0.apk`
 
 ### 云端构建（GitHub Actions）
 
 推 tag 或手动触发 `Build & Release APK` workflow 即可：
 
 ```bash
-git tag v2.1.0 && git push origin v2.1.0
+git tag v2.2.0 && git push origin v2.2.0
 ```
 
 CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → `apksigner verify` → 上传 artifact →
 创建 Release 并附上 APK 与 SHA256。手机上直接从 Release 下载安装即可。
 
-## 🤖 Agent 工作站（P1，v2.1.0）
+## 🤖 Agent 工作站（P1，v2.2.0）
 
 从「聊天客户端」升级为手机端本地 Agent 工作站的第一阶段，**纯 Java + 现有手工构建链，无 Gradle/AndroidX**：
 
@@ -67,6 +67,13 @@ CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → 
 - **工作区**：默认 `Android/data/com.deepseekhouse.app/files/workspace`，可切换到 `/sdcard/house-workspace`；聊天页「文件」抽屉 = 目录树 + 文件预览；底部「终端」面板 = 输入命令 → `/system/bin/sh` 执行 → 实时输出
 - **工具调用可视化**：消息流里显示工具卡片（工具名/参数摘要/状态：等待确认/成功/失败/已拒绝/结果折叠）
 - **手机号登录（本地 OTP MVP）**：登录页「API Key / 手机号」双标签；验证码通过通知渠道展示（仅本机演示，5 分钟有效、60s 限频、错 3 次锁 5 分钟），token 本地保存可退出；预留 `SmsProvider` 接口，可切换为自建后端 + 阿里云/腾讯云短信
+
+## 🧩 插件生态与记忆（P3，v2.2.0）
+
+- **HousePlugin 插件系统**：生命周期 `onLoad/onUnload/tools()/uiSlots()`，从 App 私有插件目录（复制即装）或 `/sdcard/house-plugins` 加载 JS 插件；manifest 校验（id/name/version/author/tools/permissions）；单个插件异常隔离；插件可注册工具与**侧边栏面板**（uiSlots），示例见 `docs/examples/house-plugin-file-manager.js`
+- **插件市场**：https 索引 JSON（`{version,plugins:[{id,name,version,author,description,url,sha256,hmac,tags}]}`）→ 拉取/安装/更新/卸载；安装前 **SHA-256 + HMAC 双重校验**，校验失败不落盘
+- **记忆系统**：SQLite 存储会话摘要 / 长期偏好 / 项目记忆；每次请求自动注入 system prompt；超过上下文预算 80% 时自动摘要旧消息并保留最近对话，消息流显示「已压缩」提示
+- 已内置示例插件与文档：`docs/PLUGINS.md`
 
 路线图：P2 = MCP Client（JSON-RPC 2.0 / streamable-http）+ Termux 构建服务（pack_apk 等）；P3 = 插件系统（HousePlugin / 市场 / HMAC）+ 记忆与上下文压缩；P4 = 三栏 UI 与构建进度。
 

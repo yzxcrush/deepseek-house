@@ -11,7 +11,7 @@
 (function (global) {
   'use strict';
 
-  var KNOWN_PREFS = ['apiKey', 'baseUrl', 'model', 'temperature', 'maxTokens', 'stream', 'theme', 'systemPrompt', 'backDepth'];
+  var KNOWN_PREFS = ['apiKey', 'baseUrl', 'model', 'temperature', 'maxTokens', 'stream', 'theme', 'systemPrompt', 'backDepth', 'contextBudget'];
 
   function defaultPrefs() {
     return {
@@ -23,7 +23,8 @@
       stream: true,
       theme: 'dark',
       systemPrompt: '你是 DeepSeek House 助手，一个运行在安卓 WebView 中的 AI 聊天助手。请用简体中文回答（除非用户要求其他语言），回答准确、简洁、有条理，适当使用 Markdown 排版。',
-      backDepth: 0
+      backDepth: 0,
+      contextBudget: 24000
     };
   }
 
@@ -897,6 +898,178 @@
     return true;
   }
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P3：插件目录 / 市场校验 / 记忆 —— mock 实现
+   * 触发条件：无 DSNative 或原生缺少 P3 方法（旧版本/半 mock 联调）。
+   * 内存插件文件（.js/.json）+ 内存记忆（session_summary / memory_kv）。
+   * ------------------------------------------------------------------ */
+
+  var mockPluginFiles = Object.create(null); // fileName -> {content, enabled, meta}
+  var mockMemorySummaries = Object.create(null); // chatId -> {summary, updatedAt}
+  var mockMemoryKv = { long_term: Object.create(null), project: Object.create(null) };
+
+  function mockHousePluginSource() {
+    return [
+      '(function () {',
+      '  try {',
+      '    var P = window.DSPlugins;',
+      '    if (!P) return;',
+      '    if (typeof P.installHousePlugin === "function") {',
+      '      P.installHousePlugin({',
+      '        id: "user.mock-house",',
+      '        name: "Mock 示例插件",',
+      '        version: "1.0.0",',
+      '        author: "DeepSeek House (mock)",',
+      '        description: "mock 模式下的 HousePlugin 示例（插件面板 + 一个按钮）",',
+      '        permissions: ["memory"],',
+      '        tools: [],',
+      '        uiSlots: [{ id: "mock-house-slot", title: "Mock 插件面板", icon: "plugin", type: "button",',
+      '          description: "mock 模式示例 slot", actions: [{ id: "hello", label: "打个招呼" }] }]',
+      '      });',
+      '    } else if (typeof P.register === "function") {',
+      '      P.register({ id: "user.mock-house", name: "Mock 示例插件", version: "1.0.0", commands: [], tools: [] });',
+      '    }',
+      '  } catch (e) { /* mock 插件加载失败不影响宿主 */ }',
+      '})();'
+    ].join('\n');
+  }
+
+  function mockSeedPluginMemory() {
+    mockPluginFiles = Object.create(null);
+    mockPluginFiles['user.mock-house-1.0.0.js'] = {
+      content: mockHousePluginSource(),
+      enabled: true,
+      meta: { id: 'user.mock-house', name: 'Mock 示例插件', version: '1.0.0', author: 'DeepSeek House (mock)' }
+    };
+    mockMemorySummaries = Object.create(null);
+    mockMemoryKv = { long_term: Object.create(null), project: Object.create(null) };
+  }
+  mockSeedPluginMemory();
+
+  function mockPluginFileNameValid(fileName) {
+    var name = String(fileName === null || fileName === undefined ? '' : fileName);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.(js|json)$/.test(name)) return false;
+    if (name.indexOf('/') !== -1 || name.indexOf('\\') !== -1 || name.indexOf('..') !== -1) return false;
+    return true;
+  }
+
+  /** mock HMAC-SHA256（确定性伪 HMAC：同内容同结果，足够 QA 校验用） */
+  function mockHmacHex(content) {
+    var text = String(content === null || content === undefined ? '' : content);
+    var parts = [];
+    for (var seed = 0; seed < 8; seed++) {
+      var h = (0x811c9dc5 ^ (seed * 0x9e3779b9)) >>> 0;
+      for (var i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+      }
+      parts.push(('00000000' + h.toString(16)).slice(-8));
+    }
+    return parts.join('');
+  }
+
+  /** mock SHA-256（确定性伪哈希，hex；仅供 mock/QA 校验流程使用） */
+  function mockSha256Hex(content) {
+    var text = String(content === null || content === undefined ? '' : content);
+    var parts = [];
+    for (var seed = 0; seed < 8; seed++) {
+      var h = (0x27d4eb2f ^ (seed * 0x165667b1)) >>> 0;
+      for (var i = 0; i < text.length; i++) {
+        h = (h ^ text.charCodeAt(i)) >>> 0;
+        h = ((h << 5) - h + (h << 13) + 0x9e3779b9) >>> 0;
+        h = (h ^ (h >>> 13)) >>> 0;
+      }
+      parts.push(('00000000' + h.toString(16)).slice(-8));
+    }
+    return parts.join('');
+  }
+
+  function mockPluginFileList() {
+    var out = [];
+    var names = Object.keys(mockPluginFiles);
+    for (var i = 0; i < names.length; i++) {
+      var fileName = names[i];
+      var item = mockPluginFiles[fileName] || {};
+      var meta = item.meta || {};
+      var base = fileName.replace(/\.(js|json)$/i, '');
+      var content = String(item.content === null || item.content === undefined ? '' : item.content);
+      out.push({
+        id: meta.id ? String(meta.id) : base,
+        name: meta.name ? String(meta.name) : base,
+        version: meta.version ? String(meta.version) : '1.0.0',
+        author: meta.author ? String(meta.author) : 'mock',
+        fileName: fileName,
+        size: content.length,
+        sha256: mockHmacHex(content),
+        source: 'app',
+        enabled: item.enabled !== false
+      });
+    }
+    return out;
+  }
+
+  function mockPluginReadFile(fileName) {
+    var item = mockPluginFiles[String(fileName === null || fileName === undefined ? '' : fileName)];
+    if (!item) return '';
+    return String(item.content === null || item.content === undefined ? '' : item.content);
+  }
+
+  function mockPluginWriteFile(fileName, content) {
+    var name = String(fileName === null || fileName === undefined ? '' : fileName);
+    if (!mockPluginFileNameValid(name)) return false;
+    var text = String(content === null || content === undefined ? '' : content);
+    if (text.length > 512 * 1024) return false;
+    var existing = mockPluginFiles[name];
+    mockPluginFiles[name] = {
+      content: text,
+      enabled: existing ? existing.enabled !== false : true,
+      meta: existing && existing.meta ? existing.meta : null
+    };
+    return true;
+  }
+
+  function mockPluginDeleteFile(fileName) {
+    var name = String(fileName === null || fileName === undefined ? '' : fileName);
+    if (!Object.prototype.hasOwnProperty.call(mockPluginFiles, name)) return false;
+    delete mockPluginFiles[name];
+    return true;
+  }
+
+  function mockPluginSetEnabledFile(fileName, enabled) {
+    var name = String(fileName === null || fileName === undefined ? '' : fileName);
+    var item = mockPluginFiles[name];
+    if (!item) return false;
+    item.enabled = !!enabled;
+    return true;
+  }
+
+  function mockMemorySummariesJson() {
+    var out = [];
+    var ids = Object.keys(mockMemorySummaries);
+    for (var i = 0; i < ids.length; i++) {
+      var item = mockMemorySummaries[ids[i]];
+      out.push({ chatId: ids[i], summary: String(item.summary || ''), updatedAt: Number(item.updatedAt) || 0 });
+    }
+    return out;
+  }
+
+  function mockMemoryKvCopy(scope) {
+    var bucket = mockMemoryKv[String(scope === null || scope === undefined ? '' : scope)];
+    var out = {};
+    if (!bucket) return out;
+    var keys = Object.keys(bucket);
+    for (var i = 0; i < keys.length; i++) out[keys[i]] = bucket[keys[i]];
+    return out;
+  }
+
+  function mockMemoryAllJson() {
+    return {
+      summaries: mockMemorySummariesJson(),
+      long_term: mockMemoryKvCopy('long_term'),
+      project: mockMemoryKvCopy('project')
+    };
+  }
+
   /** mock 下模拟「同一 requestId 的 execTool → tool-confirm → tool-result」完整事件流 */
   function mockExecToolFlow(requestId, name, argsJson) {
     var rid = String(requestId);
@@ -1115,6 +1288,137 @@
       loggedIn: !!raw.loggedIn,
       phone: raw.phone === undefined || raw.phone === null ? '' : String(raw.phone)
     };
+  }
+
+  /* ARCH v2 P3：原生插件目录 / 记忆方法名探测（旧原生缺方法时回落 mock） */
+  var P3_NATIVE_METHODS = {
+    pluginList: ['pluginList', 'pluginFileList', 'housePluginList'],
+    pluginReadFile: ['pluginReadFile', 'pluginFileRead', 'pluginReadSource'],
+    pluginWriteFile: ['pluginWriteFile', 'pluginFileWrite'],
+    pluginDeleteFile: ['pluginDeleteFile', 'pluginFileDelete'],
+    pluginSetEnabledFile: ['pluginSetEnabledFile', 'pluginFileSetEnabled', 'pluginFileEnable'],
+    pluginHmac: ['pluginHmac', 'pluginHmacSha256'],
+    pluginSha256: ['pluginSha256', 'pluginSha256Hex'],
+    pluginOpenDir: ['pluginOpenDir', 'openPluginDir'],
+    memoryGetSummaries: ['memoryGetSummaries'],
+    memorySaveSummary: ['memorySaveSummary'],
+    memoryDeleteSummary: ['memoryDeleteSummary'],
+    memoryKvGet: ['memoryKvGet'],
+    memoryKvSet: ['memoryKvSet'],
+    memoryKvDelete: ['memoryKvDelete'],
+    memoryAll: ['memoryAll']
+  };
+
+  function p3NativeName(op) {
+    if (!hasNative) return '';
+    var names = P3_NATIVE_METHODS[op] || [];
+    for (var i = 0; i < names.length; i++) {
+      if (hasNativeMethod(names[i])) return names[i];
+    }
+    return '';
+  }
+
+  function p3CallNative(op, args, asJson) {
+    var name = p3NativeName(op);
+    if (!name) return null;
+    return callNative(name, args, asJson);
+  }
+
+  function p3HasMethod(op) {
+    return !!p3NativeName(op);
+  }
+
+  function normalizePluginList(raw) {
+    if (!Array.isArray(raw)) return [];
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      var fileName = item.fileName === undefined || item.fileName === null ? '' : String(item.fileName);
+      var id = item.id === undefined || item.id === null ? '' : String(item.id);
+      if (!id && fileName) id = fileName.replace(/\.(js|json)$/i, '');
+      if (!id) continue;
+      out.push({
+        id: id,
+        name: item.name === undefined || item.name === null ? id : String(item.name),
+        version: item.version === undefined || item.version === null ? '1.0.0' : String(item.version),
+        author: item.author === undefined || item.author === null ? '' : String(item.author),
+        fileName: fileName,
+        size: Number(item.size) || 0,
+        sha256: item.sha256 === undefined || item.sha256 === null ? '' : String(item.sha256),
+        source: item.source === 'sdcard' ? 'sdcard' : 'app',
+        enabled: item.enabled !== false
+      });
+    }
+    return out;
+  }
+
+  /** 记忆摘要归一化：支持 [{chatId,summary,updatedAt}] 或 {chatId: summary|{summary,updatedAt}} */
+  function normalizeMemorySummaries(raw) {
+    var out = [];
+    if (Array.isArray(raw)) {
+      for (var i = 0; i < raw.length; i++) {
+        var item = raw[i];
+        if (!item || typeof item !== 'object') continue;
+        var chatId = item.chatId !== undefined && item.chatId !== null ? item.chatId
+          : (item.chat_id !== undefined && item.chat_id !== null ? item.chat_id : item.id);
+        if (chatId === undefined || chatId === null || String(chatId) === '') continue;
+        out.push({
+          chatId: String(chatId),
+          summary: item.summary === undefined || item.summary === null ? '' : String(item.summary),
+          updatedAt: Number(item.updatedAt !== undefined ? item.updatedAt : (item.updated_at !== undefined ? item.updated_at : item.ts)) || 0
+        });
+      }
+      return out;
+    }
+    if (raw && typeof raw === 'object') {
+      var ids = Object.keys(raw);
+      for (var j = 0; j < ids.length; j++) {
+        var val = raw[ids[j]];
+        var text = '';
+        var ts = 0;
+        if (val && typeof val === 'object') {
+          text = val.summary === undefined || val.summary === null ? '' : String(val.summary);
+          ts = Number(val.updatedAt !== undefined ? val.updatedAt : val.updated_at) || 0;
+        } else if (val !== undefined && val !== null) {
+          text = String(val);
+        }
+        out.push({ chatId: String(ids[j]), summary: text, updatedAt: ts });
+      }
+    }
+    return out;
+  }
+
+  /** 记忆 KV 归一化：支持 {key:value} 或 [{key,value}] */
+  function normalizeMemoryKv(raw) {
+    var out = {};
+    if (Array.isArray(raw)) {
+      for (var i = 0; i < raw.length; i++) {
+        var item = raw[i];
+        if (!item || typeof item !== 'object') continue;
+        var key = item.key === undefined || item.key === null ? '' : String(item.key);
+        if (!key) continue;
+        out[key] = item.value === undefined || item.value === null ? '' : String(item.value);
+      }
+      return out;
+    }
+    if (raw && typeof raw === 'object') {
+      var keys = Object.keys(raw);
+      for (var j = 0; j < keys.length; j++) {
+        var val = raw[keys[j]];
+        out[keys[j]] = val === undefined || val === null ? '' : String(val);
+      }
+    }
+    return out;
+  }
+
+  function normalizeMemoryAll(raw) {
+    var out = { summaries: [], long_term: {}, project: {} };
+    if (!raw || typeof raw !== 'object') return out;
+    out.summaries = normalizeMemorySummaries(raw.summaries);
+    out.long_term = normalizeMemoryKv(raw.long_term !== undefined ? raw.long_term : raw.longTerm);
+    out.project = normalizeMemoryKv(raw.project);
+    return out;
   }
 
   /* ARCH v2 P2：MCP 配置/工具返回值归一化 */
@@ -1358,7 +1662,15 @@
       });
     },
 
+    /** 文件名形态判定（P3 插件目录 API 用 fileName；旧插件 API 用插件 id） */
+    pluginFileNameLike: function (key) {
+      var s = String(key === null || key === undefined ? '' : key);
+      return /^[A-Za-z0-9][A-Za-z0-9._-]*\.(js|json)$/i.test(s) && s.indexOf('..') === -1;
+    },
+
     pluginRead: function (id) {
+      /* P3：plugin-agent 宿主用 fileName 调 Bridge.pluginRead(fileName) */
+      if (Bridge.pluginFileNameLike(id)) return Bridge.pluginReadFile(id);
       if (!hasNative) return mockPluginReadSafe(id);
       try {
         if (typeof DSNative.pluginRead !== 'function') return '';
@@ -1379,6 +1691,8 @@
     },
 
     pluginWrite: function (id, code, metaJson) {
+      /* P3：Bridge.pluginWrite(fileName, content) 两参 → 文件式写入 */
+      if (metaJson === undefined && Bridge.pluginFileNameLike(id)) return Bridge.pluginWriteFile(id, code);
       var metaStr = typeof metaJson === 'string' ? metaJson : JSON.stringify(metaJson || {});
       if (!hasNative) {
         mockSetPlugin(String(id), code, parseJSON(metaStr, {}) || {});
@@ -1395,6 +1709,7 @@
     },
 
     pluginDelete: function (id) {
+      if (Bridge.pluginFileNameLike(id)) return Bridge.pluginDeleteFile(id);
       if (!hasNative) { delete mockPlugins[String(id)]; return true; }
       try {
         if (typeof DSNative.pluginDelete === 'function') DSNative.pluginDelete(String(id));
@@ -1403,6 +1718,7 @@
     },
 
     pluginSetEnabled: function (id, enabled) {
+      if (Bridge.pluginFileNameLike(id)) return Bridge.pluginSetEnabledFile(id, enabled);
       if (!hasNative) {
         var item = mockPlugins[String(id)];
         if (item) item.enabled = !!enabled;
@@ -2108,6 +2424,223 @@
       });
     },
 
+    /* ------------------------------------------------------------------ *
+     * ARCH v2 P3：插件目录（HousePlugin 文件）+ 市场签名校验
+     * ------------------------------------------------------------------ */
+    pluginList: function () {
+      if (p3HasMethod('pluginList')) {
+        var raw = p3CallNative('pluginList', [], true);
+        return normalizePluginList(raw);
+      }
+      return normalizePluginList(mockPluginFileList());
+    },
+
+    pluginReadFile: function (fileName) {
+      var name = String(fileName === null || fileName === undefined ? '' : fileName);
+      if (!name) return '';
+      if (p3HasMethod('pluginReadFile')) {
+        var raw = p3CallNative('pluginReadFile', [name], false);
+        if (raw === null || raw === undefined) return '';
+        var text = String(raw);
+        /* 原生可能返回 {"error":..}：视为空源码 */
+        var trimmed = text.replace(/^\s+|\s+$/g, '');
+        if (trimmed.charAt(0) === '{' && trimmed.indexOf('"error"') !== -1) {
+          var parsed = parseJSON(trimmed, null);
+          if (parsed && parsed.error) return '';
+        }
+        return text;
+      }
+      return mockPluginReadFile(name);
+    },
+
+    pluginWriteFile: function (fileName, content) {
+      var name = String(fileName === null || fileName === undefined ? '' : fileName);
+      var text = String(content === null || content === undefined ? '' : content);
+      if (!name) return false;
+      if (p3HasMethod('pluginWriteFile')) {
+        try {
+          return !!callNative('pluginWriteFile', [name, text], false);
+        } catch (e) {
+          warn('pluginWriteFile 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockPluginWriteFile(name, text);
+    },
+
+    pluginDeleteFile: function (fileName) {
+      var name = String(fileName === null || fileName === undefined ? '' : fileName);
+      if (!name) return false;
+      if (p3HasMethod('pluginDeleteFile')) {
+        try {
+          return !!callNative('pluginDeleteFile', [name], false);
+        } catch (e) {
+          warn('pluginDeleteFile 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockPluginDeleteFile(name);
+    },
+
+    pluginSetEnabledFile: function (fileName, enabled) {
+      var name = String(fileName === null || fileName === undefined ? '' : fileName);
+      if (!name) return false;
+      if (p3HasMethod('pluginSetEnabledFile')) {
+        try {
+          return !!callNative('pluginSetEnabledFile', [name, !!enabled], false);
+        } catch (e) {
+          warn('pluginSetEnabledFile 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      return mockPluginSetEnabledFile(name, enabled);
+    },
+
+    /** HMAC-SHA256(内置密钥, content) hex；用于市场签名校验 */
+    pluginHmac: function (content) {
+      var text = String(content === null || content === undefined ? '' : content);
+      if (p3HasMethod('pluginHmac')) {
+        var raw = p3CallNative('pluginHmac', [text], false);
+        if (raw === null || raw === undefined) return '';
+        var str = String(raw).replace(/^\s+|\s+$/g, '');
+        if (str.charAt(0) === '{') {
+          var parsed = parseJSON(str, null);
+          if (parsed && parsed.hmac) return String(parsed.hmac);
+          if (parsed && parsed.error) return '';
+        }
+        return str;
+      }
+      return mockHmacHex(text);
+    },
+
+    /** SHA-256(content) 小写 hex（原生额外提供；市场在无 WebCrypto 的 WebView 里用它校验） */
+    pluginSha256: function (content) {
+      var text = String(content === null || content === undefined ? '' : content);
+      if (p3HasMethod('pluginSha256')) {
+        var raw = p3CallNative('pluginSha256', [text], false);
+        if (raw === null || raw === undefined) return '';
+        var str = String(raw).replace(/^\s+|\s+$/g, '');
+        if (str.charAt(0) === '{') {
+          var parsed = parseJSON(str, null);
+          if (parsed && parsed.sha256) return String(parsed.sha256);
+          if (parsed && parsed.error) return '';
+        }
+        return str;
+      }
+      return mockSha256Hex(text);
+    },
+
+    pluginOpenDir: function () {
+      if (p3HasMethod('pluginOpenDir')) {
+        try {
+          callNative('pluginOpenDir', [], false);
+          return true;
+        } catch (e) {
+          warn('pluginOpenDir 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      warn('mock 模式：插件目录位于内存（无系统文件管理器）');
+      return true;
+    },
+
+    /* ------------------------------------------------------------------ *
+     * ARCH v2 P3：记忆（session_summary + memory_kv）
+     * ------------------------------------------------------------------ */
+    memoryGetSummaries: function () {
+      if (p3HasMethod('memoryGetSummaries')) {
+        var raw = p3CallNative('memoryGetSummaries', [], true);
+        return normalizeMemorySummaries(raw);
+      }
+      return normalizeMemorySummaries(mockMemorySummariesJson());
+    },
+
+    memorySaveSummary: function (chatId, summary) {
+      var id = String(chatId === null || chatId === undefined ? '' : chatId);
+      if (!id) return false;
+      var text = String(summary === null || summary === undefined ? '' : summary);
+      if (p3HasMethod('memorySaveSummary')) {
+        try {
+          callNative('memorySaveSummary', [id, text], false);
+          return true;
+        } catch (e) {
+          warn('memorySaveSummary 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      mockMemorySummaries[id] = { summary: text, updatedAt: Date.now() };
+      return true;
+    },
+
+    memoryDeleteSummary: function (chatId) {
+      var id = String(chatId === null || chatId === undefined ? '' : chatId);
+      if (!id) return false;
+      if (p3HasMethod('memoryDeleteSummary')) {
+        try {
+          callNative('memoryDeleteSummary', [id], false);
+          return true;
+        } catch (e) {
+          warn('memoryDeleteSummary 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      delete mockMemorySummaries[id];
+      return true;
+    },
+
+    memoryKvGet: function (scope) {
+      var key = String(scope === null || scope === undefined ? '' : scope);
+      if (p3HasMethod('memoryKvGet')) {
+        var raw = p3CallNative('memoryKvGet', [key], true);
+        return normalizeMemoryKv(raw);
+      }
+      return mockMemoryKvCopy(key);
+    },
+
+    memoryKvSet: function (scope, key, value) {
+      var scopeKey = String(scope === null || scope === undefined ? '' : scope);
+      var name = String(key === null || key === undefined ? '' : key);
+      if (!scopeKey || !name) return false;
+      var text = String(value === null || value === undefined ? '' : value);
+      if (p3HasMethod('memoryKvSet')) {
+        try {
+          callNative('memoryKvSet', [scopeKey, name, text], false);
+          return true;
+        } catch (e) {
+          warn('memoryKvSet 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      if (!mockMemoryKv[scopeKey]) mockMemoryKv[scopeKey] = Object.create(null);
+      mockMemoryKv[scopeKey][name] = text;
+      return true;
+    },
+
+    memoryKvDelete: function (scope, key) {
+      var scopeKey = String(scope === null || scope === undefined ? '' : scope);
+      var name = String(key === null || key === undefined ? '' : key);
+      if (!scopeKey || !name) return false;
+      if (p3HasMethod('memoryKvDelete')) {
+        try {
+          callNative('memoryKvDelete', [scopeKey, name], false);
+          return true;
+        } catch (e) {
+          warn('memoryKvDelete 失败：' + (e && e.message));
+          return false;
+        }
+      }
+      if (mockMemoryKv[scopeKey]) delete mockMemoryKv[scopeKey][name];
+      return true;
+    },
+
+    memoryAll: function () {
+      if (p3HasMethod('memoryAll')) {
+        var raw = p3CallNative('memoryAll', [], true);
+        return normalizeMemoryAll(raw);
+      }
+      return normalizeMemoryAll(mockMemoryAllJson());
+    },
+
     /** 等待某服务器状态/工具事件（app.onMcpTest 用）：predicate 收到 (statusEvt) / (toolsEvt) */
     waitMcpStatus: function (id, timeoutMs) {
       var key = String(id === null || id === undefined ? '' : id);
@@ -2203,8 +2736,18 @@
       mockConfirmedMidTools = Object.create(null);
       mockWorkspace = { root: MOCK_WORKSPACE_ROOT, writable: true, allFilesAccess: false };
       mockSeedMcp();
+      mockSeedPluginMemory();
       return true;
     }
+  };
+
+  /* ARCH v2 P3：插件文件/记忆 mock 调试入口（仅测试使用） */
+  Bridge.__mockP3 = {
+    pluginFiles: function () { return normalizePluginList(mockPluginFileList()); },
+    memoryAll: function () { return normalizeMemoryAll(mockMemoryAllJson()); },
+    hmac: function (content) { return mockHmacHex(content); },
+    sha256: function (content) { return mockSha256Hex(content); },
+    reset: function () { mockSeedPluginMemory(); return true; }
   };
 
   /* ARCH v2 P2：MCP mock 调试/QA 入口（仅测试使用） */

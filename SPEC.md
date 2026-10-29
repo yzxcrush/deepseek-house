@@ -442,3 +442,59 @@ void    logout()
 1. `javac` 0 error；`npm test` 107+ 全绿；Python `python3 -m py_compile termux-mcp/server.py` 通过。
 2. 真机：App 内添加 MCP 服务器 → 连接 Termux 本地 server → 看到 tools 列表 → 让 AI 调 `pack_apk`/`list_workspace` 返回结果（截图）。
 3. CI 构建 Release v2.1.0。
+
+---
+
+# ARCH v2 P3（2026-10-29）：插件生态（模块三）+ 记忆与上下文（模块五）
+目标版本 v2.2.0。纯 Java/WebView，JS 插件仍由 WebView 执行；原生只提供目录/文件/校验/存储能力。
+
+## 写入归属
+- `native`：`app/src/main/java/com/deepseekhouse/app/plugin/**` + `memory/**`（新包）+ JsBridge 接入 + Prefs
+- `ui`：index.html / css/** / js/ui.js
+- `logic`：app.js / store.js / bridge.js
+- `plugins-js`：plugins.js / plugins_builtin.js（HousePlugin 宿主与内置插件适配）+ docs/
+- Lead：构建/发布/真机/QA 调度
+
+## N3. 原生能力
+### 插件目录（com.deepseekhouse.app.plugin）
+- 目录优先级：`getExternalFilesDir("house-plugins")`（默认，无需权限）；若存在 `/sdcard/house-plugins` 且可读则同时扫描（第二来源，可选）。
+- `String pluginList()` → [{id,name,version,author,fileName,size,sha256,source:"app|sdcard","enabled":bool}]
+- `String pluginRead(String fileName)` → 源码文本（≤512KB）
+- `boolean pluginWrite(String fileName, String content)` → 写入 app 目录（仅 .js/.json，文件名白名单）
+- `boolean pluginDelete(String fileName)`
+- `boolean pluginSetEnabled(String fileName, boolean)`
+- `String pluginHmac(String content)` → HMAC-SHA256(内置密钥, content) hex（用于市场签名校验）
+- `void pluginOpenDir()` → 打开系统文件管理器到插件目录（Intent）
+### 记忆（com.deepseekhouse.app.memory，SQLiteOpenHelper filesDir/memory.db）
+- 表 `session_summary(chat_id TEXT PRIMARY KEY, summary TEXT, updated_at INTEGER)`
+- 表 `memory_kv(scope TEXT, key TEXT, value TEXT, updated_at INTEGER, PRIMARY KEY(scope,key))`，scope ∈ `long_term` / `project`
+- Bridge：`String memoryGetSummaries()`（全部摘要 JSON）、`void memorySaveSummary(String chatId, String summary)`、`void memoryDeleteSummary(String chatId)`、`String memoryKvGet(String scope)`（JSON 对象）、`void memoryKvSet(String scope, String key, String value)`、`void memoryKvDelete(String scope,String key)`、`String memoryAll()`（{summaries,long_term,project}）
+- 写入全部在主线程排队 + 后台线程执行；异常不崩。
+
+## U3. UI
+- 设置页新增「插件市场」入口（与旧「插件」页并存）→ `#screen-market`：索引来源输入（URL 可配置，默认空）、刷新、插件卡片列表（name/version/author/description/标签/安装/更新/卸载按钮、状态：未安装/已安装/可更新/校验失败）。
+- 设置页新增「记忆」入口 → `#screen-memory`：
+  - 长期偏好（列表增删，如「结论先行」「不用官方套话」）——由 UI 编辑后回调；
+  - 项目记忆（tech_stack / conventions / decisions 三个多行输入）；
+  - 会话摘要列表（chat 标题 + 摘要预览 + 删除）；显示「上下文压缩阈值」说明（默认 80%）。
+- 插件侧边栏面板：聊天页右侧/抽屉内新增「插件面板」容器 `#plugin-slots`，渲染 HousePlugin 的 uiSlots（按钮或面板），由 plugins.js 注册、ui.js 渲染。
+- UI API：`UI.renderMarket(items, statusMap)`、`UI.renderMemory({long_term,project,summaries})`、`UI.renderPluginSlots(slots)`、`UI.openPluginPanel()`；回调 `onMarketFetch(url)`、`onMarketInstall(item)`、`onMarketRemove(id)`、`onMemorySave(scope,key,value)`、`onMemoryDelete(scope,key)`、`onSummaryDelete(chatId)`、`onSlotAction(id,action,payload)`。
+
+## L3. JS 逻辑
+### HousePlugin 宿主（plugins.js）
+- 兼容旧 DSPlugins.register；新增 `DSPlugins.installHousePlugin(def)` / HousePlugin 生命周期：`onLoad(host)`、`onUnload()`、`tools()`、`uiSlots()`。
+- 加载器：`Bridge.pluginList()` → 对 enabled 的 app 目录插件 `Bridge.pluginRead` → 沙箱执行（new Function，注入 window/DSPlugins/console）→ manifest 校验（id/name/version/author/tools/permissions）→ 注册；单个插件异常隔离。
+- uiSlots：插件注册的 slot（{id,title,icon,type:'button'|'panel',render(ctx)->HTML 或 actions}）→ app.js 收集 → UI.renderPluginSlots；点击 slot → 回调插件 action。
+- 卸载/禁用时调用 onUnload 并注销其 tools/commands/slots。
+### 市场
+- 索引格式：`{version:1, plugins:[{id,name,version,author,description,url,sha256,hmac,tags:[]}]}`；`Bridge.httpFetch` 拉取（仅 https）；安装流程：下载 source(url) → 计算 sha256（用 JS 的 crypto.subtle 或 Bridge）→ 与索引比对 + `Bridge.pluginHmac(source)` 与条目 hmac 比对 → 写入 `pluginWrite(<id>-<version>.js)` → 刷新列表。
+- 校验失败：不安装，提示「签名校验失败」。
+### 记忆
+- 请求构造：system prompt = 预设/prefs prompt + 长期偏好（memoryKvGet('long_term') 格式化为列表）+ 项目记忆（project）+ 当前会话摘要（memoryGetSummaries 匹配 chatId）。
+- 压缩：发送前估算字符数（tokens≈chars/3.5）；若 > 上下文预算 80%（预算取 state.prefs.contextBudget 默认 24000 字符），保留最近 N 条消息，把更早消息拼接摘要（每条前 160 字，最多 20 条）→ `Bridge.memorySaveSummary(chatId, summary)` → 后续请求注入摘要并在气泡上方显示「已压缩 X 条历史」提示（role:'note'）。
+- 设置页保存后刷新 memory 状态；会话删除时 `memoryDeleteSummary`。
+
+## 验收
+1. javac 0 error；122+ 测试全绿（新增 P3 用例）；`node scripts/qa/run-tests.mjs`。
+2. 真机：插件市场页可打开/刷新（无索引时提示）；安装本地示例插件（通过文件或市场假数据）后工具出现在工具列表；记忆页可增删长期偏好并在请求 system prompt 中出现；超长会话触发压缩提示。
+3. CI Release v2.2.0。

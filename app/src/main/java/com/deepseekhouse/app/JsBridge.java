@@ -23,6 +23,8 @@ import com.deepseekhouse.app.agent.ToolExecutor;
 import com.deepseekhouse.app.agent.ToolRegistry;
 import com.deepseekhouse.app.agent.Workspace;
 import com.deepseekhouse.app.mcp.McpManager;
+import com.deepseekhouse.app.memory.MemoryDb;
+import com.deepseekhouse.app.plugin.PluginRepository;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -89,6 +91,12 @@ public final class JsBridge {
     private final AuthManager auth;
     /** ARCH v2 P2：MCP 客户端（连接管理 / tools/list 注册 / tools/call 转发）。 */
     private final McpManager mcp;
+    /** ARCH v2 P3：house-plugins 插件目录（app 可写 + sdcard 只读扫描）。 */
+    private final PluginRepository housePlugins;
+    /** ARCH v2 P3：记忆 SQLite（filesDir/memory.db）。 */
+    private final MemoryDb memoryDb;
+    /** 记忆写操作单线程队列（保持调用顺序，异常静默）。 */
+    private final ExecutorService memoryPool;
     private final ExecutorService toolPool;
     /** requestId → 等待确认的工具调用（confirmTool 消费）。 */
     private final Map<String, PendingTool> pendingTools = new ConcurrentHashMap<>();
@@ -155,6 +163,17 @@ public final class JsBridge {
                 emitEvent(json);
             }
         }, ToolRegistry.getInstance());
+        // ARCH v2 P3：插件目录 + 记忆库（写入排队到单后台线程）
+        this.housePlugins = new PluginRepository(activity);
+        this.memoryDb = new MemoryDb(activity);
+        this.memoryPool = Executors.newSingleThreadExecutor(new ThreadFactory() {
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "dsh-memory-writer");
+                t.setDaemon(true);
+                return t;
+            }
+        });
     }
 
     /** Activity 销毁时释放网络线程池与事件通道。 */
@@ -163,6 +182,16 @@ public final class JsBridge {
         api.shutdown();
         try {
             mcp.shutdown();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        try {
+            memoryPool.shutdownNow();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        try {
+            memoryDb.close();
         } catch (Throwable ignored) {
             // 忽略
         }
@@ -840,6 +869,192 @@ public final class JsBridge {
             return;
         }
         emitEvent(o.toString());
+    }
+
+    // ============================================================ ARCH v2 P3 插件目录 + 记忆
+
+    /** SPEC P3 {@code pluginList()}：house-plugins 列表 JSON 数组。 */
+    @JavascriptInterface
+    public String pluginList() {
+        try {
+            return housePlugins.listJson();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** SPEC P3 {@code pluginRead(fileName)}（注入名 pluginReadFile）：源码文本；失败返回 ""。 */
+    @JavascriptInterface
+    public String pluginReadFile(String fileName) {
+        try {
+            String code = housePlugins.read(fileName);
+            return code == null ? "" : code;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** SPEC P3 {@code pluginWrite(fileName,content)}：仅 app 目录；成功返回 true。 */
+    @JavascriptInterface
+    public boolean pluginWriteFile(String fileName, String content) {
+        try {
+            return housePlugins.write(fileName, content);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC P3 {@code pluginDelete(fileName)}：仅 app 目录；成功返回 true。 */
+    @JavascriptInterface
+    public boolean pluginDeleteFile(String fileName) {
+        try {
+            return housePlugins.delete(fileName);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC P3 {@code pluginSetEnabled(fileName,enabled)}：持久化 enabled；成功返回 true。 */
+    @JavascriptInterface
+    public boolean pluginSetEnabledFile(String fileName, boolean enabled) {
+        try {
+            return housePlugins.setEnabled(fileName, enabled);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC P3 {@code pluginHmac(content)}：HMAC-SHA256 小写 hex（市场签名校验）。 */
+    @JavascriptInterface
+    public String pluginHmac(String content) {
+        try {
+            return housePlugins.hmac(content);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** 补充：SHA-256(content) 小写 hex（WebCrypto 不可用时的市场校验兜底）。 */
+    @JavascriptInterface
+    public String pluginSha256(String content) {
+        try {
+            return housePlugins.sha256Of(content);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** SPEC P3 {@code pluginOpenDir()}：打开系统文件管理器到插件目录（失败回退剪贴板路径）。 */
+    @JavascriptInterface
+    public void pluginOpenDir() {
+        try {
+            housePlugins.openDir(activity);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    // ------------------------------------------------------------ 记忆（MemoryDb）
+
+    /** SPEC P3 {@code memoryGetSummaries()}：[{chatId,summary,updatedAt}]。 */
+    @JavascriptInterface
+    public String memoryGetSummaries() {
+        try {
+            return memoryDb.summariesJson();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** SPEC P3 {@code memorySaveSummary}：后台排队写入（upsert）。 */
+    @JavascriptInterface
+    public void memorySaveSummary(final String chatId, final String summary) {
+        submitMemoryWrite(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    memoryDb.saveSummary(chatId, summary);
+                } catch (Throwable ignored) {
+                    // 忽略
+                }
+            }
+        });
+    }
+
+    /** SPEC P3 {@code memoryDeleteSummary}：后台排队删除。 */
+    @JavascriptInterface
+    public void memoryDeleteSummary(final String chatId) {
+        submitMemoryWrite(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    memoryDb.deleteSummary(chatId);
+                } catch (Throwable ignored) {
+                    // 忽略
+                }
+            }
+        });
+    }
+
+    /** SPEC P3 {@code memoryKvGet(scope)}：JSON 对象 {"key":"value"}。 */
+    @JavascriptInterface
+    public String memoryKvGet(String scope) {
+        try {
+            return memoryDb.kvJson(scope);
+        } catch (Throwable t) {
+            return "{}";
+        }
+    }
+
+    /** SPEC P3 {@code memoryKvSet(scope,key,value)}：后台排队写入（scope ∈ long_term/project）。 */
+    @JavascriptInterface
+    public void memoryKvSet(final String scope, final String key, final String value) {
+        submitMemoryWrite(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    memoryDb.setKv(scope, key, value);
+                } catch (Throwable ignored) {
+                    // 忽略
+                }
+            }
+        });
+    }
+
+    /** SPEC P3 {@code memoryKvDelete(scope,key)}：后台排队删除。 */
+    @JavascriptInterface
+    public void memoryKvDelete(final String scope, final String key) {
+        submitMemoryWrite(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    memoryDb.deleteKv(scope, key);
+                } catch (Throwable ignored) {
+                    // 忽略
+                }
+            }
+        });
+    }
+
+    /** SPEC P3 {@code memoryAll()}：{summaries,long_term,project}。 */
+    @JavascriptInterface
+    public String memoryAll() {
+        try {
+            return memoryDb.allJson();
+        } catch (Throwable t) {
+            return "{\"summaries\":[],\"long_term\":{},\"project\":{}}";
+        }
+    }
+
+    private void submitMemoryWrite(final Runnable task) {
+        if (task == null || released) {
+            return;
+        }
+        try {
+            memoryPool.execute(task);
+        } catch (Throwable ignored) {
+            // 线程池已关闭（App 退出）时丢弃
+        }
     }
 
     // ------------------------------------------------------------ P1 内部工具

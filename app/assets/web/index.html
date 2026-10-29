@@ -337,7 +337,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.1.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.2.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -365,6 +365,11 @@
             <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
             <path d="m7 9.5 3 2.5-3 2.5"></path>
             <path d="M13 15h4"></path>
+          </svg>
+        </button>
+        <button class="icon-btn icon-btn--compact" type="button" data-action="open-plugin-panel" aria-label="插件面板">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
           </svg>
         </button>
         <button class="icon-btn" type="button" data-action="open-search" aria-label="搜索会话">
@@ -627,6 +632,32 @@
           </div>
         </div>
 
+        <!-- ARCH v2 P3：插件市场 / 记忆入口 -->
+        <div class="section-label">插件与记忆</div>
+        <div class="section">
+          <button class="form-row form-row--button" id="set-market-row" type="button" data-action="open-market" aria-label="插件市场">
+            <span class="form-label">插件市场</span>
+            <span class="form-control form-control--value">
+              <span class="form-value" id="set-market-label">未配置索引</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+          <button class="form-row form-row--button" id="set-memory-row" type="button" data-action="open-memory" aria-label="记忆">
+            <span class="form-label">记忆</span>
+            <span class="form-control form-control--value">
+              <span class="form-value" id="set-memory-label">长期偏好 / 项目记忆</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+          <div class="form-row form-row--col">
+            <span class="form-hint">插件市场支持 https 索引；记忆保存长期偏好与项目约定，用于拼接系统提示词。</span>
+          </div>
+        </div>
+
         <div class="section-label">账户</div>
         <div class="section">
           <div class="form-row">
@@ -643,7 +674,7 @@
 
         <div class="section-label">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>2.1.0</span></div>
+          <div class="about-row"><span>版本</span><span>2.2.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -840,6 +871,116 @@
         </div>
       </div>
     </section>
+
+    <!-- ---------------------------- 插件市场（ARCH v2 P3） ---------------------------- -->
+    <section class="screen screen--page screen--market" id="screen-market" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title">插件市场</div>
+          <div class="subtitle" id="market-count">从 https 索引安装插件</div>
+        </div>
+        <button class="icon-btn" type="button" data-action="market-refresh" aria-label="刷新市场">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"></path>
+            <path d="M20.5 4v7h-7"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="page-scroll market-scroll">
+        <div class="section-label">索引来源</div>
+        <div class="section market-source">
+          <div class="form-row form-row--col">
+            <span class="form-label">索引 URL</span>
+            <input class="input" id="market-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://example.com/house-market/index.json">
+            <span class="form-hint">仅支持 https；索引格式 {version:1, plugins:[{id,name,version,author,description,url,sha256,hmac,tags}]}。</span>
+          </div>
+          <div class="form-row market-source-actions">
+            <button class="btn btn--primary" id="market-fetch" type="button" data-action="market-fetch">拉取索引</button>
+          </div>
+        </div>
+
+        <div class="section-label">可用插件</div>
+        <div class="market-list" id="market-list"></div>
+
+        <div class="plugins-empty market-empty" id="market-empty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
+          </svg>
+          <p>还没有市场插件</p>
+          <small>填入 https 索引地址并「拉取索引」，或在插件页从本地安装 .js / .json 插件。</small>
+        </div>
+
+        <div class="plugins-tip">
+          <b>关于插件市场</b>
+          <p>市场只接受 https 索引与下载地址；安装前会校验 sha256 与 HMAC 签名，校验失败不会写入。外部插件与本地插件一样在本机 WebView 沙箱内运行，请只安装可信来源。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------- 记忆（ARCH v2 P3） ---------------------------- -->
+    <section class="screen screen--page screen--memory" id="screen-memory" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title">记忆</div>
+          <div class="subtitle" id="memory-count">长期偏好 / 项目记忆 / 会话摘要</div>
+        </div>
+      </header>
+
+      <div class="page-scroll memory-scroll">
+        <div class="section-label">长期偏好</div>
+        <div class="memory-list" id="memory-longterm"></div>
+        <div class="plugins-empty memory-empty" id="memory-longterm-empty" hidden>
+          <p>还没有长期偏好</p>
+          <small>例如「结论先行」「不用官方套话」，会拼接到每次请求的系统提示词中。</small>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn--ghost" id="memory-add-longterm" type="button" data-action="memory-add-longterm">添加长期偏好</button>
+        </div>
+
+        <div class="section-label">项目记忆</div>
+        <div class="section">
+          <div class="form-row form-row--col">
+            <span class="form-label">技术栈（tech_stack）</span>
+            <textarea class="input input--textarea memory-textarea" id="memory-tech-stack" rows="3" placeholder="例如：Java 17 / WebView / Node 22 / Termux" spellcheck="false"></textarea>
+          </div>
+          <div class="form-row form-row--col">
+            <span class="form-label">约定与规范（conventions）</span>
+            <textarea class="input input--textarea memory-textarea" id="memory-conventions" rows="3" placeholder="例如：提交信息用中文；不改 native 目录；先写测试" spellcheck="false"></textarea>
+          </div>
+          <div class="form-row form-row--col">
+            <span class="form-label">关键决策（decisions）</span>
+            <textarea class="input input--textarea memory-textarea" id="memory-decisions" rows="3" placeholder="例如：纯 Java 不用 AndroidX；数据只存本机" spellcheck="false"></textarea>
+          </div>
+          <div class="form-row">
+            <button class="btn btn--primary" id="memory-save-project" type="button" data-action="memory-save-project">保存项目记忆</button>
+          </div>
+        </div>
+
+        <div class="section-label">会话摘要</div>
+        <div class="memory-list" id="memory-summaries"></div>
+        <div class="plugins-empty memory-empty" id="memory-summaries-empty" hidden>
+          <p>还没有会话摘要</p>
+          <small>上下文超过预算 80% 时，较早的消息会被压缩成摘要保存在这里。</small>
+        </div>
+
+        <div class="plugins-tip">
+          <b>上下文压缩</b>
+          <p>发送前按字符估算 tokens（约 chars/3.5）；当会话超过上下文预算（默认 24000 字符）的 80% 时，保留最近消息并把更早内容压缩为摘要。压缩后会在气泡上方提示「已压缩 X 条历史」。</p>
+          <p class="memory-threshold">当前压缩阈值：80%</p>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- ============================ 底部导航（聊天 / 联系人 / 个人资料） ============================ -->
@@ -926,6 +1067,13 @@
         </svg>
         <span>插件管理</span>
       </button>
+      <button class="drawer-item" type="button" data-action="open-plugin-panel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
+          <path d="M3.5 9.5h17M8 9.5v10M8 14h5"></path>
+        </svg>
+        <span>插件面板</span>
+      </button>
     </nav>
 
     <div class="drawer-divider"></div>
@@ -933,7 +1081,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v2.1.0</span>
+      <span class="drawer-version">v2.2.0</span>
     </div>
   </aside>
 
@@ -1129,6 +1277,34 @@
     </div>
   </div>
 
+  <!-- ============================ 长期偏好编辑弹窗（ARCH v2 P3） ============================ -->
+  <div class="modal modal--center" id="memory-item-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="memory-item-title">
+    <div class="modal-panel modal-panel--small">
+      <div class="modal-title" id="memory-item-title">添加长期偏好</div>
+      <div class="modal-body">
+        <div class="mcp-form-fields">
+          <label class="field" for="memory-item-key">
+            <span class="field-label">名称</span>
+            <span class="field-input">
+              <input id="memory-item-key" type="text" maxlength="40" placeholder="例如：结论先行" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            </span>
+          </label>
+          <label class="field" for="memory-item-value">
+            <span class="field-label">内容</span>
+            <span class="field-input">
+              <input id="memory-item-value" type="text" maxlength="500" placeholder="例如：回答先给结论，再展开理由" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            </span>
+          </label>
+          <div class="modal-error" id="memory-item-error" role="alert" hidden></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="memory-item-cancel">取消</button>
+        <button class="btn btn--primary" type="button" id="memory-item-save" data-action="memory-item-save">保存</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============================ 模型选择器（底部弹层，SPEC v1.1 B2） ============================ -->
   <div class="model-picker" id="model-picker" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="model-picker-title">
     <div class="model-picker-sheet">
@@ -1199,6 +1375,30 @@
           </svg>
           <span>管理预设</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 插件面板（底部弹层，ARCH v2 P3） ============================ -->
+  <div class="model-picker plugin-panel" id="plugin-panel" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="plugin-panel-title">
+    <div class="model-picker-sheet plugin-panel-sheet">
+      <div class="picker-handle" id="plugin-panel-handle" aria-hidden="true"></div>
+      <div class="picker-head">
+        <div class="picker-title" id="plugin-panel-title">插件面板</div>
+        <button class="icon-btn" type="button" data-action="close-plugin-panel" aria-label="关闭插件面板">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="picker-sub plugin-panel-sub">插件提供的小工具与面板动作</div>
+      <div class="picker-scroll plugin-panel-scroll" id="plugin-slots"></div>
+      <div class="plugins-empty plugin-slots-empty" id="plugin-slots-empty" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 4.8a2 2 0 0 1 4 0V6h3.2c.4 0 .8.4.8.8V10h1.2a2 2 0 0 1 0 4H17v3.2c0 .4-.4.8-.8.8H13v1.2a2 2 0 0 1-4 0V18H5.8a.8.8 0 0 1-.8-.8V14h1.2a2 2 0 0 1 0-4H5V6.8c0-.4.4-.8.8-.8H9V4.8Z"></path>
+        </svg>
+        <p>暂无插件面板</p>
+        <small>插件可通过 DSPlugins 注册 uiSlot 按钮或面板，出现在这里。</small>
       </div>
     </div>
   </div>

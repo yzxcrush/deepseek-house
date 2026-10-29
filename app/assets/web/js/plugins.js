@@ -15,6 +15,10 @@
  *     显式把 window 与 DSPlugins 作为参数传入，插件内 this 亦指向 window。
  *   - 内置插件 id 不可被外部插件覆盖；内置插件不可删除，只可禁用。
  *   - 网络能力统一由 ctx.http.fetch 提供，强制 https（http 仅 localhost/127.0.0.1）。
+ *   - P3：兼容旧 DSPlugins.register；新增 HousePlugin 生命周期（installHousePlugin /
+ *     onLoad / onUnload / tools() / uiSlots()）、uiSlots 注册表、插件市场
+ *     （索引拉取 / SHA-256 + HMAC 校验 / 安装更新卸载）、目录插件加载器
+ *     （Bridge.pluginList + Bridge.pluginRead + new Function 沙箱）。
  */
 (function (global) {
   "use strict";
@@ -23,6 +27,9 @@
   var MAX_CODE_LENGTH = 512 * 1024; // 单个插件源码上限 512KB
   var FILE_INSTALL_TIMEOUT = 120000; // 等待用户选择文件的最长时间 120s
   var TOOL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+  var SLOT_ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+  var MARKET_TIMEOUT = 30000;
+  var MARKET_MAX_SOURCE_LENGTH = 512 * 1024;
 
   /* ------------------------------------------------------------------ *
    * 模块内部状态
@@ -33,7 +40,13 @@
   var toolIndex = Object.create(null); // 对外工具名 -> {name, bare, pluginId, tool}
   var exposedTools = []; // 有序的对外工具列表
   var suppressChange = 0; // >0 时批量操作不触发 onChange
-  var installing = null; // 安装验证期的注册捕获 {defs:[]}
+  var installing = null; // 安装验证期的 register() 捕获 {defs:[]}
+  var houseInstalling = null; // 安装验证期的 installHousePlugin() 捕获 {defs:[]}
+  var slotRegistry = Object.create(null); // 全局 slotId -> slot 记录
+  var slotOrder = []; // 有序 slot 记录（供 UI 渲染）
+  var activeHousePluginId = null; // onLoad 期间用于 host.registerSlot 归属
+  var houseLoading = null; // 并发 loadHousePlugins 去重
+  var marketState = null; // {url,index,items,fetchedAt,error}
   var fileListenerBound = false;
   var pendingFileInstall = null; // {resolve,reject,timer}
   var httpListenerBound = false;
@@ -533,6 +546,39 @@
   /* ------------------------------------------------------------------ *
    * 插件定义校验 / 注册表
    * ------------------------------------------------------------------ */
+  // 工具列表归一化（register 与 HousePlugin 共用）
+  function normalizeToolList(pluginId, rawTools) {
+    var out = [];
+    var seenTool = Object.create(null);
+    var list = Array.isArray(rawTools) ? rawTools : [];
+    for (var j = 0; j < list.length && out.length < 50; j += 1) {
+      var t = list[j];
+      if (!isObj(t)) continue;
+      var tn = trimStr(t.name);
+      if (!tn) {
+        warn("插件 " + pluginId + " 的工具缺少 name，已跳过");
+        continue;
+      }
+      if (!isFn(t.run)) {
+        warn("插件 " + pluginId + " 的工具 " + tn + " 缺少 run 函数，已跳过");
+        continue;
+      }
+      var toolKey = tn.toLowerCase();
+      if (seenTool[toolKey]) {
+        warn("插件 " + pluginId + " 的工具名 " + tn + " 重复，已跳过");
+        continue;
+      }
+      seenTool[toolKey] = true;
+      out.push({
+        name: tn,
+        description: trimStr(t.description),
+        parameters: isObj(t.parameters) ? t.parameters : { type: "object", properties: {} },
+        run: t.run
+      });
+    }
+    return out;
+  }
+
   function normalizeDef(input) {
     if (!isObj(input)) throw new Error("插件定义必须是对象");
     var id = trimStr(input.id);
@@ -600,33 +646,7 @@
       });
     }
 
-    var seenTool = Object.create(null);
-    var rawTools = Array.isArray(input.tools) ? input.tools : [];
-    for (var j = 0; j < rawTools.length && def.tools.length < 50; j += 1) {
-      var t = rawTools[j];
-      if (!isObj(t)) continue;
-      var tn = trimStr(t.name);
-      if (!tn) {
-        warn("插件 " + id + " 的工具缺少 name，已跳过");
-        continue;
-      }
-      if (!isFn(t.run)) {
-        warn("插件 " + id + " 的工具 " + tn + " 缺少 run 函数，已跳过");
-        continue;
-      }
-      var toolKey = tn.toLowerCase();
-      if (seenTool[toolKey]) {
-        warn("插件 " + id + " 的工具名 " + tn + " 重复，已跳过");
-        continue;
-      }
-      seenTool[toolKey] = true;
-      def.tools.push({
-        name: tn,
-        description: trimStr(t.description),
-        parameters: isObj(t.parameters) ? t.parameters : { type: "object", properties: {} },
-        run: t.run
-      });
-    }
+    def.tools = normalizeToolList(id, input.tools);
 
     if (isObj(input.hooks)) {
       Object.keys(input.hooks).forEach(function (k) {
@@ -665,6 +685,9 @@
       enabled: isEnabled(def.id),
       error: def.error || null,
       fileName: def.fileName || "",
+      house: !!def.house,
+      permissions: Array.isArray(def.permissions) ? def.permissions.slice() : [],
+      uiSlotCount: Array.isArray(def._uiSlots) ? def._uiSlots.length : 0,
       // 命令/工具以对象形式返回，便于 UI 生成帮助列表
       commands: (def.commands || []).map(function (c) {
         return { name: c.name, description: c.description, usage: c.usage };
@@ -1367,6 +1390,1342 @@
     });
   }
 
+  /* ================================================================== *
+   * P3：HousePlugin 宿主（生命周期 / manifest / uiSlots）
+   *
+   * 兼容旧 DSPlugins.register({...})；HousePlugin 用
+   *   DSPlugins.installHousePlugin({
+   *     id,name,version,author,description,permissions,
+   *     onLoad(host), onUnload(), tools(){}, uiSlots(){}
+   *   })
+   * 注册。目录插件加载器：Bridge.pluginList() → Bridge.pluginRead(fileName)
+   * → new Function 沙箱执行 → manifest 校验 → 注册；单插件异常隔离。
+   * ================================================================== */
+  function normalizePermissions(input) {
+    var out = [];
+    if (!Array.isArray(input)) return out;
+    for (var i = 0; i < input.length && out.length < 20; i += 1) {
+      var p = trimStr(input[i]);
+      if (p && out.indexOf(p) < 0) out.push(p);
+    }
+    return out;
+  }
+
+  function normalizeHousePlugin(input) {
+    if (!isObj(input)) throw new Error("HousePlugin 定义必须是对象");
+    var id = trimStr(input.id);
+    if (!id) throw new Error("HousePlugin 缺少 id");
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(id)) {
+      throw new Error("HousePlugin id 只能包含字母、数字、点、下划线、短横线（最长 64）：" + id);
+    }
+    var name = trimStr(input.name) || id;
+    if (name.length > 60) name = name.slice(0, 60);
+    var version = trimStr(input.version) || "1.0.0";
+    if (!/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}$/.test(version)) {
+      warn("HousePlugin 版本号格式不规范（" + version + "），已按 1.0.0 记录");
+      version = "1.0.0";
+    }
+    var def = {
+      id: id,
+      name: name,
+      version: version,
+      author: trimStr(input.author),
+      description: trimStr(input.description),
+      builtin: false,
+      external: true,
+      house: true,
+      permissions: normalizePermissions(input.permissions),
+      settings: isObj(input.settings) ? input.settings : null,
+      commands: [],
+      tools: [],
+      hooks: {},
+      uiSlots: [],
+      _uiSlots: [],
+      _toolsFn: isFn(input.tools) ? input.tools : null,
+      _uiSlotsFn: isFn(input.uiSlots) ? input.uiSlots : null,
+      onLoad: isFn(input.onLoad) ? input.onLoad : null,
+      onUnload: isFn(input.onUnload) ? input.onUnload : null,
+      error: null,
+      fileName: "",
+      _loaded: false,
+      _nativeEnabled: undefined,
+      _host: null,
+      _data: Object.create(null)
+    };
+    if (isObj(input.hooks)) {
+      Object.keys(input.hooks).forEach(function (k) {
+        if (isFn(input.hooks[k])) def.hooks[k] = input.hooks[k];
+      });
+    }
+    return def;
+  }
+
+  function normalizeSlotList(pluginId, rawSlots) {
+    var out = [];
+    var seen = Object.create(null);
+    var list = Array.isArray(rawSlots) ? rawSlots : [];
+    for (var i = 0; i < list.length && out.length < 30; i += 1) {
+      var s = list[i];
+      if (!isObj(s)) continue;
+      var baseId = trimStr(s.id || s.slotId);
+      if (!baseId || !SLOT_ID_RE.test(baseId)) baseId = "slot" + (i + 1);
+      var unique = baseId;
+      var n = 1;
+      while (seen[unique]) {
+        unique = baseId + "_" + (i + 1) + "_" + n;
+        n += 1;
+      }
+      seen[unique] = true;
+      var actions = [];
+      if (Array.isArray(s.actions)) {
+        for (var a = 0; a < s.actions.length && actions.length < 20; a += 1) {
+          var rawAction = s.actions[a];
+          if (typeof rawAction === "string") {
+            var an = trimStr(rawAction);
+            if (an) actions.push({ action: an, label: an });
+          } else if (isObj(rawAction)) {
+            var actionId = trimStr(rawAction.action || rawAction.id);
+            if (actionId) {
+              actions.push({
+                action: actionId,
+                label: trimStr(rawAction.label || rawAction.title) || actionId
+              });
+            }
+          }
+        }
+      }
+      var type = trimStr(s.type).toLowerCase() === "panel" ? "panel" : "button";
+      out.push({
+        id: pluginId + ":" + unique,
+        slotId: unique,
+        pluginId: pluginId,
+        title: trimStr(s.title) || unique,
+        icon: trimStr(s.icon),
+        type: type,
+        description: trimStr(s.description),
+        actions: actions,
+        meta: isObj(s.meta) ? s.meta : null,
+        html: typeof s.html === "string" ? s.html : "",
+        render: isFn(s.render) ? s.render : null,
+        onAction: isFn(s.onAction) ? s.onAction : isFn(s.action) ? s.action : null,
+        handlers: isObj(s.handlers) ? s.handlers : null
+      });
+    }
+    return out;
+  }
+
+  function dropSlot(slotId) {
+    var key = trimStr(slotId);
+    if (!key) return false;
+    delete slotRegistry[key];
+    for (var i = slotOrder.length - 1; i >= 0; i -= 1) {
+      if (slotOrder[i].id === key) slotOrder.splice(i, 1);
+    }
+    return true;
+  }
+
+  function removeSlotsOf(pluginId) {
+    var pid = trimStr(pluginId);
+    if (!pid) return;
+    var keys = Object.keys(slotRegistry);
+    for (var i = 0; i < keys.length; i += 1) {
+      if (slotRegistry[keys[i]].pluginId === pid) dropSlot(keys[i]);
+    }
+    for (var j = slotOrder.length - 1; j >= 0; j -= 1) {
+      if (slotOrder[j].pluginId === pid) slotOrder.splice(j, 1);
+    }
+  }
+
+  function syncPluginSlots(def) {
+    if (!def) return;
+    removeSlotsOf(def.id);
+    var slots = def._uiSlots || [];
+    for (var i = 0; i < slots.length; i += 1) {
+      slotRegistry[slots[i].id] = slots[i];
+      slotOrder.push(slots[i]);
+    }
+  }
+
+  function registerSlotFor(pluginId, rawSlot) {
+    var pid = trimStr(pluginId);
+    var def = registry[pid];
+    if (!def || !def.house) {
+      warn("registerUiSlot 失败：当前没有正在加载的 HousePlugin（" + pid + "）");
+      return null;
+    }
+    var slots = normalizeSlotList(pid, [rawSlot]);
+    if (!slots.length) return null;
+    var slot = slots[0];
+    var old = def._uiSlots || [];
+    def._uiSlots = old.filter(function (item) {
+      if (item.slotId === slot.slotId || item.id === slot.id) {
+        dropSlot(item.id);
+        return false;
+      }
+      return true;
+    });
+    def._uiSlots.push(slot);
+    slotRegistry[slot.id] = slot;
+    slotOrder.push(slot);
+    emitChange();
+    return slot;
+  }
+
+  function unregisterUiSlot(pluginId, slotIdOrId) {
+    var pid = trimStr(pluginId);
+    var raw = trimStr(slotIdOrId);
+    var def = registry[pid];
+    var target = raw;
+    if (raw && raw.indexOf(":") < 0) target = pid + ":" + raw;
+    if (def && Array.isArray(def._uiSlots)) {
+      def._uiSlots = def._uiSlots.filter(function (item) {
+        return item.id !== target && item.slotId !== raw;
+      });
+    }
+    var removed = dropSlot(raw) || dropSlot(target);
+    if (removed) emitChange();
+    return removed;
+  }
+
+  function makeHouseHost(def) {
+    var host = makeCtx(def.id);
+    host.pluginId = def.id;
+    host.pluginName = def.name;
+    host.version = def.version;
+    host.permissions = (def.permissions || []).slice();
+    host.bridge = getBridge();
+    host.data = def._data || (def._data = Object.create(null));
+    host.log = function () {
+      var parts = [];
+      for (var i = 0; i < arguments.length; i += 1) {
+        try {
+          parts.push(typeof arguments[i] === "string" ? arguments[i] : normalizeResult(arguments[i]));
+        } catch (e) {
+          parts.push(String(arguments[i]));
+        }
+      }
+      warn("[house:" + def.id + "] " + parts.join(" "));
+    };
+    host.registerSlot = function (slot) {
+      return registerSlotFor(def.id, slot);
+    };
+    host.unregisterSlot = function (slotId) {
+      return unregisterUiSlot(def.id, slotId);
+    };
+    return host;
+  }
+
+  async function hydrateHouseDef(def) {
+    def._uiSlots = [];
+    def.tools = [];
+    def._host = makeHouseHost(def);
+    activeHousePluginId = def.id;
+    try {
+      if (isFn(def._toolsFn)) {
+        var tools = await Promise.resolve(def._toolsFn.call(def, def._host));
+        def.tools = normalizeToolList(def.id, tools);
+      }
+      if (isFn(def._uiSlotsFn)) {
+        var slots = await Promise.resolve(def._uiSlotsFn.call(def, def._host));
+        def._uiSlots = normalizeSlotList(def.id, slots);
+      }
+    } finally {
+      activeHousePluginId = null;
+    }
+    syncPluginSlots(def);
+  }
+
+  async function callHouseOnLoad(def) {
+    if (!isFn(def.onLoad)) return;
+    if (!def._host) def._host = makeHouseHost(def);
+    activeHousePluginId = def.id;
+    try {
+      await Promise.resolve(def.onLoad.call(def, def._host));
+    } finally {
+      activeHousePluginId = null;
+    }
+  }
+
+  async function unloadHousePlugin(id) {
+    var def = registry[trimStr(id)];
+    if (!def || !def.house) return false;
+    removeSlotsOf(def.id);
+    if (isFn(def.onUnload)) {
+      activeHousePluginId = def.id;
+      try {
+        await Promise.resolve(def.onUnload.call(def));
+      } catch (e) {
+        warn("HousePlugin onUnload 失败（" + def.id + "）：" + errText(e));
+      } finally {
+        activeHousePluginId = null;
+      }
+    }
+    def._host = null;
+    def._loaded = false;
+    return true;
+  }
+
+  function addHouseErrorStub(meta, message) {
+    var info = isObj(meta) ? meta : {};
+    var id = trimStr(info.id);
+    if (!id) id = "user.broken-" + (seq += 1);
+    if (registry[id] && registry[id].builtin) return registry[id];
+    var d = {
+      id: id,
+      name: trimStr(info.name) || id,
+      version: trimStr(info.version) || "1.0.0",
+      author: trimStr(info.author),
+      description: trimStr(info.description),
+      builtin: false,
+      external: true,
+      house: true,
+      permissions: [],
+      settings: null,
+      commands: [],
+      tools: [],
+      hooks: {},
+      uiSlots: [],
+      _uiSlots: [],
+      error: message,
+      fileName: trimStr(info.fileName),
+      _loaded: false,
+      _nativeEnabled: info.enabled
+    };
+    if (!registry[id]) regOrder.push(id);
+    registry[id] = d;
+    warn("HousePlugin 加载失败（" + id + "）：" + message);
+    return d;
+  }
+
+  function decodeHouseList(raw) {
+    var value = raw;
+    if (typeof value === "string") {
+      var s = value.trim();
+      if (!s) return [];
+      try {
+        value = JSON.parse(s);
+      } catch (e) {
+        warn("解析插件目录列表失败：" + errText(e));
+        return [];
+      }
+    }
+    if (Array.isArray(value)) return value;
+    if (isObj(value)) {
+      if (Array.isArray(value.plugins)) return value.plugins;
+      if (Array.isArray(value.items)) return value.items;
+      if (value.error) warn("读取插件目录失败：" + value.error);
+    }
+    return [];
+  }
+
+  // 读取插件源码：优先 fileName（P3 新签名），失败再回退 id（旧签名）
+  async function readPluginSource(B, fileName, id) {
+    var attempts = [];
+    if (fileName) attempts.push(fileName);
+    if (id && id !== fileName) attempts.push(id);
+    var lastError = "";
+    for (var i = 0; i < attempts.length; i += 1) {
+      var code;
+      try {
+        code = await Promise.resolve(B.pluginRead(attempts[i]));
+      } catch (e) {
+        lastError = errText(e);
+        continue;
+      }
+      if (isObj(code) && code.error) {
+        lastError = String(code.error);
+        continue;
+      }
+      if (typeof code === "string" && code.trim() && !/^\s*\{\s*"error"\s*:/.test(code)) {
+        return { code: code };
+      }
+      lastError = "插件源码为空或读取失败";
+    }
+    return { error: lastError || "插件源码为空或读取失败" };
+  }
+
+  /**
+   * 从源码加载单个目录插件（支持 HousePlugin 与旧 register）。
+   * meta: {id, fileName, code, enabled}
+   * 返回 {def} 或 {error}；单插件异常不会向外抛。
+   */
+  async function loadHouseFromSource(meta) {
+    var id = trimStr(meta && meta.id);
+    var fileName = trimStr(meta && meta.fileName);
+    var code = typeof (meta && meta.code) === "string" ? meta.code : "";
+    if (!id) return { error: "插件目录记录缺少 id" };
+    if (!code.trim()) return { error: "插件源码为空或读取失败" };
+    if (code.length > MAX_CODE_LENGTH) return { error: "插件源码过大（超过 512KB）" };
+
+    if (registry[id] && registry[id].house) {
+      try {
+        await unloadHousePlugin(id);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    removeFromRegistry(id);
+
+    var beforeKeys = Object.keys(registry);
+    var legacyDefs = [];
+    var houseDefs = [];
+    var execError = null;
+    installing = { defs: [] };
+    houseInstalling = { defs: [] };
+    suppressChange += 1;
+    try {
+      execPluginCode(code, id);
+    } catch (e) {
+      execError = e;
+    } finally {
+      legacyDefs = installing && installing.defs ? installing.defs : [];
+      houseDefs = houseInstalling && houseInstalling.defs ? houseInstalling.defs : [];
+      installing = null;
+      houseInstalling = null;
+      suppressChange -= 1;
+    }
+
+    var added = Object.keys(registry).filter(function (k) {
+      return beforeKeys.indexOf(k) < 0;
+    });
+    for (var i = 0; i < added.length; i += 1) {
+      if (added[i] === id) continue;
+      removeFromRegistry(added[i]);
+      warn("一个插件文件只允许注册一个插件，已忽略额外插件：" + added[i]);
+    }
+
+    if (execError) return { error: "执行插件代码失败：" + errText(execError) };
+    var total = legacyDefs.length + houseDefs.length;
+    if (!total) {
+      return { error: "插件代码未调用 DSPlugins.installHousePlugin({...}) 或 DSPlugins.register({...})" };
+    }
+    if (total > 1) return { error: "一个插件文件只能注册一个插件（检测到 " + total + " 个）" };
+
+    var def;
+    try {
+      if (houseDefs.length === 1) {
+        def = normalizeHousePlugin(houseDefs[0]);
+      } else {
+        def = normalizeDef(legacyDefs[0]);
+        def.builtin = false;
+        def.external = true;
+      }
+    } catch (e2) {
+      return { error: "插件定义无效：" + errText(e2) };
+    }
+    if (def.id !== id) {
+      return { error: "插件 id 与目录记录不一致（目录 " + id + " / 源码 " + def.id + "）" };
+    }
+    def.fileName = fileName;
+    def._nativeEnabled = meta && meta.enabled;
+    def._loaded = true;
+    def.error = null;
+
+    addDef(def);
+    if (def.house) {
+      try {
+        await hydrateHouseDef(def);
+      } catch (e3) {
+        removeFromRegistry(def.id);
+        return { error: "初始化插件工具/面板失败：" + errText(e3) };
+      }
+      try {
+        await callHouseOnLoad(def);
+      } catch (e4) {
+        def.error = "onLoad 失败：" + errText(e4);
+        warn("HousePlugin onLoad 失败（" + def.id + "）：" + errText(e4));
+        return { def: def, error: def.error };
+      }
+    }
+    return { def: def };
+  }
+
+  async function doLoadHousePlugins(opts) {
+    var options = isObj(opts) ? opts : {};
+    var result = { ok: true, loaded: [], house: [], errors: [], total: 0 };
+    var B = getBridge();
+    if (!B || !isFn(B.pluginList)) {
+      result.ok = false;
+      result.error = "Bridge.pluginList 不可用（需要 P3 原生插件目录 API）";
+      return result;
+    }
+    var raw;
+    try {
+      raw = await Promise.resolve(B.pluginList());
+    } catch (e) {
+      result.ok = false;
+      result.error = "读取插件目录失败：" + errText(e);
+      return result;
+    }
+    var list = decodeHouseList(raw);
+    result.total = list.length;
+    var force = !!options.force;
+    var onlyId = trimStr(options.id);
+
+    suppressChange += 1;
+    try {
+      for (var i = 0; i < list.length; i += 1) {
+        var item = isObj(list[i]) ? list[i] : {};
+        var fileName = trimStr(item.fileName);
+        var id = trimStr(item.id);
+        if (!id && fileName) id = fileName.replace(/\.(?:js|json)$/i, "");
+        if (!id) continue;
+        if (onlyId && id !== onlyId) continue;
+        var existing = registry[id];
+        if (existing && existing.builtin) {
+          result.errors.push({ id: id, fileName: fileName, error: "插件 id 与内置插件冲突" });
+          continue;
+        }
+        var enabled = externalEnabled(id, item.enabled, true);
+        if (!enabled) {
+          if (existing && existing.house && existing._loaded) {
+            try {
+              await unloadHousePlugin(id);
+            } catch (e2) {
+              /* ignore */
+            }
+          }
+          var stub = makeStub(Object.assign({}, item, { id: id, fileName: fileName }));
+          stub.house = !!(existing && existing.house);
+          stub._loaded = false;
+          addExternalStub(stub);
+          continue;
+        }
+        if (existing && existing._loaded && !force) {
+          existing._nativeEnabled = item.enabled;
+          if (fileName) existing.fileName = fileName;
+          var viewExisting = publicView(existing);
+          result.loaded.push(viewExisting);
+          if (existing.house) result.house.push(viewExisting);
+          continue;
+        }
+        if (!fileName) {
+          var noFileMsg = "插件目录记录缺少 fileName";
+          addHouseErrorStub(item, noFileMsg);
+          result.errors.push({ id: id, fileName: "", error: noFileMsg });
+          continue;
+        }
+        var read = await readPluginSource(B, fileName, id);
+        if (read.error) {
+          addHouseErrorStub(item, read.error);
+          result.errors.push({ id: id, fileName: fileName, error: read.error });
+          continue;
+        }
+        var loaded = await loadHouseFromSource({ id: id, fileName: fileName, code: read.code, enabled: item.enabled });
+        if (loaded.error || !loaded.def) {
+          var message = loaded.error || "加载失败";
+          if (!loaded.def || !registry[id]) addHouseErrorStub(item, message);
+          result.errors.push({ id: id, fileName: fileName, error: message });
+          continue;
+        }
+        var view = publicView(loaded.def);
+        result.loaded.push(view);
+        if (loaded.def.house) result.house.push(view);
+      }
+    } finally {
+      suppressChange -= 1;
+    }
+    emitChange();
+    return result;
+  }
+
+  // 公开：加载 app 目录中的 HousePlugin/外部插件；Promise 且永不 reject
+  function loadHousePlugins(opts) {
+    if (houseLoading) return houseLoading;
+    houseLoading = doLoadHousePlugins(opts).then(
+      function (res) {
+        houseLoading = null;
+        return res;
+      },
+      function (e) {
+        houseLoading = null;
+        return { ok: false, loaded: [], house: [], errors: [], total: 0, error: errText(e) };
+      }
+    );
+    return houseLoading;
+  }
+
+  async function reloadHousePlugin(id) {
+    var B = getBridge();
+    if (!B || !isFn(B.pluginList)) return null;
+    var raw;
+    try {
+      raw = await Promise.resolve(B.pluginList());
+    } catch (e) {
+      warn("reloadHousePlugin 读取插件目录失败：" + errText(e));
+      return null;
+    }
+    var list = decodeHouseList(raw);
+    var target = trimStr(id);
+    var item = null;
+    for (var i = 0; i < list.length; i += 1) {
+      var candidate = list[i] || {};
+      var candidateId = trimStr(candidate.id) || trimStr(candidate.fileName).replace(/\.(?:js|json)$/i, "");
+      if (candidateId === target) {
+        item = candidate;
+        break;
+      }
+    }
+    if (!item) return null;
+    if (externalEnabled(target, item.enabled, true) === false) return null;
+    var fileName = trimStr(item.fileName) || target + ".js";
+    var read = await readPluginSource(B, fileName, target);
+    if (read.error) return null;
+    var loaded = await loadHouseFromSource({ id: target, fileName: fileName, code: read.code, enabled: item.enabled });
+    emitChange();
+    return loaded && loaded.def ? loaded.def : null;
+  }
+
+  /* -------------------- uiSlots 收集 / 渲染 / 动作 -------------------- */
+
+  function resolveSlot(slotId) {
+    var key = trimStr(slotId);
+    if (!key) return null;
+    if (slotRegistry[key]) return slotRegistry[key];
+    var keys = Object.keys(slotRegistry);
+    var bareMatches = [];
+    for (var i = 0; i < keys.length; i += 1) {
+      var slot = slotRegistry[keys[i]];
+      if (slot.slotId === key) bareMatches.push(slot);
+    }
+    return bareMatches.length === 1 ? bareMatches[0] : null;
+  }
+
+  function renderSlotData(slot, ctxExtra) {
+    var def = registry[slot.pluginId];
+    var data = {
+      id: slot.id,
+      pluginId: slot.pluginId,
+      slotId: slot.slotId,
+      title: slot.title,
+      icon: slot.icon,
+      type: slot.type,
+      description: slot.description,
+      actions: (slot.actions || []).map(function (item) {
+        return { action: item.action, label: item.label };
+      }),
+      meta: slot.meta,
+      html: slot.html || "",
+      error: ""
+    };
+    if (isFn(slot.render)) {
+      try {
+        var ctx = makeCtx(slot.pluginId, ctxExtra);
+        var rendered = slot.render.call(slot, ctx);
+        if (typeof rendered === "string") data.html = rendered;
+        else if (rendered == null) data.html = "";
+        else data.html = normalizeResult(rendered);
+      } catch (e) {
+        data.html = "";
+        data.error = "render 失败：" + errText(e);
+      }
+    }
+    return data;
+  }
+
+  // 纯数据 uiSlots（html 已由 render(ctx) 预生成，不含函数）
+  function getUiSlots(ctxExtra) {
+    var out = [];
+    for (var i = 0; i < slotOrder.length; i += 1) {
+      var slot = slotOrder[i];
+      var def = registry[slot.pluginId];
+      if (!def || def.error || !isEnabled(def.id)) continue;
+      out.push(renderSlotData(slot, ctxExtra));
+    }
+    return out;
+  }
+
+  function renderUiSlot(slotId, ctxExtra) {
+    var slot = resolveSlot(slotId);
+    if (!slot) return { id: trimStr(slotId), html: "", error: "未找到插件面板：" + trimStr(slotId) };
+    var def = registry[slot.pluginId];
+    if (!def || !isEnabled(def.id)) return { id: slot.id, html: "", error: "插件未启用：" + slot.pluginId };
+    return renderSlotData(slot, ctxExtra);
+  }
+
+  async function runSlotAction(slotId, action, payload) {
+    var slot = resolveSlot(slotId);
+    if (!slot) {
+      return { ok: false, slotId: trimStr(slotId), action: trimStr(action), result: "", error: "未找到插件面板：" + trimStr(slotId) };
+    }
+    var def = registry[slot.pluginId];
+    if (!def || def.error || !isEnabled(def.id)) {
+      return { ok: false, slotId: slot.id, action: trimStr(action), result: "", error: "插件未启用：" + slot.pluginId };
+    }
+    var fn = null;
+    if (isFn(slot.onAction)) fn = slot.onAction;
+    else if (slot.handlers && isFn(slot.handlers[trimStr(action)])) fn = slot.handlers[trimStr(action)];
+    if (!fn) {
+      return { ok: false, slotId: slot.id, action: trimStr(action), result: "", error: "面板未实现 action：" + trimStr(action) };
+    }
+    try {
+      var ctx = makeCtx(slot.pluginId);
+      var result = await fn.call(slot, trimStr(action), payload, ctx);
+      return { ok: true, slotId: slot.id, action: trimStr(action), result: normalizeResult(result) };
+    } catch (e) {
+      return { ok: false, slotId: slot.id, action: trimStr(action), result: "", error: "面板 action 执行失败：" + errText(e) };
+    }
+  }
+
+  // 非加载期直接调用 installHousePlugin（目录插件加载时会被捕获，不会走这里）
+  function installHousePlugin(input) {
+    if (houseInstalling) {
+      houseInstalling.defs.push(input);
+      return input;
+    }
+    var def;
+    try {
+      def = normalizeHousePlugin(input);
+    } catch (e) {
+      warn("installHousePlugin 失败：" + errText(e));
+      return null;
+    }
+    if (registry[def.id] && registry[def.id].builtin) {
+      warn("HousePlugin id 与内置插件冲突：" + def.id);
+      return null;
+    }
+    def._nativeEnabled = true;
+    def._loaded = true;
+    addDef(def);
+    suppressChange += 0;
+    (async function () {
+      try {
+        await hydrateHouseDef(def);
+        await callHouseOnLoad(def);
+      } catch (e) {
+        def.error = "初始化失败：" + errText(e);
+        warn("HousePlugin 初始化失败（" + def.id + "）：" + errText(e));
+      }
+      emitChange();
+    })();
+    emitChange();
+    return def;
+  }
+
+  // 从源码安装 HousePlugin（粘贴安装 / 文件安装路径）
+  async function installHouseFromCode(source, rawDef, extraMeta) {
+    var def;
+    try {
+      def = normalizeHousePlugin(rawDef);
+    } catch (e) {
+      throw new Error("HousePlugin 定义无效：" + errText(e));
+    }
+    if (registry[def.id] && registry[def.id].builtin) {
+      throw new Error("插件 id 与内置插件冲突：" + def.id);
+    }
+    if (def.id.indexOf("user.") !== 0) {
+      warn("外部插件 id 建议以 user. 开头（当前：" + def.id + "）");
+    }
+    var B = getBridge();
+    if (!B || !isFn(B.pluginWrite)) {
+      throw new Error("当前环境不支持安装插件（Bridge.pluginWrite 不可用）");
+    }
+    var fallback = isObj(extraMeta) ? extraMeta : {};
+    var fileName = trimStr(fallback.fileName) || def.id + ".js";
+    if (!/^[A-Za-z0-9_.-]{1,80}\.js$/.test(fileName)) fileName = def.id + ".js";
+    var metaJson = JSON.stringify({
+      id: def.id,
+      name: def.name,
+      version: def.version,
+      author: def.author,
+      description: def.description,
+      installedAt: Date.now()
+    });
+    try {
+      if (isFn(B.pluginList)) await Promise.resolve(B.pluginWrite(fileName, source));
+      else await Promise.resolve(B.pluginWrite(def.id, source, metaJson));
+    } catch (e) {
+      throw new Error("写入插件文件失败：" + errText(e));
+    }
+    def.fileName = fileName;
+    def._nativeEnabled = true;
+    def._loaded = true;
+    addDef(def);
+    try {
+      await hydrateHouseDef(def);
+      await callHouseOnLoad(def);
+    } catch (e2) {
+      def.error = "初始化失败：" + errText(e2);
+      warn("HousePlugin 初始化失败（" + def.id + "）：" + errText(e2));
+    }
+    persistEnabled(def.id, true);
+    if (isFn(B.pluginSetEnabled)) {
+      try {
+        B.pluginSetEnabled(isFn(B.pluginList) ? fileName : def.id, true);
+      } catch (e3) {
+        warn("同步插件开关到原生失败：" + errText(e3));
+      }
+    }
+    emitChange();
+    return publicView(def);
+  }
+
+  /* ================================================================== *
+   * P3：插件市场（索引 / SHA-256 + HMAC 校验 / 安装 / 更新 / 卸载）
+   *
+   * 索引格式（仅 https）：
+   *   {version:1, plugins:[{id,name,version,author,description,
+   *                          url,sha256,hmac,tags:[]}]}
+   * 安装流程：下载 source → SHA-256 比对 → Bridge.pluginHmac 比对
+   *          → Bridge.pluginWrite("<id>-<version>.js") → 注册并刷新。
+   * 校验失败一律不写文件，返回 {ok:false,error:"签名校验失败：…"}。
+   * ================================================================== */
+  var SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+
+  function rotr32(value, shift) {
+    return ((value >>> shift) | (value << (32 - shift))) >>> 0;
+  }
+
+  function utf8Bytes(str) {
+    var text = String(str);
+    if (typeof TextEncoder !== "undefined") {
+      try {
+        var encoded = new TextEncoder().encode(text);
+        var bytesFromEncoder = [];
+        for (var b = 0; b < encoded.length; b += 1) bytesFromEncoder.push(encoded[b]);
+        return bytesFromEncoder;
+      } catch (e) {
+        /* fall through：手工编码 */
+      }
+    }
+    var bytes = [];
+    for (var i = 0; i < text.length; i += 1) {
+      var code = text.charCodeAt(i);
+      if (code < 0x80) {
+        bytes.push(code);
+      } else if (code < 0x800) {
+        bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+        var code2 = text.charCodeAt(i + 1);
+        if (code2 >= 0xdc00 && code2 <= 0xdfff) {
+          var cp = 0x10000 + ((code - 0xd800) << 10) + (code2 - 0xdc00);
+          bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+          i += 1;
+        } else {
+          bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        }
+      } else {
+        bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      }
+    }
+    return bytes;
+  }
+
+  // 纯 JS SHA-256（WebView 中 crypto.subtle 不可用时的兜底；同步返回 hex）
+  function sha256Hex(input) {
+    var bytes = utf8Bytes(input);
+    var h = [
+      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ];
+    var bitLen = bytes.length * 8;
+    var padded = bytes.slice();
+    padded.push(0x80);
+    while (padded.length % 64 !== 56) padded.push(0);
+    var hi = Math.floor(bitLen / 0x100000000);
+    var lo = bitLen >>> 0;
+    padded.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255);
+    padded.push((lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+
+    var w = new Array(64);
+    for (var offset = 0; offset < padded.length; offset += 64) {
+      for (var t = 0; t < 16; t += 1) {
+        w[t] =
+          ((padded[offset + t * 4] << 24) |
+            (padded[offset + t * 4 + 1] << 16) |
+            (padded[offset + t * 4 + 2] << 8) |
+            padded[offset + t * 4 + 3]) >>>
+          0;
+      }
+      for (t = 16; t < 64; t += 1) {
+        var s0 = (rotr32(w[t - 15], 7) ^ rotr32(w[t - 15], 18) ^ (w[t - 15] >>> 3)) >>> 0;
+        var s1 = (rotr32(w[t - 2], 17) ^ rotr32(w[t - 2], 19) ^ (w[t - 2] >>> 10)) >>> 0;
+        w[t] = (w[t - 16] + s0 + w[t - 7] + s1) >>> 0;
+      }
+      var a = h[0];
+      var b = h[1];
+      var c = h[2];
+      var d = h[3];
+      var e = h[4];
+      var f = h[5];
+      var g = h[6];
+      var hh = h[7];
+      for (t = 0; t < 64; t += 1) {
+        var S1 = (rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)) >>> 0;
+        var ch = ((e & f) ^ (~e & g)) >>> 0;
+        var temp1 = (hh + S1 + ch + SHA256_K[t] + w[t]) >>> 0;
+        var S0 = (rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)) >>> 0;
+        var maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+        var temp2 = (S0 + maj) >>> 0;
+        hh = g;
+        g = f;
+        f = e;
+        e = (d + temp1) >>> 0;
+        d = c;
+        c = b;
+        b = a;
+        a = (temp1 + temp2) >>> 0;
+      }
+      h[0] = (h[0] + a) >>> 0;
+      h[1] = (h[1] + b) >>> 0;
+      h[2] = (h[2] + c) >>> 0;
+      h[3] = (h[3] + d) >>> 0;
+      h[4] = (h[4] + e) >>> 0;
+      h[5] = (h[5] + f) >>> 0;
+      h[6] = (h[6] + g) >>> 0;
+      h[7] = (h[7] + hh) >>> 0;
+    }
+    var hex = "";
+    for (var k = 0; k < 8; k += 1) {
+      hex += ("00000000" + h[k].toString(16)).slice(-8);
+    }
+    return hex;
+  }
+
+  function validateMarketIndex(data) {
+    if (!isObj(data)) throw new Error("市场索引不是 JSON 对象");
+    if (Number(data.version) !== 1) {
+      throw new Error("市场索引 version 必须为 1（实际：" + trimStr(data.version) + "）");
+    }
+    if (!Array.isArray(data.plugins)) throw new Error("市场索引缺少 plugins 数组");
+    var items = [];
+    var skipped = 0;
+    for (var i = 0; i < data.plugins.length && items.length < 200; i += 1) {
+      var raw = data.plugins[i];
+      if (!isObj(raw)) {
+        skipped += 1;
+        continue;
+      }
+      var id = trimStr(raw.id);
+      var url = trimStr(raw.url);
+      var sha = trimStr(raw.sha256).toLowerCase();
+      var hmac = trimStr(raw.hmac).toLowerCase();
+      var version = trimStr(raw.version) || "0.0.0";
+      if (
+        !/^[A-Za-z0-9_.-]{1,64}$/.test(id) ||
+        !/^https:\/\//i.test(url) ||
+        !/^[0-9a-f]{64}$/.test(sha) ||
+        !/^[0-9a-f]{64}$/.test(hmac) ||
+        !/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}$/.test(version)
+      ) {
+        skipped += 1;
+        continue;
+      }
+      var tags = [];
+      if (Array.isArray(raw.tags)) {
+        for (var t = 0; t < raw.tags.length && tags.length < 10; t += 1) {
+          var tag = trimStr(raw.tags[t]);
+          if (tag && tags.indexOf(tag) < 0) tags.push(tag);
+        }
+      }
+      items.push({
+        id: id,
+        name: trimStr(raw.name) || id,
+        version: version,
+        author: trimStr(raw.author),
+        description: trimStr(raw.description),
+        url: url,
+        sha256: sha,
+        hmac: hmac,
+        tags: tags
+      });
+    }
+    if (skipped) warn("市场索引中有 " + skipped + " 个条目字段非法，已忽略");
+    return { version: 1, plugins: items };
+  }
+
+  function marketFail(url, message, code) {
+    return { ok: false, url: trimStr(url), index: null, items: [], fetchedAt: 0, error: message, code: code || "" };
+  }
+
+  async function fetchMarketIndex(url, opts) {
+    var options = isObj(opts) ? opts : {};
+    var source = trimStr(url) || (marketState && marketState.url) || "";
+    if (!source) return marketFail("", "未配置插件市场索引地址（请先在设置中填写 https 索引 URL）", "url");
+    if (!/^https:\/\//i.test(source)) return marketFail(source, "插件市场索引地址必须是 https://：" + source, "https");
+    var B = getBridge();
+    if (!B || !isFn(B.httpFetch)) {
+      return marketFail(source, "当前环境不支持网络请求（Bridge.httpFetch 不可用）", "http");
+    }
+    try {
+      var response = await safeFetch(source, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        timeout: Number(options.timeout) > 0 ? Number(options.timeout) : MARKET_TIMEOUT
+      });
+      var status = response && typeof response.status === "number" ? response.status : 0;
+      var body = response && typeof response.body === "string" ? response.body : "";
+      if (!body && response && typeof response.text === "string") body = response.text;
+      if (status && (status < 200 || status >= 300)) {
+        return marketFail(source, "拉取市场索引失败：HTTP " + status, "http");
+      }
+      var parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch (e) {
+        return marketFail(source, "市场索引不是有效 JSON：" + errText(e), "json");
+      }
+      var index;
+      try {
+        index = validateMarketIndex(parsed);
+      } catch (e2) {
+        return marketFail(source, "市场索引格式错误：" + errText(e2), "index");
+      }
+      marketState = { url: source, index: index, items: index.plugins, fetchedAt: Date.now(), error: null };
+      return {
+        ok: true,
+        url: source,
+        index: index,
+        items: index.plugins,
+        fetchedAt: marketState.fetchedAt,
+        error: ""
+      };
+    } catch (e3) {
+      var fail = marketFail(source, "拉取市场索引失败：" + errText(e3), "network");
+      marketState = { url: source, index: null, items: [], fetchedAt: 0, error: fail.error };
+      return fail;
+    }
+  }
+
+  function getMarketState() {
+    if (!marketState) return null;
+    return {
+      url: marketState.url,
+      index: marketState.index,
+      items: (marketState.items || []).slice(),
+      fetchedAt: marketState.fetchedAt,
+      error: marketState.error
+    };
+  }
+
+  function resolveMarketItem(input) {
+    if (typeof input === "string") {
+      var key = trimStr(input);
+      if (!key) return null;
+      var items = (marketState && marketState.items) || [];
+      for (var i = 0; i < items.length; i += 1) {
+        if (items[i].id === key) return items[i];
+      }
+      return null;
+    }
+    if (!isObj(input) || !trimStr(input.id)) return null;
+    var merged = Object.assign({}, input);
+    var cached = (marketState && marketState.items) || [];
+    for (var j = 0; j < cached.length; j += 1) {
+      if (cached[j].id === trimStr(input.id)) {
+        merged = Object.assign({}, cached[j], input);
+        break;
+      }
+    }
+    merged.tags = Array.isArray(merged.tags) ? merged.tags : [];
+    return merged;
+  }
+
+  function compareVersions(left, right) {
+    var a = String(left || "").split(/[.+-]/);
+    var b = String(right || "").split(/[.+-]/);
+    var len = Math.max(a.length, b.length);
+    for (var i = 0; i < len; i += 1) {
+      var x = a[i] === undefined ? "0" : a[i];
+      var y = b[i] === undefined ? "0" : b[i];
+      var nx = parseInt(x, 10);
+      var ny = parseInt(y, 10);
+      if (!isNaN(nx) && !isNaN(ny)) {
+        if (nx > ny) return 1;
+        if (nx < ny) return -1;
+      } else {
+        if (x > y) return 1;
+        if (x < y) return -1;
+      }
+    }
+    return 0;
+  }
+
+  function marketStatusMap(itemsArg) {
+    var items = Array.isArray(itemsArg) ? itemsArg : (marketState && marketState.items) || [];
+    var map = {};
+    for (var i = 0; i < items.length; i += 1) {
+      var item = items[i];
+      if (!isObj(item) || !trimStr(item.id)) continue;
+      var def = registry[trimStr(item.id)];
+      var entry = {
+        status: "not_installed",
+        installedVersion: "",
+        latestVersion: trimStr(item.version),
+        fileName: ""
+      };
+      if (def && !def.builtin) {
+        entry.installedVersion = trimStr(def.version);
+        entry.fileName = trimStr(def.fileName);
+        if (def.error) entry.status = "error";
+        else if (compareVersions(item.version, def.version) > 0) entry.status = "update";
+        else entry.status = "installed";
+      }
+      map[item.id] = entry;
+    }
+    return map;
+  }
+
+  async function downloadMarketSource(url) {
+    var response = await safeFetch(url, {
+      method: "GET",
+      headers: { Accept: "text/javascript,application/javascript,text/plain;q=0.9,*/*;q=0.8" },
+      timeout: MARKET_TIMEOUT
+    });
+    var status = response && typeof response.status === "number" ? response.status : 0;
+    var body = response && typeof response.body === "string" ? response.body : "";
+    if (!body && response && typeof response.text === "string") body = response.text;
+    if (status && (status < 200 || status >= 300)) {
+      throw new Error("HTTP " + status);
+    }
+    if (!body) throw new Error("下载内容为空");
+    if (body.length > MARKET_MAX_SOURCE_LENGTH) throw new Error("插件源码过大（超过 512KB）");
+    return body;
+  }
+
+  // 沙箱执行一遍源码，提取注册定义（不污染注册表）
+  async function inspectPluginSource(source) {
+    installing = { defs: [] };
+    houseInstalling = { defs: [] };
+    var legacyDefs = [];
+    var houseDefs = [];
+    var execError = null;
+    suppressChange += 1;
+    try {
+      execPluginCode(source, "market-inspect");
+    } catch (e) {
+      execError = e;
+    } finally {
+      legacyDefs = installing && installing.defs ? installing.defs : [];
+      houseDefs = houseInstalling && houseInstalling.defs ? houseInstalling.defs : [];
+      installing = null;
+      houseInstalling = null;
+      suppressChange -= 1;
+    }
+    if (execError) throw new Error("插件源码执行失败：" + errText(execError));
+    var total = legacyDefs.length + houseDefs.length;
+    if (total !== 1) {
+      throw new Error("插件源码必须且只能注册一个插件（检测到 " + total + " 个）");
+    }
+    if (houseDefs.length === 1) {
+      var house = normalizeHousePlugin(houseDefs[0]);
+      return { kind: "house", id: house.id, version: house.version, def: house };
+    }
+    var legacy = normalizeDef(legacyDefs[0]);
+    return { kind: "legacy", id: legacy.id, version: legacy.version, def: legacy };
+  }
+
+  function marketSignatureFail(code, message) {
+    return { ok: false, code: code, error: message };
+  }
+
+  /**
+   * 从市场安装/更新插件（薄 handler 可直接调用）。
+   * 返回 Promise<{ok, id, version, fileName, updated, view, error?, code?}>，不抛异常。
+   */
+  async function installMarketPlugin(input) {
+    try {
+      var item = resolveMarketItem(input);
+      if (!item) {
+        return marketSignatureFail("not-found", "未找到市场插件：请先刷新插件市场索引");
+      }
+      if (!/^https:\/\//i.test(trimStr(item.url))) {
+        return marketSignatureFail("url", "市场条目的下载地址必须是 https://：" + trimStr(item.url));
+      }
+      var expectSha = trimStr(item.sha256).toLowerCase();
+      var expectHmac = trimStr(item.hmac).toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(expectSha)) return marketSignatureFail("index", "市场条目缺少合法 sha256");
+      if (!/^[0-9a-f]{64}$/.test(expectHmac)) return marketSignatureFail("index", "市场条目缺少合法 hmac");
+
+      var B = getBridge();
+      if (!B || !isFn(B.pluginWrite)) {
+        return marketSignatureFail("bridge", "当前环境不支持安装插件（Bridge.pluginWrite 不可用）");
+      }
+      if (!isFn(B.pluginHmac)) {
+        return marketSignatureFail("hmac-unavailable", "签名校验失败：当前环境不支持 HMAC 校验（Bridge.pluginHmac 不可用）");
+      }
+
+      var source;
+      try {
+        source = await downloadMarketSource(trimStr(item.url));
+      } catch (e) {
+        return marketSignatureFail("download", "下载插件源码失败：" + errText(e));
+      }
+
+      var actualSha = sha256Hex(source);
+      if (actualSha !== expectSha) {
+        return marketSignatureFail(
+          "sha256",
+          "签名校验失败：sha256 不匹配（索引 " + expectSha + " / 实际 " + actualSha + "）"
+        );
+      }
+
+      var actualHmac = "";
+      try {
+        actualHmac = trimStr(await Promise.resolve(B.pluginHmac(source))).toLowerCase();
+      } catch (e2) {
+        return marketSignatureFail("hmac", "签名校验失败：计算 HMAC 出错（" + errText(e2) + "）");
+      }
+      if (!actualHmac || actualHmac !== expectHmac) {
+        return marketSignatureFail(
+          "hmac",
+          "签名校验失败：HMAC 不匹配（索引 " + expectHmac + " / 实际 " + (actualHmac || "(空)") + "）"
+        );
+      }
+
+      var inspected;
+      try {
+        inspected = await inspectPluginSource(source);
+      } catch (e3) {
+        return marketSignatureFail("source", "插件源码校验失败：" + errText(e3));
+      }
+      if (inspected.id !== trimStr(item.id)) {
+        return marketSignatureFail(
+          "id",
+          "插件校验失败：源码 id（" + inspected.id + "）与市场索引（" + trimStr(item.id) + "）不一致"
+        );
+      }
+      if (trimStr(item.version) && inspected.version !== trimStr(item.version)) {
+        return marketSignatureFail(
+          "version",
+          "插件校验失败：源码版本（" + inspected.version + "）与市场索引（" + trimStr(item.version) + "）不一致"
+        );
+      }
+
+      var fileName = (trimStr(item.id) + "-" + trimStr(item.version) + ".js").replace(/[^A-Za-z0-9_.-]/g, "_");
+      var oldDef = registry[trimStr(item.id)];
+      var oldFileName = oldDef && oldDef.fileName ? trimStr(oldDef.fileName) : "";
+      var metaJson = JSON.stringify({
+        id: trimStr(item.id),
+        name: trimStr(item.name) || trimStr(item.id),
+        version: trimStr(item.version),
+        author: trimStr(item.author),
+        description: trimStr(item.description),
+        market: (marketState && marketState.url) || "",
+        installedAt: Date.now()
+      });
+
+      try {
+        if (isFn(B.pluginList)) await Promise.resolve(B.pluginWrite(fileName, source));
+        else await Promise.resolve(B.pluginWrite(trimStr(item.id), source, metaJson));
+      } catch (e4) {
+        return marketSignatureFail("write", "写入插件文件失败：" + errText(e4));
+      }
+
+      if (oldDef && oldDef.house) {
+        try {
+          await unloadHousePlugin(oldDef.id);
+        } catch (e5) {
+          /* ignore */
+        }
+      }
+      var def = inspected.def;
+      def.fileName = fileName;
+      def._nativeEnabled = true;
+      def._loaded = true;
+      def.error = null;
+      addDef(def);
+      if (def.house) {
+        try {
+          await hydrateHouseDef(def);
+          await callHouseOnLoad(def);
+        } catch (e6) {
+          def.error = "初始化失败：" + errText(e6);
+          warn("市场插件初始化失败（" + def.id + "）：" + errText(e6));
+        }
+      }
+      persistEnabled(trimStr(item.id), true);
+      if (isFn(B.pluginSetEnabled)) {
+        try {
+          B.pluginSetEnabled(isFn(B.pluginList) ? fileName : trimStr(item.id), true);
+        } catch (e7) {
+          warn("同步插件开关到原生失败：" + errText(e7));
+        }
+      }
+      if (oldFileName && oldFileName !== fileName && isFn(B.pluginList) && isFn(B.pluginDelete)) {
+        try {
+          await Promise.resolve(B.pluginDelete(oldFileName));
+        } catch (e8) {
+          warn("删除旧版本插件文件失败：" + oldFileName + "：" + errText(e8));
+        }
+      }
+      emitChange();
+      return {
+        ok: true,
+        id: trimStr(item.id),
+        version: trimStr(item.version),
+        fileName: fileName,
+        updated: !!oldFileName && oldFileName !== fileName,
+        view: publicView(def),
+        error: ""
+      };
+    } catch (e9) {
+      return marketSignatureFail("internal", "安装插件失败：" + errText(e9));
+    }
+  }
+
+  /**
+   * 卸载市场插件（按 id 或 fileName）。返回 Promise<{ok,removed,fileName,error?}>。
+   */
+  async function removeMarketPlugin(input) {
+    try {
+      var key = typeof input === "string" ? trimStr(input) : trimStr(input && (input.id || input.fileName));
+      if (!key) return { ok: false, error: "缺少插件 id 或 fileName" };
+      var def = registry[key];
+      if (!def) {
+        var ids = Object.keys(registry);
+        for (var i = 0; i < ids.length; i += 1) {
+          if (trimStr(registry[ids[i]].fileName) === key) {
+            def = registry[ids[i]];
+            break;
+          }
+        }
+      }
+      if (!def) return { ok: false, error: "插件未安装：" + key };
+      if (def.builtin) return { ok: false, error: "内置插件不能卸载：" + def.id };
+      var B = getBridge();
+      if (!B || !isFn(B.pluginDelete)) {
+        return { ok: false, error: "当前环境不支持删除插件（Bridge.pluginDelete 不可用）" };
+      }
+      var id = def.id;
+      var fileName = trimStr(def.fileName);
+      if (def.house) {
+        try {
+          await unloadHousePlugin(id);
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      removeSlotsOf(id);
+      var target = isFn(B.pluginList) && fileName ? fileName : id;
+      try {
+        await Promise.resolve(B.pluginDelete(target));
+      } catch (e2) {
+        return { ok: false, error: "删除插件文件失败：" + errText(e2) };
+      }
+      removeFromRegistry(id);
+      removeEnabledFromStore(id);
+      emitChange();
+      return { ok: true, removed: id, fileName: fileName, error: "" };
+    } catch (e3) {
+      return { ok: false, error: "卸载插件失败：" + errText(e3) };
+    }
+  }
+
+  async function refresh() {
+    var B = getBridge();
+    if (B && isFn(B.pluginList)) return loadHousePlugins({ force: true });
+    return loadExternal();
+  }
+
   async function remove(id) {
     var def = registry[trimStr(id)];
     if (!def) throw new Error("插件不存在：" + id);
@@ -1437,7 +2796,22 @@
     // 辅助：供 app.js 构造插件上下文（可选）
     createContext: function (extra) {
       return makeCtx(null, extra);
-    }
+    },
+    /* ARCH v2 P3：HousePlugin 宿主 + 市场 */
+    loadHousePlugins: loadHousePlugins,
+    reloadHousePlugin: reloadHousePlugin,
+    refresh: refresh,
+    installHousePlugin: installHousePlugin,
+    installHouseFromCode: installHouseFromCode,
+    getUiSlots: getUiSlots,
+    runSlotAction: runSlotAction,
+    resolveSlot: resolveSlot,
+    fetchMarketIndex: fetchMarketIndex,
+    getMarketState: getMarketState,
+    resolveMarketItem: resolveMarketItem,
+    marketStatusMap: marketStatusMap,
+    installMarketPlugin: installMarketPlugin,
+    removeMarketPlugin: removeMarketPlugin
   };
 
   global.DSPlugins = DSPlugins;

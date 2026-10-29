@@ -72,7 +72,8 @@
     maxTokens: 4096,
     stream: true,
     theme: 'dark',
-    systemPrompt: DEFAULT_SYSTEM_PROMPT
+    systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    contextBudget: 24000 /* ARCH v2 P3：上下文预算（字符），压缩阈值 80% */
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -162,7 +163,8 @@
       maxTokens: DEFAULT_PREFS.maxTokens,
       stream: DEFAULT_PREFS.stream,
       theme: DEFAULT_PREFS.theme,
-      systemPrompt: DEFAULT_PREFS.systemPrompt
+      systemPrompt: DEFAULT_PREFS.systemPrompt,
+      contextBudget: DEFAULT_PREFS.contextBudget
     };
   }
 
@@ -248,6 +250,7 @@
     if (raw.stream !== undefined) p.stream = !!raw.stream;
     if (raw.theme === 'light' || raw.theme === 'dark') p.theme = raw.theme;
     if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
+    if (raw.contextBudget !== undefined) p.contextBudget = Math.round(clampNum(raw.contextBudget, 500, 200000));
     // 安全：apiKey 永远不写入 localStorage
     return p;
   }
@@ -458,6 +461,7 @@
     if (patch.stream !== undefined) state.prefs.stream = !!patch.stream;
     if (patch.theme !== undefined) state.prefs.theme = patch.theme === 'light' ? 'light' : 'dark';
     if (patch.systemPrompt !== undefined) state.prefs.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
+    if (patch.contextBudget !== undefined) state.prefs.contextBudget = Math.round(clampNum(patch.contextBudget, 500, 200000));
     // apiKey 不落 localStorage（由原生 SharedPreferences 保存）
     save();
     return getPrefs();

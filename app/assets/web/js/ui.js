@@ -166,7 +166,22 @@
       statusMap: {},
       editingId: '',
       loading: false
-    }
+    },
+    /* ARCH v2 P3：插件市场 / 记忆 / 插件面板 */
+    market: {
+      items: [],
+      statusMap: {},
+      url: '',
+      loaded: false
+    },
+    memory: {
+      longTerm: [],
+      project: { tech_stack: '', conventions: '', decisions: '' },
+      summaries: [],
+      loaded: false
+    },
+    pluginSlots: [],
+    pluginPanelOpen: false
   };
 
   var UI = {};
@@ -1169,13 +1184,14 @@
     if (state.screen === 'chats') base = 0;
     else if (state.screen === 'chat') base = 1;
     else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents' ||
-             state.screen === 'audit' || state.screen === 'mcp') base = 2;
+             state.screen === 'audit' || state.screen === 'mcp' || state.screen === 'market' ||
+             state.screen === 'memory') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
-      state.agentPicker.open || state.fileDrawer.open ||
+      state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen ||
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) ||
       isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal')) ||
-      isModalOpen(r('mcp-form-modal'));
+      isModalOpen(r('mcp-form-modal')) || isModalOpen(r('memory-item-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1208,7 +1224,7 @@
     if (isModalOpen(r('rename-modal'))) resolveRename(null);
     if (isModalOpen(r('risk-modal'))) resolveRisk(false);
     ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal',
-      'mcp-form-modal'].forEach(function (id) {
+      'mcp-form-modal', 'memory-item-modal'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -2539,8 +2555,14 @@
     var value = String(name == null ? '' : name).toLowerCase();
     if (!value) return false;
     if (BUILD_TOOL_NAMES[value]) return true;
-    var idx = value.lastIndexOf(':');
-    return idx >= 0 && !!BUILD_TOOL_NAMES[value.slice(idx + 1)];
+    /* 兼容 mcp:<server>:pack_apk（冒号）与 mcp_<server>_pack_apk（下划线，原生重名冲突时） */
+    var names = Object.keys(BUILD_TOOL_NAMES);
+    for (var i = 0; i < names.length; i++) {
+      var suffix = names[i];
+      var tail = value.slice(-(suffix.length + 1));
+      if (tail === ':' + suffix || tail === '_' + suffix) return true;
+    }
+    return false;
   }
 
   function clampPercent(value) {
@@ -2748,6 +2770,635 @@
     return added;
   }
 
+  /* ================================================================== *
+   * ARCH v2 P3：插件市场
+   * items: [{id,name,version,author,description,url,sha256?,hmac?,tags?}]
+   * statusMap: { id: 'not_installed'|'installed'|'update'|'invalid' } 或
+   *            { id: {status,message?,version?} }
+   * ================================================================== */
+  function normalizeMarketStatus(value) {
+    var status = '';
+    var message = '';
+    var version = '';
+    if (typeof value === 'string') {
+      status = value;
+    } else if (value && typeof value === 'object') {
+      status = value.status == null ? '' : String(value.status);
+      message = value.message == null ? '' : String(value.message);
+      version = value.version == null ? '' : String(value.version);
+    }
+    status = status.toLowerCase().replace(/-/g, '_');
+    if (status === 'available' || status === 'new' || status === 'unknown' || status === 'not_installed') status = 'not-installed';
+    else if (status === 'ok' || status === 'active') status = 'installed';
+    else if (status === 'update_available' || status === 'outdated') status = 'update';
+    else if (status === 'error' || status === 'failed' || status === 'checksum_failed' || status === 'invalid') status = 'invalid';
+    else if (status === 'installing' || status === 'pending') status = 'installing';
+    else if (status !== 'installed' && status !== 'update' && status !== 'not-installed') status = 'not-installed';
+    return { status: status, message: message, version: version };
+  }
+
+  function normalizeMarketItems(items) {
+    var out = [];
+    (Array.isArray(items) ? items : []).forEach(function (item, index) {
+      if (!item || typeof item !== 'object') return;
+      var id = item.id != null ? String(item.id) : ('market_' + index);
+      var tags = [];
+      if (Array.isArray(item.tags)) {
+        item.tags.forEach(function (tag) { if (tag != null && String(tag) !== '') tags.push(String(tag)); });
+      }
+      out.push({
+        id: id,
+        name: item.name ? String(item.name) : id,
+        version: item.version ? String(item.version) : '',
+        installedVersion: item.installedVersion ? String(item.installedVersion) : '',
+        author: item.author ? String(item.author) : '',
+        description: item.description ? String(item.description) : '',
+        url: item.url ? String(item.url) : '',
+        sha256: item.sha256 ? String(item.sha256) : '',
+        hmac: item.hmac ? String(item.hmac) : '',
+        tags: tags,
+        installed: item.installed === true,
+        status: item.status,
+        message: item.lastMessage || item.message || ''
+      });
+    });
+    return out;
+  }
+
+  function marketStatusFor(item) {
+    var map = state.market.statusMap || {};
+    var entry = map[item.id];
+    if (entry == null) return normalizeMarketStatus(item);
+    return normalizeMarketStatus(entry);
+  }
+
+  function marketStatusLabel(status) {
+    var key = status && status.status ? status.status : 'not-installed';
+    if (key === 'installed') return '已安装';
+    if (key === 'update') return '可更新';
+    if (key === 'invalid') return '校验失败';
+    if (key === 'installing') return '安装中…';
+    return '未安装';
+  }
+
+  function updateMarketLabels() {
+    var items = state.market.items || [];
+    var installed = 0;
+    items.forEach(function (item) {
+      var st = marketStatusFor(item);
+      if (st.status === 'installed' || st.status === 'update') installed += 1;
+    });
+    var label = r('set-market-label');
+    if (label) {
+      if (state.market.url) label.textContent = items.length ? (items.length + ' 个可用') : '已配置索引';
+      else label.textContent = items.length ? (items.length + ' 个可用') : '未配置索引';
+    }
+    var count = r('market-count');
+    if (count) {
+      count.textContent = items.length
+        ? (items.length + ' 个插件 · ' + installed + ' 已安装')
+        : '从 https 索引安装插件';
+    }
+    var empty = r('market-empty');
+    if (empty) empty.hidden = items.length > 0;
+  }
+
+  function buildMarketCard(item) {
+    var status = marketStatusFor(item);
+    var card = el('div', 'market-card');
+    card.setAttribute('data-market-id', item.id);
+
+    var head = el('div', 'market-card-head');
+    var titleWrap = el('div', 'market-card-title');
+    titleWrap.appendChild(makeText('span', 'market-name', item.name));
+    if (item.version) titleWrap.appendChild(makeText('span', 'market-version', 'v' + item.version));
+    head.appendChild(titleWrap);
+    head.appendChild(makeText('span', 'market-badge market-badge--' + status.status, marketStatusLabel(status)));
+    card.appendChild(head);
+
+    if (item.author) card.appendChild(makeText('div', 'market-author', '作者 ' + item.author));
+    if (item.description) card.appendChild(makeText('div', 'market-desc', item.description));
+
+    if (item.tags.length) {
+      var tags = el('div', 'market-tags');
+      item.tags.forEach(function (tag) { tags.appendChild(makeText('span', 'market-tag', tag)); });
+      card.appendChild(tags);
+    }
+    if (status.status === 'invalid' && status.message) {
+      card.appendChild(makeText('div', 'market-error', '校验失败：' + status.message));
+    } else if (status.message && (status.status === 'invalid' || status.status === 'not-installed')) {
+      card.appendChild(makeText('div', 'market-error', status.message));
+    }
+
+    var actions = el('div', 'market-actions');
+    function addAction(action, labelText, cls, disabled) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'market-act' + (cls ? ' ' + cls : '');
+      btn.setAttribute('data-action', action);
+      btn.setAttribute('data-id', item.id);
+      btn.textContent = labelText;
+      if (disabled) btn.disabled = true;
+      actions.appendChild(btn);
+      return btn;
+    }
+    if (status.status === 'installed') {
+      addAction('market-remove', '卸载', 'market-act--danger');
+    } else if (status.status === 'update') {
+      addAction('market-install', '更新', 'market-act--primary');
+      addAction('market-remove', '卸载', 'market-act--danger');
+    } else if (status.status === 'installing') {
+      addAction('market-install', '安装中…', 'market-act--primary', true);
+    } else if (status.status === 'invalid') {
+      addAction('market-install', '重新安装', 'market-act--primary');
+    } else {
+      addAction('market-install', '安装', 'market-act--primary');
+      addAction('market-remove', '卸载', 'market-act--danger');
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderMarketRows() {
+    var list = r('market-list');
+    if (list) {
+      list.textContent = '';
+      (state.market.items || []).forEach(function (item) {
+        list.appendChild(buildMarketCard(item));
+      });
+    }
+    updateMarketLabels();
+  }
+
+  function renderMarket(items, statusMap) {
+    state.market.items = normalizeMarketItems(items);
+    if (statusMap && typeof statusMap === 'object' && !Array.isArray(statusMap)) {
+      var next = {};
+      Object.keys(statusMap).forEach(function (key) {
+        next[String(key)] = normalizeMarketStatus(statusMap[key]);
+      });
+      state.market.statusMap = next;
+    }
+    state.market.loaded = true;
+    renderMarketRows();
+    return state.market.items;
+  }
+
+  function setMarketStatus(id, status) {
+    if (id == null) return null;
+    var key = String(id);
+    state.market.statusMap = state.market.statusMap || {};
+    state.market.statusMap[key] = normalizeMarketStatus(status);
+    renderMarketRows();
+    return state.market.statusMap[key];
+  }
+
+  function setMarketUrl(url) {
+    var value = url == null ? '' : String(url);
+    state.market.url = value;
+    var input = r('market-url');
+    if (input && (!String(input.value || '').trim() || value)) input.value = value;
+    updateMarketLabels();
+    return value;
+  }
+
+  function openMarketPage() {
+    showScreenImpl('market');
+    if (invoke('onOpenMarket')) return true;
+    renderMarketRows();
+    return false;
+  }
+
+  function fetchMarketIndex() {
+    var input = r('market-url');
+    var url = input ? String(input.value || '').trim() : '';
+    if (url && !/^https:\/\//i.test(url)) {
+      UI.toast('索引地址需以 https:// 开头');
+      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
+      return;
+    }
+    state.market.url = url;
+    updateMarketLabels();
+    if (!invoke('onMarketFetch', url)) UI.toast('市场服务尚未就绪');
+  }
+
+  function findMarketItem(id) {
+    var key = String(id == null ? '' : id);
+    var found = null;
+    (state.market.items || []).forEach(function (item) {
+      if (item.id === key) found = item;
+    });
+    return found;
+  }
+
+  function installMarketItem(id) {
+    var item = findMarketItem(id);
+    if (!item) return;
+    if (!invoke('onMarketInstall', item)) UI.toast('市场服务尚未就绪');
+  }
+
+  function removeMarketItem(id) {
+    var item = findMarketItem(id);
+    var name = item && item.name ? '「' + item.name + '」' : '该插件';
+    confirmDialog('卸载插件', '确定卸载' + name + '吗？其工具与面板会立即移除。').then(function (ok) {
+      if (ok) {
+        if (!invoke('onMarketRemove', item ? item.id : id)) UI.toast('市场服务尚未就绪');
+      }
+    });
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P3：记忆页
+   * renderMemory({long_term, project:{tech_stack,conventions,decisions}, summaries})
+   * ================================================================== */
+  function normalizeLongTerm(value) {
+    var out = [];
+    if (Array.isArray(value)) {
+      value.forEach(function (item) {
+        if (!item) return;
+        if (typeof item === 'string') {
+          out.push({ key: item, value: '' });
+          return;
+        }
+        if (typeof item !== 'object') return;
+        var key = item.key != null ? String(item.key) : (item.name != null ? String(item.name) : '');
+        if (!key) return;
+        out.push({ key: key, value: item.value == null ? '' : String(item.value) });
+      });
+    } else if (value && typeof value === 'object') {
+      Object.keys(value).forEach(function (key) {
+        out.push({ key: String(key), value: value[key] == null ? '' : String(value[key]) });
+      });
+    }
+    return out;
+  }
+
+  function normalizeProject(value) {
+    var source = value && typeof value === 'object' ? value : {};
+    return {
+      tech_stack: source.tech_stack == null ? '' : String(source.tech_stack),
+      conventions: source.conventions == null ? '' : String(source.conventions),
+      decisions: source.decisions == null ? '' : String(source.decisions)
+    };
+  }
+
+  function normalizeSummaries(list) {
+    var out = [];
+    (Array.isArray(list) ? list : []).forEach(function (item) {
+      if (!item || typeof item !== 'object') return;
+      var chatId = item.chatId != null ? String(item.chatId) : (item.chat_id != null ? String(item.chat_id) : '');
+      if (!chatId) return;
+      out.push({
+        chatId: chatId,
+        title: item.title == null ? '' : String(item.title),
+        summary: item.summary == null ? '' : String(item.summary),
+        updatedAt: item.updatedAt != null ? item.updatedAt : item.updated_at
+      });
+    });
+    return out;
+  }
+
+  function memoryTimeText(value) {
+    if (value == null || value === '') return '';
+    var date = toDate(value);
+    if (!date) return '';
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()) +
+      ' ' + pad2(date.getHours()) + ':' + pad2(date.getMinutes());
+  }
+
+  function updateMemoryLabels() {
+    var lt = state.memory.longTerm || [];
+    var summaries = state.memory.summaries || [];
+    var label = r('set-memory-label');
+    if (label) {
+      label.textContent = (lt.length || summaries.length)
+        ? (lt.length + ' 条偏好 · ' + summaries.length + ' 条摘要')
+        : '长期偏好 / 项目记忆';
+    }
+    var count = r('memory-count');
+    if (count) {
+      count.textContent = (lt.length || summaries.length)
+        ? (lt.length + ' 条长期偏好 · ' + summaries.length + ' 条会话摘要')
+        : '长期偏好 / 项目记忆 / 会话摘要';
+    }
+  }
+
+  function renderMemoryLongTerm() {
+    var box = r('memory-longterm');
+    var list = state.memory.longTerm || [];
+    if (box) {
+      box.textContent = '';
+      list.forEach(function (item) {
+        var row = el('div', 'memory-row');
+        var main = el('div', 'memory-row-main');
+        main.appendChild(makeText('div', 'memory-row-key', item.key));
+        if (item.value) main.appendChild(makeText('div', 'memory-row-value', item.value));
+        row.appendChild(main);
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'memory-del';
+        del.setAttribute('data-action', 'memory-delete-longterm');
+        del.setAttribute('data-key', item.key);
+        del.textContent = '删除';
+        row.appendChild(del);
+        box.appendChild(row);
+      });
+    }
+    var empty = r('memory-longterm-empty');
+    if (empty) empty.hidden = list.length > 0;
+  }
+
+  function renderMemorySummaries() {
+    var box = r('memory-summaries');
+    var list = state.memory.summaries || [];
+    if (box) {
+      box.textContent = '';
+      list.forEach(function (item) {
+        var row = el('div', 'memory-row');
+        var main = el('div', 'memory-row-main');
+        main.appendChild(makeText('div', 'memory-row-key', item.title || item.chatId));
+        main.appendChild(makeText('div', 'memory-row-value', item.summary || '（空摘要）'));
+        var timeText = memoryTimeText(item.updatedAt);
+        if (timeText) main.appendChild(makeText('div', 'memory-row-meta', '更新于 ' + timeText));
+        row.appendChild(main);
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'memory-del';
+        del.setAttribute('data-action', 'memory-delete-summary');
+        del.setAttribute('data-chat-id', item.chatId);
+        del.textContent = '删除';
+        row.appendChild(del);
+        box.appendChild(row);
+      });
+    }
+    var empty = r('memory-summaries-empty');
+    if (empty) empty.hidden = list.length > 0;
+  }
+
+  function renderMemory(data) {
+    var info = data && typeof data === 'object' ? data : {};
+    if (Object.prototype.hasOwnProperty.call(info, 'long_term')) {
+      state.memory.longTerm = normalizeLongTerm(info.long_term);
+    }
+    if (Object.prototype.hasOwnProperty.call(info, 'project')) {
+      state.memory.project = normalizeProject(info.project);
+    }
+    if (Object.prototype.hasOwnProperty.call(info, 'summaries')) {
+      state.memory.summaries = normalizeSummaries(info.summaries);
+    }
+    var project = state.memory.project || {};
+    setVal('memory-tech-stack', project.tech_stack || '');
+    setVal('memory-conventions', project.conventions || '');
+    setVal('memory-decisions', project.decisions || '');
+    renderMemoryLongTerm();
+    renderMemorySummaries();
+    updateMemoryLabels();
+    state.memory.loaded = true;
+    return state.memory;
+  }
+
+  function openMemoryPage() {
+    showScreenImpl('memory');
+    if (invoke('onOpenMemory')) return true;
+    renderMemory({ long_term: state.memory.longTerm, project: state.memory.project, summaries: state.memory.summaries });
+    return false;
+  }
+
+  function setMemoryItemError(text) {
+    var error = r('memory-item-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function openMemoryItemForm() {
+    setVal('memory-item-key', '');
+    setVal('memory-item-value', '');
+    setMemoryItemError('');
+    openModal(r('memory-item-modal'));
+    setTimeout(function () {
+      var input = r('memory-item-key');
+      if (!input) return;
+      try { input.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function closeMemoryItemForm() {
+    closeModal(r('memory-item-modal'));
+    setMemoryItemError('');
+  }
+
+  function submitMemoryItem() {
+    var keyInput = r('memory-item-key');
+    var valueInput = r('memory-item-value');
+    var key = keyInput ? String(keyInput.value || '').trim() : '';
+    var value = valueInput ? String(valueInput.value || '').trim() : '';
+    if (!key) {
+      setMemoryItemError('请输入偏好名称');
+      return;
+    }
+    if (!invoke('onMemorySave', 'long_term', key, value)) {
+      setMemoryItemError('记忆服务尚未就绪');
+      return;
+    }
+    closeMemoryItemForm();
+  }
+
+  function deleteLongTermMemory(key) {
+    if (!key) return;
+    confirmDialog('删除长期偏好', '确定删除「' + key + '」吗？').then(function (ok) {
+      if (ok) {
+        if (!invoke('onMemoryDelete', 'long_term', key)) UI.toast('记忆服务尚未就绪');
+      }
+    });
+  }
+
+  function saveProjectMemory() {
+    var fields = [
+      ['tech_stack', r('memory-tech-stack')],
+      ['conventions', r('memory-conventions')],
+      ['decisions', r('memory-decisions')]
+    ];
+    var handled = false;
+    fields.forEach(function (pair) {
+      var value = pair[1] ? String(pair[1].value || '') : '';
+      if (invoke('onMemorySave', 'project', pair[0], value)) handled = true;
+    });
+    if (!handled) UI.toast('记忆服务尚未就绪');
+  }
+
+  function deleteSummaryMemory(chatId) {
+    if (!chatId) return;
+    confirmDialog('删除会话摘要', '确定删除该会话摘要吗？删除后下次请求不再注入。').then(function (ok) {
+      if (ok) {
+        if (!invoke('onSummaryDelete', chatId)) UI.toast('记忆服务尚未就绪');
+      }
+    });
+  }
+
+  /* ================================================================== *
+   * ARCH v2 P3：插件面板（uiSlots）
+   * slot: {id,title,description?,icon?,type:'button'|'panel',
+   *        actions?:[{action|id,label,style?,payload?}], html?, payload?}
+   * ================================================================== */
+  function normalizePluginSlots(slots) {
+    var out = [];
+    (Array.isArray(slots) ? slots : []).forEach(function (slot, index) {
+      if (!slot || typeof slot !== 'object') return;
+      var id = slot.id != null ? String(slot.id) : ('slot_' + index);
+      var actions = [];
+      (Array.isArray(slot.actions) ? slot.actions : []).forEach(function (action, actionIndex) {
+        if (!action) return;
+        if (typeof action === 'string') {
+          actions.push({ id: action, label: action, style: '', payload: null });
+          return;
+        }
+        if (typeof action !== 'object') return;
+        var actionId = action.action != null ? String(action.action)
+          : (action.id != null ? String(action.id) : ('action_' + actionIndex));
+        actions.push({
+          id: actionId,
+          label: action.label ? String(action.label) : actionId,
+          style: action.style ? String(action.style) : '',
+          payload: action.payload === undefined ? null : action.payload
+        });
+      });
+      out.push({
+        id: id,
+        title: slot.title ? String(slot.title) : id,
+        description: slot.description ? String(slot.description) : '',
+        icon: slot.icon,
+        type: slot.type === 'panel' ? 'panel' : 'button',
+        actions: actions,
+        html: typeof slot.html === 'string' ? slot.html : '',
+        payload: slot.payload === undefined ? null : slot.payload
+      });
+    });
+    return out;
+  }
+
+  function buildPluginSlot(slot) {
+    var card = el('div', 'plugin-slot');
+    card.setAttribute('data-slot-id', slot.id);
+
+    var head = el('div', 'plugin-slot-head');
+    var icon = el('span', 'plugin-slot-icon');
+    if (typeof slot.icon === 'string' && slot.icon) {
+      if (/^\s*<svg/i.test(slot.icon)) icon.innerHTML = slot.icon;
+      else icon.textContent = slot.icon;
+    } else {
+      icon.innerHTML = ICON.puzzle;
+    }
+    head.appendChild(icon);
+    head.appendChild(makeText('span', 'plugin-slot-title', slot.title));
+    head.appendChild(makeText('span', 'plugin-slot-type', slot.type === 'panel' ? '面板' : '按钮'));
+    card.appendChild(head);
+
+    if (slot.description) card.appendChild(makeText('div', 'plugin-slot-desc', slot.description));
+    if (slot.html) {
+      var htmlBox = el('div', 'plugin-slot-html');
+      try {
+        htmlBox.innerHTML = slot.html;
+      } catch (err) {
+        htmlBox.textContent = String(slot.html);
+      }
+      card.appendChild(htmlBox);
+    }
+
+    var actions = slot.actions.slice();
+    if (!actions.length && slot.type === 'button') {
+      actions.push({ id: 'run', label: '运行', style: 'primary', payload: null });
+    }
+    if (actions.length) {
+      var row = el('div', 'plugin-slot-actions');
+      actions.forEach(function (action) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        var cls = 'plugin-slot-btn';
+        if (action.style === 'primary') cls += ' plugin-slot-btn--primary';
+        else if (action.style === 'danger') cls += ' plugin-slot-btn--danger';
+        btn.className = cls;
+        btn.setAttribute('data-action', 'slot-action');
+        btn.setAttribute('data-slot-id', slot.id);
+        btn.setAttribute('data-slot-action', action.id);
+        btn.textContent = action.label;
+        row.appendChild(btn);
+      });
+      card.appendChild(row);
+    }
+    return card;
+  }
+
+  function renderPluginSlots(slots) {
+    state.pluginSlots = normalizePluginSlots(slots);
+    var box = r('plugin-slots');
+    if (box) {
+      box.textContent = '';
+      state.pluginSlots.forEach(function (slot) {
+        box.appendChild(buildPluginSlot(slot));
+      });
+    }
+    var empty = r('plugin-slots-empty');
+    if (empty) empty.hidden = state.pluginSlots.length > 0;
+    return state.pluginSlots;
+  }
+
+  function openPluginPanel() {
+    if (state.pluginPanelOpen) { syncDepth(); return; }
+    state.pluginPanelOpen = true;
+    var panel = r('plugin-panel');
+    if (panel) {
+      panel.classList.add('is-open');
+      panel.setAttribute('aria-hidden', 'false');
+    }
+    syncDepth();
+    if (!invoke('onOpenPluginPanel')) renderPluginSlots(state.pluginSlots);
+  }
+
+  function closePluginPanel() {
+    if (!state.pluginPanelOpen) return;
+    state.pluginPanelOpen = false;
+    var panel = r('plugin-panel');
+    if (panel) {
+      panel.classList.remove('is-open');
+      panel.setAttribute('aria-hidden', 'true');
+    }
+    syncDepth();
+  }
+
+  function findPluginSlot(slotId) {
+    var key = String(slotId == null ? '' : slotId);
+    var found = null;
+    (state.pluginSlots || []).forEach(function (slot) {
+      if (slot.id === key) found = slot;
+    });
+    return found;
+  }
+
+  function runPluginSlotAction(slotId, actionId) {
+    var slot = findPluginSlot(slotId);
+    var payload = {};
+    if (slot && slot.payload && typeof slot.payload === 'object') {
+      for (var key in slot.payload) {
+        if (Object.prototype.hasOwnProperty.call(slot.payload, key)) payload[key] = slot.payload[key];
+      }
+    }
+    if (slot) {
+      var action = null;
+      (slot.actions || []).forEach(function (item) {
+        if (item.id === actionId) action = item;
+      });
+      if (action && action.payload && typeof action.payload === 'object') {
+        for (var actionKey in action.payload) {
+          if (Object.prototype.hasOwnProperty.call(action.payload, actionKey)) payload[actionKey] = action.payload[actionKey];
+        }
+      }
+    }
+    if (!invoke('onSlotAction', slotId, actionId, payload)) UI.toast('插件动作尚未就绪');
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -2761,7 +3412,9 @@
     plugins: 'screen-plugins',
     agents: 'screen-agents',
     audit: 'screen-audit',
-    mcp: 'screen-mcp'
+    mcp: 'screen-mcp',
+    market: 'screen-market',
+    memory: 'screen-memory'
   };
 
   function syncBottomNav(name) {
@@ -2801,6 +3454,7 @@
     closeAllModals();
     closeModelPickerPanel(true);
     closeAgentPickerPanel(true);
+    closePluginPanel();
     if (name !== 'chat') closeEmojiPanel();
     syncDepth();
   }
@@ -4404,6 +5058,13 @@
       if (typeof state.cb.onCloseMcp === 'function') invoke('onCloseMcp');
       return;
     }
+    /* ARCH v2 P3：插件市场 / 记忆返回设置页 */
+    if (state.screen === 'market' || state.screen === 'memory') {
+      var closeKey = state.screen === 'market' ? 'onCloseMarket' : 'onCloseMemory';
+      showScreenImpl('settings');
+      if (typeof state.cb[closeKey] === 'function') invoke(closeKey);
+      return;
+    }
     /* 智能体预设管理页：优先用 onCloseAgents 恢复导航，否则交给 app.js 的 onBack */
     if (state.screen === 'agents' && typeof state.cb.onCloseAgents === 'function') {
       invoke('onCloseAgents');
@@ -4421,6 +5082,8 @@
     if (isModalOpen(r('backup-modal'))) { closeModal(r('backup-modal')); return true; }
     if (isModalOpen(r('file-preview-modal'))) { closeFilePreview(); return true; }
     if (isModalOpen(r('mcp-form-modal'))) { closeMcpForm(); return true; }
+    if (isModalOpen(r('memory-item-modal'))) { closeMemoryItemForm(); return true; }
+    if (state.pluginPanelOpen) { closePluginPanel(); return true; }
     if (state.fileDrawer.open) { closeFileDrawer(); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
     if (state.agentPicker.open) { closeAgentPickerPanel(true); return true; }
@@ -4429,6 +5092,7 @@
     if (state.terminal.open) { toggleTerminal(false); return true; }
     if (state.screen === 'audit') { showScreenImpl('profile'); return true; }
     if (state.screen === 'mcp') { showScreenImpl('settings'); return true; }
+    if (state.screen === 'market' || state.screen === 'memory') { showScreenImpl('settings'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -4629,6 +5293,53 @@
         break;
       case 'mcp-toggle-token':
         toggleMcpToken();
+        break;
+      /* -------- ARCH v2 P3：插件市场 / 记忆 / 插件面板 -------- */
+      case 'open-market':
+        openMarketPage();
+        break;
+      case 'market-refresh':
+        fetchMarketIndex();
+        break;
+      case 'market-fetch':
+        fetchMarketIndex();
+        break;
+      case 'market-install':
+        installMarketItem(node.getAttribute('data-id'));
+        break;
+      case 'market-remove':
+        removeMarketItem(node.getAttribute('data-id'));
+        break;
+      case 'open-memory':
+        openMemoryPage();
+        break;
+      case 'memory-add-longterm':
+        openMemoryItemForm();
+        break;
+      case 'memory-item-save':
+        submitMemoryItem();
+        break;
+      case 'memory-item-cancel':
+        closeMemoryItemForm();
+        break;
+      case 'memory-save-project':
+        saveProjectMemory();
+        break;
+      case 'memory-delete-longterm':
+        deleteLongTermMemory(node.getAttribute('data-key'));
+        break;
+      case 'memory-delete-summary':
+        deleteSummaryMemory(node.getAttribute('data-chat-id'));
+        break;
+      case 'open-plugin-panel':
+        closeDrawer();
+        openPluginPanel();
+        break;
+      case 'close-plugin-panel':
+        closePluginPanel();
+        break;
+      case 'slot-action':
+        runPluginSlotAction(node.getAttribute('data-slot-id'), node.getAttribute('data-slot-action'));
         break;
       case 'open-backup':
         openModal(r('backup-modal'));
@@ -4963,6 +5674,13 @@
       }
       return;
     }
+    if (target.id === 'memory-item-key' || target.id === 'memory-item-value') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        submitMemoryItem();
+      }
+      return;
+    }
     if (target.classList && target.classList.contains('agent-row')) {
       if (key === 'Enter' || key === ' ') {
         event.preventDefault();
@@ -5028,6 +5746,13 @@
     bindModalBackdrop(r('backup-modal'), function () { closeModal(r('backup-modal')); });
     bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
     bindModalBackdrop(r('mcp-form-modal'), function () { closeMcpForm(); });
+    bindModalBackdrop(r('memory-item-modal'), function () { closeMemoryItemForm(); });
+    var pluginPanel = r('plugin-panel');
+    if (pluginPanel) {
+      pluginPanel.addEventListener('click', function (event) {
+        if (event.target === pluginPanel) closePluginPanel();
+      });
+    }
     bindModelPickerEvents();
     bindAgentPickerEvents();
     bindFileDrawerDrag();
@@ -5086,7 +5811,16 @@
       'screen-mcp', 'mcp-list', 'mcp-empty', 'mcp-count', 'mcp-add',
       'set-mcp-row', 'set-mcp-count',
       'mcp-form-modal', 'mcp-form-title', 'mcp-form-name', 'mcp-form-url',
-      'mcp-form-token', 'mcp-form-error', 'mcp-form-save'
+      'mcp-form-token', 'mcp-form-error', 'mcp-form-save',
+      /* ARCH v2 P3：插件市场 / 记忆 / 插件面板 */
+      'screen-market', 'market-url', 'market-fetch', 'market-list', 'market-empty', 'market-count',
+      'set-market-row', 'set-market-label',
+      'screen-memory', 'memory-longterm', 'memory-longterm-empty', 'memory-add-longterm',
+      'memory-tech-stack', 'memory-conventions', 'memory-decisions', 'memory-save-project',
+      'memory-summaries', 'memory-summaries-empty', 'memory-count', 'set-memory-row', 'set-memory-label',
+      'memory-item-modal', 'memory-item-title', 'memory-item-key', 'memory-item-value',
+      'memory-item-error', 'memory-item-save',
+      'plugin-panel', 'plugin-panel-title', 'plugin-panel-handle', 'plugin-slots', 'plugin-slots-empty'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -5631,5 +6365,32 @@
   UI.setToolProgress = function (msgId, data) { return setToolProgress(msgId, data); };
   UI.appendToolLog = function (msgId, line) { return appendToolLog(msgId, line); };
 
-  UI.version = '2.1.0';
+  /* ARCH v2 P3：插件市场 / 记忆 / 插件面板 */
+  UI.renderMarket = function (items, statusMap) { return renderMarket(items, statusMap); };
+  UI.openMarketPage = openMarketPage;
+  UI.setMarketUrl = setMarketUrl;
+  UI.getMarketUrl = function () { return state.market.url || ''; };
+  UI.getMarketItems = function () { return (state.market.items || []).slice(); };
+  UI.setMarketStatus = function (id, status) { return setMarketStatus(id, status); };
+  UI.renderMarketStatus = function (id, status) { return setMarketStatus(id, status); };
+  UI.renderMemory = function (data) { return renderMemory(data); };
+  UI.openMemoryPage = openMemoryPage;
+  UI.getMemory = function () {
+    return {
+      long_term: (state.memory.longTerm || []).slice(),
+      project: {
+        tech_stack: state.memory.project.tech_stack || '',
+        conventions: state.memory.project.conventions || '',
+        decisions: state.memory.project.decisions || ''
+      },
+      summaries: (state.memory.summaries || []).slice()
+    };
+  };
+  UI.renderPluginSlots = function (slots) { return renderPluginSlots(slots); };
+  UI.openPluginPanel = openPluginPanel;
+  UI.closePluginPanel = closePluginPanel;
+  UI.isPluginPanelOpen = function () { return state.pluginPanelOpen; };
+  UI.getPluginSlots = function () { return (state.pluginSlots || []).slice(); };
+
+  UI.version = '2.2.0';
 })();

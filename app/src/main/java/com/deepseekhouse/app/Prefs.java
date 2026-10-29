@@ -34,6 +34,8 @@ public final class Prefs {
     public static final String KEY_AUTH_PHONE = "authPhone";
     /** ARCH v2 P2：MCP 服务器配置 JSON 数组 [{id,name,url,token,enabled}]。 */
     public static final String KEY_MCP_SERVERS = "mcpServers";
+    /** ARCH v2 P3：house-plugins 目录插件的 enabled 状态（JSON 对象 fileName→bool）。 */
+    public static final String KEY_PLUGIN_ENABLED = "housePluginEnabled";
 
     public static final String DEFAULT_BASE_URL = "https://api.deepseek.com";
     public static final String DEFAULT_MODEL = "deepseek-chat";
@@ -158,6 +160,19 @@ public final class Prefs {
     public void setMcpServersJson(String json) {
         String value = json == null || json.trim().isEmpty() ? "[]" : json.trim();
         sp.edit().putString(KEY_MCP_SERVERS, value).apply();
+    }
+
+    // ---------------------------------------------------------------- ARCH v2 P3 插件 enabled
+
+    /** house-plugins 插件的启用状态 JSON（fileName→bool）；缺省 "{}"，未记录的默认 true。 */
+    public String getPluginEnabledJson() {
+        String value = sp.getString(KEY_PLUGIN_ENABLED, "{}");
+        return value == null || value.trim().isEmpty() ? "{}" : value;
+    }
+
+    public void setPluginEnabledJson(String json) {
+        String value = json == null || json.trim().isEmpty() ? "{}" : json.trim();
+        sp.edit().putString(KEY_PLUGIN_ENABLED, value).apply();
     }
 
     // ---------------------------------------------------------------- 写

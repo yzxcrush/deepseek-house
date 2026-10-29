@@ -83,6 +83,14 @@
   /* ARCH v2 P2：MCP 构建类工具（工具卡显示进度条 + 日志流） */
   var BUILD_TOOL_NAMES = { 'pack_apk': true, 'repack_apk': true, 'decompile_apk': true, 'run_gradle': true };
   var MCP_LOG_MAX = 200;
+  /* ARCH v2 P3：记忆 / 上下文压缩 / 插件市场 */
+  var CONTEXT_BUDGET_DEFAULT = 24000; /* 字符预算（tokens ≈ chars / 3.5） */
+  var CONTEXT_THRESHOLD = 0.8; /* 预算 80% 触发压缩 */
+  var CONTEXT_KEEP_RECENT = 10; /* 压缩时保留最近 N 条消息 */
+  var SUMMARY_ENTRY_CHARS = 160;
+  var SUMMARY_MAX_ENTRIES = 20;
+  var MARKET_URL_KEY = 'dsh.marketUrl';
+  var MEMORY_SCOPES = { 'long_term': true, 'project': true };
   var AUTO_TITLE = false; /* 会话名=智能体名，默认「DeepSeek + 模型型号」，不随首条消息自动改名 */
   var FLUSH_INTERVAL = 50;
   var TOAST_THROTTLE = 700;
@@ -137,7 +145,16 @@
     currentToolMsgId: null,
     currentToolName: '',
     currentToolServerId: '',
-    mcpProgressByMsg: {} /* msgId -> {percent,line} */
+    mcpProgressByMsg: {}, /* msgId -> {percent,line} */
+    /* ARCH v2 P3：插件面板 / 市场 / 记忆 / 上下文压缩 */
+    pluginSlots: [],
+    market: { url: '', items: [], statusMap: {}, fetchedAt: 0, loading: false, error: '' },
+    memory: { loaded: false, long_term: {}, project: {}, summaries: [] },
+    memoryOpening: false,
+    marketOpening: false,
+    pluginPanelOpening: false,
+    contextCompressed: {}, /* chatId -> { markerId, count } */
+    contextSummaryOverride: {} /* chatId -> 最新会话摘要（压缩后立即注入，避免原生异步写延迟） */
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -398,6 +415,8 @@
     }
 
     loadPlugins(false);
+    /* ARCH v2 P3：HousePlugin 宿主加载 + uiSlots 渲染（plugins.js 未实现时安全跳过） */
+    try { loadHousePluginsAndSlots(); } catch (e5) { warn('加载 HousePlugin 失败：' + errText(e5)); }
     return App;
   }
 
@@ -671,7 +690,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.1.0' }
+      { label: '版本', value: '2.2.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -1024,7 +1043,23 @@
       onMcpConnect: safe(function (id) { return connectMcpServer(id); }, 'onMcpConnect'),
       onMcpDisconnect: safe(function (id) { return disconnectMcpServer(id); }, 'onMcpDisconnect'),
       onMcpRefresh: safe(function (id) { return refreshMcpServerTools(id); }, 'onMcpRefresh'),
-      onMcpTest: safe(function (id) { return testMcpServer(id); }, 'onMcpTest')
+      onMcpTest: safe(function (id) { return testMcpServer(id); }, 'onMcpTest'),
+      /* ARCH v2 P3：插件面板 / 插件市场 / 记忆 */
+      onOpenPluginPanel: safe(function () {
+        if (state.pluginPanelOpening) return state.pluginSlots;
+        return refreshPluginSlots();
+      }, 'onOpenPluginPanel'),
+      onSlotAction: safe(function (slotId, action, payload) { return runPluginSlotAction(slotId, action, payload); }, 'onSlotAction'),
+      onOpenMarket: safe(function () { return loadMarketData(); }, 'onOpenMarket'),
+      onMarketFetch: safe(function (url) { return fetchMarketIndex(url); }, 'onMarketFetch'),
+      onMarketInstall: safe(function (item) { return installMarketItem(item); }, 'onMarketInstall'),
+      onMarketRemove: safe(function (id) { return removeMarketItem(id); }, 'onMarketRemove'),
+      onCloseMarket: safe(function () { return true; }, 'onCloseMarket'),
+      onOpenMemory: safe(function () { return refreshMemoryPage(); }, 'onOpenMemory'),
+      onMemorySave: safe(function (scope, key, value) { return saveMemoryItem(scope, key, value); }, 'onMemorySave'),
+      onMemoryDelete: safe(function (scope, key) { return deleteMemoryItem(scope, key); }, 'onMemoryDelete'),
+      onSummaryDelete: safe(function (chatId) { return deleteSessionSummary(chatId); }, 'onSummaryDelete'),
+      onCloseMemory: safe(function () { return true; }, 'onCloseMemory')
     };
   }
 
@@ -1146,12 +1181,15 @@
     setHeader(chat, '正在输入…');
     ui('scrollBottom', true);
 
-    var messages = requestHistory(chatId, aMsg.id);
     var tools = getToolSchemas();
+    var baseMessages = requestHistory(chatId, aMsg.id);
     /* v2.0 F1：system prompt 取值 chat.systemPrompt → preset.systemPrompt → prefs.systemPrompt */
     var sendPrefs = {};
     var prefKeys = Object.keys(state.prefs || {});
     for (var pk = 0; pk < prefKeys.length; pk++) sendPrefs[prefKeys[pk]] = state.prefs[prefKeys[pk]];
+    var basePrompt = resolveSystemPrompt(chat);
+    /* ARCH v2 P3：超预算先压缩历史（保留最近 10 条），再按新摘要重新组装 system prompt */
+    var messages = prepareContextMessages(chat, baseMessages, basePrompt, tools);
     sendPrefs.systemPrompt = resolveSystemPrompt(chat);
     var requestId = Api.send({
       chat: chat,
@@ -2026,16 +2064,180 @@
   /** 解析请求使用的 system prompt：chat.systemPrompt → preset.systemPrompt → prefs.systemPrompt */
   function resolveSystemPrompt(chat) {
     chat = chat || Store.getActiveChat();
+    var base = '';
     if (chat) {
       var chatPrompt = chat.systemPrompt === null || chat.systemPrompt === undefined ? '' : String(chat.systemPrompt);
-      if (chatPrompt.replace(/\s+/g, '')) return chatPrompt;
-      if (chat.presetId) {
+      if (chatPrompt.replace(/\s+/g, '')) base = chatPrompt;
+      else if (chat.presetId) {
         var preset = findPreset(chat.presetId);
         var presetPrompt = preset && preset.systemPrompt ? String(preset.systemPrompt) : '';
-        if (presetPrompt.replace(/\s+/g, '')) return presetPrompt;
+        if (presetPrompt.replace(/\s+/g, '')) base = presetPrompt;
       }
     }
-    return state.prefs.systemPrompt || '';
+    if (!base) base = state.prefs.systemPrompt || '';
+    /* ARCH v2 P3：记忆注入（顺序：预设/prefs → 长期偏好 → 项目记忆 → 当前会话摘要） */
+    var memoryPrompt = buildMemoryPrompt(chat);
+    if (!memoryPrompt) return base;
+    return base ? (base + '\n\n' + memoryPrompt) : memoryPrompt;
+  }
+
+  /** 会话历史摘要：优先使用本轮压缩后的 override（原生写库为异步），否则读 Bridge.memoryGetSummaries */
+  function memorySummaryFor(chatId) {
+    var id = String(chatId === null || chatId === undefined ? '' : chatId);
+    if (!id) return '';
+    var override = state.contextSummaryOverride && state.contextSummaryOverride[id];
+    if (override) return String(override);
+    try {
+      if (global.Bridge && typeof global.Bridge.memoryGetSummaries === 'function') {
+        var list = global.Bridge.memoryGetSummaries();
+        if (Array.isArray(list)) {
+          for (var i = 0; i < list.length; i++) {
+            if (String(list[i].chatId) === id) return String(list[i].summary || '');
+          }
+        }
+      }
+    } catch (e) { warn('读取会话摘要失败：' + errText(e)); }
+    return '';
+  }
+
+  /** 组装记忆上下文（长期偏好 / 项目记忆 / 会话摘要） */
+  function buildMemoryPrompt(chat) {
+    var parts = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.memoryKvGet === 'function') {
+        var longTerm = global.Bridge.memoryKvGet('long_term') || {};
+        var keys = Object.keys(longTerm);
+        if (keys.length) {
+          var ltLines = [];
+          for (var i = 0; i < keys.length; i++) {
+            var lv = String(longTerm[keys[i]] === null || longTerm[keys[i]] === undefined ? '' : longTerm[keys[i]]).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+            if (!lv) continue;
+            ltLines.push('- ' + keys[i] + '：' + lv);
+          }
+          if (ltLines.length) parts.push('用户偏好：\n' + ltLines.join('\n'));
+        }
+        var project = global.Bridge.memoryKvGet('project') || {};
+        var pkeys = Object.keys(project);
+        var order = ['tech_stack', 'conventions', 'decisions'];
+        var pLines = [];
+        for (var j = 0; j < order.length; j++) {
+          var ov = project[order[j]];
+          if (ov === undefined || ov === null || String(ov) === '') continue;
+          pLines.push('- ' + order[j] + '：' + String(ov).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''));
+        }
+        for (var k = 0; k < pkeys.length; k++) {
+          if (order.indexOf(pkeys[k]) !== -1) continue;
+          var pv = project[pkeys[k]];
+          if (pv === undefined || pv === null || String(pv) === '') continue;
+          pLines.push('- ' + pkeys[k] + '：' + String(pv).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''));
+        }
+        if (pLines.length) parts.push('项目记忆：\n' + pLines.join('\n'));
+      }
+      var chatId = chat ? chat.id : Store.getActiveChatId();
+      var summary = memorySummaryFor(chatId);
+      if (summary) parts.push('之前对话摘要：\n' + summary);
+    } catch (e) { warn('组装记忆上下文失败：' + errText(e)); }
+    return parts.join('\n\n');
+  }
+
+  /* ---------------- 上下文压缩（ARCH v2 P3） ---------------- */
+
+  function contextBudgetChars() {
+    var budget = Number(state.prefs && state.prefs.contextBudget);
+    if (!(budget > 0)) budget = CONTEXT_BUDGET_DEFAULT;
+    return Math.max(500, Math.min(200000, Math.round(budget)));
+  }
+
+  function estimateContextChars(messages) {
+    var total = 0;
+    var list = Array.isArray(messages) ? messages : [];
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (!m || m.role === 'note') continue;
+      total += String(m.content === null || m.content === undefined ? '' : m.content).length;
+      total += String(m.reasoning === null || m.reasoning === undefined ? '' : m.reasoning).length;
+      if (m.toolCalls && m.toolCalls.length) {
+        try { total += JSON.stringify(m.toolCalls).length; } catch (e) { /* ignore */ }
+      }
+      total += 16; /* 角色 / 分隔开销 */
+    }
+    return total;
+  }
+
+  /** 旧消息 → 摘要文本（每条前 160 字，最多 20 条） */
+  function buildSessionSummaryPiece(older) {
+    var lines = [];
+    var list = Array.isArray(older) ? older : [];
+    for (var i = 0; i < list.length && lines.length < SUMMARY_MAX_ENTRIES; i++) {
+      var m = list[i];
+      if (!m || m.role === 'note') continue;
+      var text = String(m.content === null || m.content === undefined ? '' : m.content)
+        .replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+      if (!text) continue;
+      var label = m.role === 'user' ? '用户' : (m.role === 'assistant' ? '助手' : (m.role === 'tool' ? '工具结果' : '系统'));
+      lines.push('- ' + label + '：' + (text.length > SUMMARY_ENTRY_CHARS ? (text.slice(0, SUMMARY_ENTRY_CHARS) + '…') : text));
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * 发送前上下文压缩：
+   * 字符估算 tokens≈chars/3.5；超过预算 80% 时保留最近 10 条消息，其余（≤20 条）每条前 160 字
+   * 拼成摘要 → Bridge.memorySaveSummary(chatId, 摘要) → append role:'note'「已压缩 X 条历史消息」。
+   */
+  function prepareContextMessages(chat, messages, systemPrompt, tools) {
+    if (!chat || !Array.isArray(messages) || !messages.length) return messages;
+    var budget = contextBudgetChars();
+    var threshold = Math.floor(budget * CONTEXT_THRESHOLD);
+    var chars = estimateContextChars(messages) + String(systemPrompt || '').length;
+    try { if (tools && tools.length) chars += JSON.stringify(tools).length; } catch (e) { /* ignore */ }
+    if (chars <= threshold) return messages;
+    var keep = Math.min(CONTEXT_KEEP_RECENT, messages.length);
+    var cut = messages.length - keep;
+    while (cut > 0 && messages[cut] && messages[cut].role === 'tool') cut--;
+    if (cut <= 0) return messages;
+    var older = messages.slice(0, cut);
+    var marker = older.length ? String(older[older.length - 1].id || '') : '';
+    var prev = state.contextCompressed[chat.id];
+    var toSummarize = older;
+    if (prev && prev.markerId) {
+      var idx = -1;
+      for (var k = 0; k < messages.length; k++) {
+        if (messages[k] && String(messages[k].id) === String(prev.markerId)) { idx = k; break; }
+      }
+      if (idx >= 0) toSummarize = messages.slice(idx + 1, cut);
+      if (!toSummarize.length) return messages.slice(cut);
+    }
+    var piece = buildSessionSummaryPiece(toSummarize);
+    if (piece) {
+      var existing = memorySummaryFor(chat.id);
+      var merged = existing ? (existing + '\n' + piece) : piece;
+      if (merged.length > 16000) merged = merged.slice(merged.length - 16000);
+      var saved = false;
+      try {
+        if (global.Bridge && typeof global.Bridge.memorySaveSummary === 'function') {
+          saved = global.Bridge.memorySaveSummary(chat.id, merged) !== false;
+        }
+      } catch (e) { warn('保存会话摘要失败：' + errText(e)); }
+      if (saved) {
+        state.contextSummaryOverride[chat.id] = merged;
+        state.contextCompressed[chat.id] = { markerId: marker, count: toSummarize.length };
+        appendNote(chat.id, '已压缩 ' + toSummarize.length + ' 条历史消息为摘要（当前上下文约 ' + Math.round(chars) +
+          ' 字符 ≈ ' + Math.round(chars / 3.5) + ' tokens / 预算 ' + budget + ' 字符，阈值 80%）');
+      }
+    }
+    return messages.slice(cut);
+  }
+
+  /** 会话删除：清理摘要 + 压缩标记 */
+  function cleanupChatMemory(chatId) {
+    var id = String(chatId === null || chatId === undefined ? '' : chatId);
+    if (!id) return;
+    try {
+      if (global.Bridge && typeof global.Bridge.memoryDeleteSummary === 'function') global.Bridge.memoryDeleteSummary(id);
+    } catch (e) { warn('清理会话摘要失败：' + errText(e)); }
+    delete state.contextCompressed[id];
+    delete state.contextSummaryOverride[id];
   }
 
   /**
@@ -2386,6 +2588,8 @@
     var doDelete = function () {
       var wasActive = Store.getActiveChatId() === chat.id;
       Store.deleteChat(chat.id);
+      /* ARCH v2 P3：会话删除时清理记忆摘要 */
+      cleanupChatMemory(chat.id);
       var next = Store.getActiveChat();
       if (!next) {
         next = Store.createChat({ model: state.prefs.model, title: defaultAgentTitle(state.prefs.model) });
@@ -2853,6 +3057,7 @@
     if (patch.stream !== undefined) next.stream = !!patch.stream;
     if (patch.theme !== undefined) next.theme = patch.theme === 'light' ? 'light' : 'dark';
     if (patch.systemPrompt !== undefined) next.systemPrompt = String(patch.systemPrompt || '').slice(0, 16000);
+    if (patch.contextBudget !== undefined) next.contextBudget = Math.round(clampNum(patch.contextBudget, 500, 200000));
 
     Store.setPrefs(next);
     try {
@@ -2877,6 +3082,8 @@
     state.modelCatalog = currentModelCatalog();
     ui('renderSettings', state.prefs, state.modelCatalog, getPresets());
     setHeader(active, '');
+    /* ARCH v2 P3：设置保存后刷新记忆状态（若记忆页已加载过） */
+    if (state.memory && state.memory.loaded) refreshMemorySoon(60);
     return true;
   }
 
@@ -2889,7 +3096,11 @@
     var P = global.DSPlugins;
     if (!P || typeof P.onChange !== 'function') return;
     try {
-      P.onChange(function () { refreshPlugins(); });
+      P.onChange(function () {
+        refreshPlugins();
+        refreshPluginSlots();
+        if (state.market && state.market.items.length) refreshMarketStatusSoon();
+      });
       state.pluginsBound = true;
     } catch (e) {
       warn('DSPlugins.onChange 失败：' + errText(e));
@@ -2967,6 +3178,9 @@
     ui('showScreen', 'plugins');
     navTo('plugins');
     loadPlugins(true);
+    /* ARCH v2 P3：插件页打开时确保 HousePlugin 已加载并刷新 slots */
+    try { loadHousePluginsAndSlots(); } catch (e) { warn('加载 HousePlugin 失败：' + errText(e)); }
+    refreshPluginSlots();
   }
 
   function togglePlugin(id, enabled) {
@@ -4240,6 +4454,613 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2 P3：HousePlugin 插件面板 / 插件市场 / 记忆（UI 只渲染，逻辑在这里）
+   * ------------------------------------------------------------------ */
+
+  function dsPlugins() {
+    return global.DSPlugins || null;
+  }
+
+  /** 加载 HousePlugin（plugins.js 未实现时安全跳过）；完成后刷新插件列表与 slots */
+  function loadHousePluginsAndSlots() {
+    var P = dsPlugins();
+    if (!P || typeof P.loadHousePlugins !== 'function') { refreshPluginSlots(); return Promise.resolve([]); }
+    var work;
+    try { work = P.loadHousePlugins(); } catch (e) {
+      warn('DSPlugins.loadHousePlugins 失败：' + errText(e));
+      refreshPluginSlots();
+      return Promise.resolve([]);
+    }
+    return Promise.resolve(work).then(function (res) {
+      try { refreshPlugins(); } catch (e1) { /* ignore */ }
+      refreshPluginSlots();
+      return res || [];
+    }, function (err) {
+      warn('HousePlugin 加载异常：' + errText(err));
+      refreshPluginSlots();
+      return [];
+    });
+  }
+
+  function pluginSlotContext() {
+    var chat = Store.getActiveChat();
+    if (!chat) return { chatId: Store.getActiveChatId() };
+    return {
+      chatId: chat.id,
+      chat: { id: chat.id, title: chat.title, model: chat.model }
+    };
+  }
+
+  /** 收集 DSPlugins.getUiSlots(ctx)（兼容 uiSlots/listSlots），返回纯数据数组 */
+  function collectPluginSlots() {
+    var P = dsPlugins();
+    var slots = [];
+    try {
+      if (P) {
+        var ctx = pluginSlotContext();
+        if (typeof P.getUiSlots === 'function') slots = P.getUiSlots(ctx);
+        else if (typeof P.uiSlots === 'function') slots = P.uiSlots(ctx);
+        else if (typeof P.listSlots === 'function') slots = P.listSlots(ctx);
+      }
+    } catch (e) { warn('收集插件 slots 失败：' + errText(e)); }
+    if (!Array.isArray(slots)) return [];
+    var out = [];
+    for (var i = 0; i < slots.length; i++) {
+      if (slots[i] && typeof slots[i] === 'object') out.push(slots[i]);
+    }
+    return out;
+  }
+
+  function refreshPluginSlots() {
+    state.pluginSlots = collectPluginSlots();
+    ui('renderPluginSlots', state.pluginSlots);
+    return state.pluginSlots;
+  }
+
+  /** App.showPluginPanel()：必要时让 UI 打开面板（UI.openPluginPanel 会回调 onOpenPluginPanel） */
+  function showPluginPanel() {
+    if (state.pluginPanelOpening) return state.pluginSlots;
+    refreshPluginSlots();
+    var U = getUI();
+    var open = U && typeof U.isPluginPanelOpen === 'function' ? !!U.isPluginPanelOpen() : false;
+    if (!open && U && typeof U.openPluginPanel === 'function') {
+      state.pluginPanelOpening = true;
+      try { ui('openPluginPanel'); } finally { state.pluginPanelOpening = false; }
+      refreshPluginSlots();
+    }
+    return state.pluginSlots;
+  }
+
+  function pluginSlotResultText(res) {
+    if (res === null || res === undefined) return '';
+    if (typeof res === 'string') return res;
+    if (typeof res === 'object') {
+      if (res.ok === false && res.error) return '插件操作失败：' + String(res.error);
+      var value = res.result !== undefined ? res.result : (res.message !== undefined ? res.message : '');
+      if (value === null || value === undefined || value === '') return res.ok === true ? '插件操作完成' : '';
+      return typeof value === 'string' ? value : safeStringify(value);
+    }
+    return String(res);
+  }
+
+  /** handlers.onSlotAction(slotId, action, payload) → DSPlugins.runSlotAction */
+  function runPluginSlotAction(slotId, actionId, payload) {
+    var P = dsPlugins();
+    var id = String(slotId === null || slotId === undefined ? '' : slotId);
+    if (!id) { toast('插件动作无效', true); return false; }
+    var action = String(actionId === null || actionId === undefined || actionId === '' ? 'run' : actionId);
+    var ctxPayload = payload && typeof payload === 'object' ? payload : {};
+    if (ctxPayload.chatId === undefined) ctxPayload.chatId = Store.getActiveChatId();
+    var fn = null;
+    if (P) {
+      if (typeof P.runSlotAction === 'function') fn = P.runSlotAction;
+      else if (typeof P.dispatchSlotAction === 'function') fn = P.dispatchSlotAction;
+      else if (typeof P.triggerSlot === 'function') fn = P.triggerSlot;
+    }
+    if (!fn) { toast('插件面板功能尚未实现', true); return false; }
+    return Promise.resolve(fn.call(P, id, action, ctxPayload)).then(function (res) {
+      try { refreshPluginSlots(); } catch (e) { /* ignore */ }
+      var text = pluginSlotResultText(res);
+      if (text) toast(text.length > 200 ? (text.slice(0, 200) + '…') : text, true);
+      return res;
+    }, function (err) {
+      toast('插件操作失败：' + errText(err), true);
+      return false;
+    });
+  }
+
+  /* ---------------- 插件市场 ---------------- */
+
+  function marketUrlSaved() {
+    try { return String(global.localStorage.getItem(MARKET_URL_KEY) || ''); } catch (e) { return ''; }
+  }
+
+  function saveMarketUrl(url) {
+    try { global.localStorage.setItem(MARKET_URL_KEY, String(url || '')); } catch (e) { /* ignore */ }
+  }
+
+  function httpGetText(url, timeoutMs) {
+    var target = String(url === null || url === undefined ? '' : url);
+    if (global.Api && typeof global.Api.fetchUrl === 'function') {
+      return global.Api.fetchUrl(target, { timeout: timeoutMs || 15000 });
+    }
+    return Promise.resolve({ ok: false, status: 0, body: '', error: '网络模块不可用' });
+  }
+
+  function sanitizePluginFilePart(value) {
+    return String(value === null || value === undefined ? '' : value)
+      .replace(/[^A-Za-z0-9._-]+/g, '_')
+      .replace(/^[._-]+|[._-]+$/g, '')
+      .slice(0, 80);
+  }
+
+  function normalizeMarketItems(source) {
+    var raw = [];
+    if (Array.isArray(source)) raw = source;
+    else if (source && Array.isArray(source.plugins)) raw = source.plugins;
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      var id = item.id === null || item.id === undefined ? '' : String(item.id);
+      if (!id) continue;
+      out.push({
+        id: id,
+        name: item.name === null || item.name === undefined ? id : String(item.name),
+        version: item.version === null || item.version === undefined ? '1.0.0' : String(item.version),
+        author: item.author === null || item.author === undefined ? '' : String(item.author),
+        description: item.description === null || item.description === undefined ? '' : String(item.description),
+        url: item.url === null || item.url === undefined ? '' : String(item.url),
+        sha256: item.sha256 === null || item.sha256 === undefined ? '' : String(item.sha256),
+        hmac: item.hmac === null || item.hmac === undefined ? '' : String(item.hmac),
+        tags: Array.isArray(item.tags) ? item.tags.map(function (t) { return String(t); }) : []
+      });
+    }
+    return out;
+  }
+
+  /** Bridge.pluginList() → 已安装插件（id → {version,fileName}）；并兼容 "<id>-<version>.js" 文件名 */
+  function installedPluginMap() {
+    var list = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.pluginList === 'function') list = global.Bridge.pluginList();
+    } catch (e) { warn('读取插件目录失败：' + errText(e)); }
+    if (!Array.isArray(list)) list = [];
+    var map = {};
+    for (var i = 0; i < list.length; i++) {
+      var plugin = list[i];
+      if (!plugin || typeof plugin !== 'object') continue;
+      var id = String(plugin.id || '');
+      var fileName = String(plugin.fileName || '');
+      var version = String(plugin.version || '');
+      var entry = { version: version, fileName: fileName, enabled: plugin.enabled !== false };
+      if (id) map[id] = entry;
+      var m = /^(.+)-(\d[\w.+-]*)\.js$/i.exec(fileName);
+      if (m && !map[m[1]]) map[m[1]] = { version: m[2], fileName: fileName, enabled: plugin.enabled !== false };
+    }
+    return { list: list, map: map };
+  }
+
+  function computeMarketStatusMap(items) {
+    var map = {};
+    var list = Array.isArray(items) ? items : [];
+    var installed = installedPluginMap().map;
+    var P = dsPlugins();
+    var usedPluginHelper = false;
+    if (P && typeof P.marketStatusMap === 'function') {
+      try {
+        var helper = P.marketStatusMap(list);
+        if (helper && typeof helper === 'object') { map = helper; usedPluginHelper = true; }
+      } catch (e) { warn('DSPlugins.marketStatusMap 失败：' + errText(e)); }
+    }
+    if (!usedPluginHelper) {
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var id = String(item.id || '');
+        if (!id) continue;
+        var inst = installed[id];
+        if (!inst) map[id] = { status: 'not_installed' };
+        else if (String(inst.version) === String(item.version)) map[id] = { status: 'installed', version: inst.version };
+        else map[id] = { status: 'update', version: inst.version };
+      }
+    }
+    /* 保留瞬态状态（安装中 / 校验失败 / 安装失败），直到下次显式刷新 */
+    var prev = state.market.statusMap || {};
+    var ids = Object.keys(prev);
+    for (var j = 0; j < ids.length; j++) {
+      var value = prev[ids[j]];
+      var status = value && typeof value === 'object' ? value.status : value;
+      if (status === 'installing' || status === 'invalid' || status === 'error') map[ids[j]] = value;
+    }
+    return map;
+  }
+
+  function renderMarketPage() {
+    ui('renderMarket', state.market.items, state.market.statusMap);
+    if (state.market.url) ui('setMarketUrl', state.market.url);
+  }
+
+  function refreshMarketStatusSoon() {
+    setTimeout(function () {
+      if (!state.market || !state.market.items.length) return;
+      state.market.statusMap = computeMarketStatusMap(state.market.items);
+      renderMarketPage();
+    }, 80);
+  }
+
+  /** handlers.onOpenMarket：读取已保存索引 URL → 有则拉取，无则渲染空列表（含已装状态） */
+  function loadMarketData() {
+    var saved = marketUrlSaved();
+    if (saved) state.market.url = saved;
+    state.market.statusMap = computeMarketStatusMap(state.market.items);
+    renderMarketPage();
+    if (state.market.url) return fetchMarketIndex(state.market.url);
+    return Promise.resolve(false);
+  }
+
+  function showMarketPage() {
+    if (state.marketOpening) return loadMarketData();
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'market') {
+      state.marketOpening = true;
+      try { ui('openMarketPage'); } finally { state.marketOpening = false; }
+    }
+    return loadMarketData();
+  }
+
+  /** handlers.onMarketFetch(url)：Bridge.httpFetch（Api.fetchUrl 封装）拉索引 → 解析 → renderMarket */
+  function fetchMarketIndex(url) {
+    var target = String(url === null || url === undefined ? '' : url).replace(/^\s+|\s+$/g, '');
+    if (!target) { toast('请输入市场索引 URL', true); renderMarketPage(); return Promise.resolve(false); }
+    var isLocal = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(target);
+    if (!/^https:\/\//i.test(target) && !isLocal) {
+      toast('市场索引仅支持 https://（本地 http://127.0.0.1 例外）', true);
+      renderMarketPage();
+      return Promise.resolve(false);
+    }
+    saveMarketUrl(target);
+    state.market.url = target;
+    state.market.loading = true;
+    var P = dsPlugins();
+    var work;
+    if (P && typeof P.fetchMarketIndex === 'function') {
+      try { work = P.fetchMarketIndex(target, { timeout: 15000 }); } catch (e) { work = Promise.reject(e); }
+    } else {
+      work = httpGetText(target, 15000).then(function (res) {
+        if (!res || !res.ok) return { ok: false, error: (res && res.error) ? String(res.error) : ('HTTP ' + ((res && res.status) || 0)) };
+        var index = null;
+        try { index = JSON.parse(String(res.body || '')); } catch (e) { index = null; }
+        if (!index || !Array.isArray(index.plugins)) return { ok: false, error: '索引格式不正确（缺少 plugins 数组）' };
+        return { ok: true, index: index, items: index.plugins, fetchedAt: Date.now() };
+      });
+    }
+    return Promise.resolve(work).then(function (res) {
+      state.market.loading = false;
+      if (!res || res.ok === false) {
+        var msg = res && res.error ? String(res.error) : '拉取失败';
+        state.market.error = msg;
+        state.market.items = [];
+        state.market.statusMap = {};
+        renderMarketPage();
+        toast('市场索引拉取失败：' + msg, true);
+        return false;
+      }
+      var items = normalizeMarketItems(res.items || res.index);
+      state.market.items = items;
+      state.market.fetchedAt = Number(res.fetchedAt) || Date.now();
+      state.market.error = '';
+      state.market.statusMap = computeMarketStatusMap(items);
+      renderMarketPage();
+      if (!items.length) toast('市场索引为空（0 个插件）');
+      else toast('市场索引已加载：' + items.length + ' 个插件', true);
+      return true;
+    }, function (err) {
+      state.market.loading = false;
+      state.market.error = errText(err);
+      renderMarketPage();
+      toast('市场索引拉取失败：' + errText(err), true);
+      return false;
+    });
+  }
+
+  function findMarketItem(ref) {
+    if (ref && typeof ref === 'object') return ref;
+    var id = String(ref === null || ref === undefined ? '' : ref);
+    for (var i = 0; i < state.market.items.length; i++) {
+      if (String(state.market.items[i].id) === id) return state.market.items[i];
+    }
+    return null;
+  }
+
+  function updateMarketStatus(id, status, message) {
+    var key = String(id || '');
+    if (!key) return;
+    var cur = state.market.statusMap[key];
+    var next = cur && typeof cur === 'object' ? cur : {};
+    next.status = status;
+    if (message !== undefined) next.message = String(message || '');
+    state.market.statusMap[key] = next;
+    renderMarketPage();
+  }
+
+  /** 安装结果统一收尾：校验失败 → invalid（提示「签名校验失败」），成功 → 刷新插件/市场 */
+  function afterMarketInstall(item, res) {
+    var id = String(item && item.id ? item.id : '');
+    if (!res || res.ok === false) {
+      var msg = res && res.error ? String(res.error) : '安装失败';
+      var invalid = /校验|签名|sha|hmac|hash/i.test(msg);
+      updateMarketStatus(id, invalid ? 'invalid' : 'error', msg);
+      toast((invalid ? '签名校验失败：' : '插件安装失败：') + msg, true);
+      return false;
+    }
+    try { refreshPlugins(); } catch (e1) { /* ignore */ }
+    try { loadHousePluginsAndSlots(); } catch (e2) { /* ignore */ }
+    refreshPluginSlots();
+    state.market.statusMap = computeMarketStatusMap(state.market.items);
+    updateMarketStatus(id, 'installed', '');
+    state.market.statusMap = computeMarketStatusMap(state.market.items);
+    renderMarketPage();
+    toast('插件已安装：' + (item.name || id), true);
+    return res;
+  }
+
+  function computeSha256Hex(text) {
+    var source = String(text === null || text === undefined ? '' : text);
+    if (global.Bridge && typeof global.Bridge.pluginSha256 === 'function') {
+      try {
+        var nativeSha = global.Bridge.pluginSha256(source);
+        if (nativeSha) return Promise.resolve(String(nativeSha).toLowerCase());
+      } catch (e) { /* fall through */ }
+    }
+    try {
+      if (global.crypto && global.crypto.subtle && typeof global.TextEncoder !== 'undefined') {
+        var data = new global.TextEncoder().encode(source);
+        return global.crypto.subtle.digest('SHA-256', data).then(function (buffer) {
+          var bytes = new Uint8Array(buffer);
+          var hex = '';
+          for (var i = 0; i < bytes.length; i++) hex += ('0' + bytes[i].toString(16)).slice(-2);
+          return hex;
+        }, function () { return ''; });
+      }
+    } catch (e2) { /* ignore */ }
+    return Promise.resolve('');
+  }
+
+  /** 无 DSPlugins.installMarketPlugin 时的回退安装：下载 → sha256/hmac 校验 → pluginWrite → 重载 */
+  function installMarketPluginFallback(item) {
+    var id = sanitizePluginFilePart(item.id);
+    var version = sanitizePluginFilePart(item.version || '1.0.0') || '1.0.0';
+    if (!id) return Promise.resolve({ ok: false, error: '插件 id 非法' });
+    var url = String(item.url || '');
+    var isLocal = /^http:\/\/(127\.0\.0\.1|localhost)/i.test(url);
+    if (!/^https:\/\//i.test(url) && !isLocal) return Promise.resolve({ ok: false, error: '下载 URL 需为 https' });
+    return httpGetText(url, 30000).then(function (res) {
+      if (!res || !res.ok) return { ok: false, error: '下载失败：' + ((res && res.error) || ('HTTP ' + ((res && res.status) || 0))) };
+      var source = res.body === null || res.body === undefined ? '' : String(res.body);
+      if (!source) return { ok: false, error: '插件源码为空' };
+      if (source.length > 512 * 1024) return { ok: false, error: '插件源码超过 512KB' };
+      var hmacWork = Promise.resolve('');
+      if (item.hmac && global.Bridge && typeof global.Bridge.pluginHmac === 'function') {
+        hmacWork = Promise.resolve(global.Bridge.pluginHmac(source));
+      }
+      return hmacWork.then(function (hmac) {
+        if (item.hmac && String(item.hmac).toLowerCase() !== String(hmac || '').toLowerCase()) {
+          return { ok: false, error: '签名校验失败：hmac 不匹配' };
+        }
+        return computeSha256Hex(source).then(function (sha) {
+          if (item.sha256 && sha && String(item.sha256).toLowerCase() !== String(sha).toLowerCase()) {
+            return { ok: false, error: '签名校验失败：sha256 不匹配' };
+          }
+          var fileName = id + '-' + version + '.js';
+          var written = false;
+          try {
+            if (global.Bridge && typeof global.Bridge.pluginWrite === 'function') {
+              written = global.Bridge.pluginWrite(fileName, source) !== false;
+            }
+          } catch (e) { warn('写入插件目录失败：' + errText(e)); }
+          if (!written) return { ok: false, error: '写入插件目录失败' };
+          return { ok: true, id: id, version: version, fileName: fileName, source: source };
+        });
+      });
+    }, function (err) {
+      return { ok: false, error: errText(err) };
+    });
+  }
+
+  /** handlers.onMarketInstall(item)：优先 DSPlugins.installMarketPlugin，否则回退实现 */
+  function installMarketItem(ref) {
+    var item = findMarketItem(ref);
+    if (!item) { toast('市场条目不存在', true); return Promise.resolve(false); }
+    var id = String(item.id || '');
+    if (!id) { toast('插件条目缺少 id', true); return Promise.resolve(false); }
+    updateMarketStatus(id, 'installing', '安装中…');
+    var P = dsPlugins();
+    if (P && typeof P.installMarketPlugin === 'function') {
+      return Promise.resolve().then(function () { return P.installMarketPlugin(item); }).then(function (res) {
+        return afterMarketInstall(item, res);
+      }, function (err) {
+        return afterMarketInstall(item, { ok: false, error: errText(err) });
+      });
+    }
+    return installMarketPluginFallback(item).then(function (res) {
+      return afterMarketInstall(item, res);
+    }, function (err) {
+      return afterMarketInstall(item, { ok: false, error: errText(err) });
+    });
+  }
+
+  /** handlers.onMarketRemove(id)：优先 DSPlugins.removeMarketPlugin，否则按 pluginList 删文件 */
+  function removeMarketItem(ref) {
+    var id = ref && typeof ref === 'object' ? String(ref.id || '') : String(ref === null || ref === undefined ? '' : ref);
+    if (!id) { toast('插件 id 无效', true); return Promise.resolve(false); }
+    var P = dsPlugins();
+    function finish(res) {
+      if (!res || res.ok === false) {
+        toast('插件卸载失败：' + ((res && res.error) || '未知错误'), true);
+        return false;
+      }
+      try { refreshPlugins(); } catch (e1) { /* ignore */ }
+      try { loadHousePluginsAndSlots(); } catch (e2) { /* ignore */ }
+      refreshPluginSlots();
+      delete state.market.statusMap[id];
+      if (state.market.items.length) state.market.statusMap = computeMarketStatusMap(state.market.items);
+      renderMarketPage();
+      toast('插件已卸载', true);
+      return res;
+    }
+    if (P && typeof P.removeMarketPlugin === 'function') {
+      return Promise.resolve().then(function () { return P.removeMarketPlugin(id); }).then(finish, function (err) {
+        return finish({ ok: false, error: errText(err) });
+      });
+    }
+    var installed = installedPluginMap().list;
+    var removed = 0;
+    for (var i = 0; i < installed.length; i++) {
+      var plugin = installed[i];
+      var fileName = String(plugin.fileName || '');
+      var pid = String(plugin.id || '');
+      var base = fileName.replace(/\.js$/i, '');
+      var match = pid === id || (fileName && (fileName === id || fileName.indexOf(id + '-') === 0 || base === id));
+      if (!match || !fileName) continue;
+      try {
+        if (global.Bridge && typeof global.Bridge.pluginDeleteFile === 'function' && global.Bridge.pluginDeleteFile(fileName)) removed++;
+      } catch (e3) { warn('删除插件失败：' + errText(e3)); }
+    }
+    return Promise.resolve(finish(removed > 0 ? { ok: true, removed: removed } : { ok: false, error: '未找到已安装插件' }));
+  }
+
+  /* ---------------- 记忆页 ---------------- */
+
+  function normalizeMemoryKvToObject(raw) {
+    var out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    var keys = Object.keys(raw);
+    for (var i = 0; i < keys.length; i++) {
+      var value = raw[keys[i]];
+      out[keys[i]] = value === null || value === undefined ? '' : String(value);
+    }
+    return out;
+  }
+
+  function buildMemoryViewModel() {
+    var all = { summaries: [], long_term: {}, project: {} };
+    try {
+      if (global.Bridge && typeof global.Bridge.memoryAll === 'function') {
+        var loaded = global.Bridge.memoryAll();
+        if (loaded && typeof loaded === 'object') all = loaded;
+      }
+    } catch (e) { warn('读取记忆失败：' + errText(e)); }
+    var longTermMap = normalizeMemoryKvToObject(all.long_term);
+    var longTermList = [];
+    var ltKeys = Object.keys(longTermMap);
+    for (var i = 0; i < ltKeys.length; i++) longTermList.push({ key: ltKeys[i], value: longTermMap[ltKeys[i]] });
+    var project = normalizeMemoryKvToObject(all.project);
+    project.tech_stack = project.tech_stack || '';
+    project.conventions = project.conventions || '';
+    project.decisions = project.decisions || '';
+    var summaries = [];
+    var rawSummaries = Array.isArray(all.summaries) ? all.summaries : [];
+    for (var j = 0; j < rawSummaries.length; j++) {
+      var item = rawSummaries[j];
+      if (!item || typeof item !== 'object') continue;
+      var chatId = String(item.chatId || '');
+      if (!chatId) continue;
+      var chat = Store.getChat(chatId);
+      summaries.push({
+        chatId: chatId,
+        title: chat && chat.title ? String(chat.title) : ('会话 ' + chatId.slice(0, 8)),
+        summary: item.summary === null || item.summary === undefined ? '' : String(item.summary),
+        updatedAt: Number(item.updatedAt) || 0
+      });
+    }
+    summaries.sort(function (a, b) { return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0); });
+    return { long_term: longTermList, project: project, summaries: summaries };
+  }
+
+  /** handlers.onOpenMemory：Bridge.memoryAll() → UI.renderMemory({long_term,project,summaries}) */
+  function refreshMemoryPage() {
+    var data = buildMemoryViewModel();
+    state.memory = {
+      loaded: true,
+      long_term: normalizeMemoryKvToObject((function () { var map = {}; for (var i = 0; i < data.long_term.length; i++) map[data.long_term[i].key] = data.long_term[i].value; return map; })()),
+      project: data.project,
+      summaries: data.summaries
+    };
+    ui('renderMemory', data);
+    return data;
+  }
+
+  function showMemoryPage() {
+    if (state.memoryOpening) return refreshMemoryPage();
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'memory') {
+      state.memoryOpening = true;
+      try { ui('openMemoryPage'); } finally { state.memoryOpening = false; }
+    }
+    return refreshMemoryPage();
+  }
+
+  /** 原生记忆写为异步排队：保存后稍等再读回（默认 120ms） */
+  function refreshMemorySoon(delay) {
+    setTimeout(function () {
+      try { refreshMemoryPage(); } catch (e) { warn('刷新记忆页失败：' + errText(e)); }
+    }, typeof delay === 'number' && delay >= 0 ? delay : 120);
+  }
+
+  function normalizeMemoryScope(scope) {
+    var key = String(scope === null || scope === undefined ? '' : scope);
+    return MEMORY_SCOPES[key] ? key : '';
+  }
+
+  /** handlers.onMemorySave(scope,key,value)：长期偏好 / 项目记忆统一入口 */
+  function saveMemoryItem(scope, key, value) {
+    var scopeKey = normalizeMemoryScope(scope);
+    var name = String(key === null || key === undefined ? '' : key).replace(/^\s+|\s+$/g, '');
+    var text = String(value === null || value === undefined ? '' : value);
+    if (!scopeKey) { toast('未知记忆范围', true); return false; }
+    if (!name) { toast('记忆条目名称不能为空', true); return false; }
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.memoryKvSet === 'function') ok = global.Bridge.memoryKvSet(scopeKey, name, text) !== false;
+    } catch (e) { warn('保存记忆失败：' + errText(e)); }
+    if (!ok) { toast('保存记忆失败', true); return false; }
+    toast(scopeKey === 'long_term' ? '已保存长期偏好' : '已保存项目记忆', true);
+    refreshMemorySoon(120);
+    return true;
+  }
+
+  function deleteMemoryItem(scope, key) {
+    var scopeKey = normalizeMemoryScope(scope);
+    var name = String(key === null || key === undefined ? '' : key).replace(/^\s+|\s+$/g, '');
+    if (!scopeKey || !name) { toast('记忆条目无效', true); return false; }
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.memoryKvDelete === 'function') ok = global.Bridge.memoryKvDelete(scopeKey, name) !== false;
+    } catch (e) { warn('删除记忆失败：' + errText(e)); }
+    if (!ok) { toast('删除记忆失败', true); return false; }
+    toast('已删除', true);
+    refreshMemorySoon(120);
+    return true;
+  }
+
+  function deleteSessionSummary(chatId) {
+    var id = String(chatId === null || chatId === undefined ? '' : chatId);
+    if (!id) { toast('会话 id 无效', true); return false; }
+    var ok = false;
+    try {
+      if (global.Bridge && typeof global.Bridge.memoryDeleteSummary === 'function') ok = global.Bridge.memoryDeleteSummary(id) !== false;
+    } catch (e) { warn('删除会话摘要失败：' + errText(e)); }
+    if (!ok) { toast('删除会话摘要失败', true); return false; }
+    delete state.contextCompressed[id];
+    delete state.contextSummaryOverride[id];
+    toast('已删除会话摘要', true);
+    refreshMemorySoon(120);
+    return true;
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -4345,6 +5166,44 @@
   App.testMcp = safe(function (id) { return testMcpServer(id); }, 'App.testMcp');
   App.isBuildToolName = function (name) { return isBuildToolName(name); };
   App.isMcpProgressTool = function (name) { return isMcpProgressTool(name); };
+
+  /* ARCH v2 P3：插件面板 / 市场 / 记忆 / 上下文压缩 对外接口 */
+  App.loadHousePlugins = safe(function (opts) {
+    var P = dsPlugins();
+    if (!P || typeof P.loadHousePlugins !== 'function') return Promise.resolve([]);
+    return Promise.resolve(P.loadHousePlugins(opts));
+  }, 'App.loadHousePlugins');
+  App.refreshPluginSlots = safe(function () { return refreshPluginSlots(); }, 'App.refreshPluginSlots');
+  App.getPluginSlots = function () { return state.pluginSlots.slice(); };
+  App.showPluginPanel = safe(function () { return showPluginPanel(); }, 'App.showPluginPanel');
+  App.runSlotAction = safe(function (slotId, action, payload) { return runPluginSlotAction(slotId, action, payload); }, 'App.runSlotAction');
+  App.openMarketPage = safe(function () { return loadMarketData(); }, 'App.openMarketPage');
+  App.showMarketPage = safe(function () { return showMarketPage(); }, 'App.showMarketPage');
+  App.fetchMarketIndex = safe(function (url) { return fetchMarketIndex(url); }, 'App.fetchMarketIndex');
+  App.installMarketItem = safe(function (item) { return installMarketItem(item); }, 'App.installMarketItem');
+  App.removeMarketItem = safe(function (id) { return removeMarketItem(id); }, 'App.removeMarketItem');
+  App.getMarketState = function () {
+    return {
+      url: state.market.url || '',
+      items: state.market.items.slice(),
+      statusMap: JSON.parse(JSON.stringify(state.market.statusMap || {})),
+      fetchedAt: state.market.fetchedAt || 0,
+      loading: !!state.market.loading,
+      error: state.market.error || ''
+    };
+  };
+  App.openMemoryPage = safe(function () { return refreshMemoryPage(); }, 'App.openMemoryPage');
+  App.showMemoryPage = safe(function () { return showMemoryPage(); }, 'App.showMemoryPage');
+  App.refreshMemoryPage = safe(function () { return refreshMemoryPage(); }, 'App.refreshMemoryPage');
+  App.getMemoryData = function () { return buildMemoryViewModel(); };
+  App.saveMemoryItem = safe(function (scope, key, value) { return saveMemoryItem(scope, key, value); }, 'App.saveMemoryItem');
+  App.deleteMemoryItem = safe(function (scope, key) { return deleteMemoryItem(scope, key); }, 'App.deleteMemoryItem');
+  App.deleteSessionSummary = safe(function (chatId) { return deleteSessionSummary(chatId); }, 'App.deleteSessionSummary');
+  App.buildMemoryPrompt = function (chat) { return buildMemoryPrompt(chat || Store.getActiveChat()); };
+  App.contextBudgetChars = function () { return contextBudgetChars(); };
+  App.estimateContextChars = function (messages) { return estimateContextChars(messages); };
+  App.buildSessionSummaryPiece = function (older) { return buildSessionSummaryPiece(older); };
+  App.getContextCompressed = function () { return JSON.parse(JSON.stringify(state.contextCompressed || {})); };
   App.getFilePreview = function () { return state.filePreview; };
   App.confirmTool = safe(function (allow) {
     if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }
