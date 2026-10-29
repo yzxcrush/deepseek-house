@@ -291,6 +291,11 @@ export function registerIntegrationTests() {
       .filter((p) => p.apiKey);
     ok(keyPayloads.some((p) => p.apiKey === 'sk-qa-test-valid-key'), 'setPrefs 应写入 apiKey');
     equal(app.native.__prefs.apiKey, 'sk-qa-test-valid-key', '原生 prefs 未更新 apiKey');
+    // SPEC §7.5：API Key 只存在原生 SharedPreferences + 请求头，不落 localStorage、不写日志
+    const stored = app.win.localStorage.getItem('dsh.v1') || '';
+    notIncludes(stored, 'sk-qa-test-valid-key', 'API Key 被写入了 localStorage');
+    const leakedLogs = app.consoleLogs.filter((entry) => entry.args.join(' ').indexOf('sk-qa-test-valid-key') !== -1);
+    ok(leakedLogs.length === 0, 'API Key 出现在 console 日志中');
     // 进入聊天后应自动创建一个活动会话
     ok(app.win.Store.getActiveChat(), '进入聊天界面后应存在活动会话');
     ctx.loggedIn = true;
@@ -313,6 +318,8 @@ export function registerIntegrationTests() {
     const w = app.win;
     const text = '你好，请介绍一下 DeepSeek House';
     const requestId = await sendAndWaitRequest(text);
+    const startBody = nativeCalls('startChat')[nativeCalls('startChat').length - 1].args[1];
+    notIncludes(String(startBody), 'sk-qa-test-valid-key', 'startChat 请求体不应包含 API Key（应只在原生请求头中）');
 
     await waitFor(() => userContents().some((c) => c.indexOf(text) !== -1), { timeout: 4000, label: '用户气泡出现' });
     await waitFor(() => isStreaming(), { timeout: 3000, label: '进入流式状态' });

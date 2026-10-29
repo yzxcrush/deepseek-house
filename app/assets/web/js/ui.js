@@ -2018,6 +2018,12 @@
 
   UI.setStreaming = function (streaming) {
     state.streaming = !!streaming;
+    /* 流式结束时立刻结算挂起的增量渲染（推理标题/收起、重新生成按钮、光标），避免等下一帧 */
+    if (!state.streaming && state.pendingRaf) {
+      caf(state.pendingRaf);
+      state.pendingRaf = 0;
+      flushDirty();
+    }
     syncSendButton();
     markStreamingCursor();
     updateTyping();
