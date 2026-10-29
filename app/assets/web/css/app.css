@@ -3179,3 +3179,49 @@ body { background-color: #181818; }
 .share-icon { display: inline-flex; color: var(--accent-2); }
 .share-icon svg { width: 18px; height: 18px; }
 .screen--share .chatlist { padding-bottom: calc(96px + var(--safe-bottom)); }
+
+/* ==========================================================================
+   v1.0.8：会话列表密度再收紧（参考微信聊天列表的紧凑感）
+   行高 56→48，头像 44→40，标题 15px，预览 13px，时间 11px
+   ========================================================================== */
+.chat-item {
+  min-height: 48px;
+  padding: 1px 12px;
+  gap: 10px;
+}
+.chat-avatar {
+  width: 40px;
+  height: 40px;
+}
+.chat-item-body {
+  gap: 0;
+}
+.chat-item-top {
+  gap: 6px;
+}
+.chat-item-title {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.18;
+}
+.chat-item-preview {
+  font-size: 13px;
+  line-height: 1.18;
+}
+.chat-item-time {
+  font-size: 11px;
+  line-height: 1;
+}
+.chat-item-meta {
+  gap: 2px;
+}
+.unread-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+.chat-pin svg { width: 12px; height: 12px; }
+.share-icon svg { width: 16px; height: 16px; }
+.chatlist { padding-top: 2px; }

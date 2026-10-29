@@ -3041,5 +3041,5 @@
     updateModelLabelUI();
   };
 
-  UI.version = '1.0.7';
+  UI.version = '1.0.8';
 })();
