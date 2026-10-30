@@ -41,6 +41,7 @@ public final class ToolExecutor {
     private final Workspace workspace;
     private final AuditDb auditDb;
     private final ShellRunner shellRunner;
+    private volatile boolean rootMode;
 
     /** 执行结果：ok 表示工具调用成功（进程退出码非 0 视为失败，但 output 仍会带回）。 */
     public static final class Outcome {
@@ -59,6 +60,15 @@ public final class ToolExecutor {
         public static Outcome fail(String result) {
             return new Outcome(false, result);
         }
+    }
+
+    /** 开启后 run_shell（含终端）通过 su 执行；其他文件工具仍受工作区限制。 */
+    public void setRootMode(boolean enabled) {
+        this.rootMode = enabled;
+    }
+
+    public boolean isRootMode() {
+        return rootMode;
     }
 
     public ToolExecutor(Workspace workspace, AuditDb auditDb) {
@@ -282,7 +292,7 @@ public final class ToolExecutor {
         if (command.trim().isEmpty()) {
             return Outcome.fail("缺少参数 command");
         }
-        ShellRunner.Result result = shellRunner.run(command, workspace.root());
+        ShellRunner.Result result = shellRunner.run(command, workspace.root(), rootMode);
         StringBuilder output = new StringBuilder();
         if (result.output != null && !result.output.isEmpty()) {
             output.append(result.output);

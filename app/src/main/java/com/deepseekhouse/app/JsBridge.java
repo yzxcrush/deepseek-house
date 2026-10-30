@@ -19,6 +19,7 @@ import android.widget.Toast;
 import com.deepseekhouse.app.agent.AuditDb;
 import com.deepseekhouse.app.agent.AuthManager;
 import com.deepseekhouse.app.agent.ToolDef;
+import com.deepseekhouse.app.agent.RootManager;
 import com.deepseekhouse.app.agent.ToolExecutor;
 import com.deepseekhouse.app.agent.ToolRegistry;
 import com.deepseekhouse.app.agent.Workspace;
@@ -145,6 +146,7 @@ public final class JsBridge {
         this.workspace = new Workspace(activity);
         this.auditDb = new AuditDb(activity);
         this.toolExecutor = new ToolExecutor(workspace, auditDb);
+        this.toolExecutor.setRootMode(prefs.isRootMode());
         this.auth = new AuthManager(activity, prefs);
         this.toolPool = Executors.newCachedThreadPool(new ThreadFactory() {
             private final AtomicInteger seq = new AtomicInteger(1);
@@ -678,6 +680,32 @@ public final class JsBridge {
     @JavascriptInterface
     public void runShell(final String requestId, final String command) {
         runDirectTool(requestId, "run_shell", args("command", command == null ? "" : command));
+    }
+
+    /** Root 模式：是否让 run_shell/终端 通过 su 执行。 */
+    @JavascriptInterface
+    public boolean isRootMode() {
+        return prefs.isRootMode();
+    }
+
+    @JavascriptInterface
+    public void setRootMode(boolean enabled) {
+        prefs.setRootMode(enabled);
+        try {
+            toolExecutor.setRootMode(enabled);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** Root 检测：{"root":bool,"uid":0,"message":"..."}（会阻塞最多 4 秒，建议后台调用）。 */
+    @JavascriptInterface
+    public String checkRoot() {
+        try {
+            return RootManager.checkJson();
+        } catch (Throwable t) {
+            return "{\"root\":false,\"uid\":-1,\"message\":\"检测失败\"}";
+        }
     }
 
     /** SPEC N1 {@code auditRecent(limit)}：最近审计记录 JSON 数组（新的在前）。 */

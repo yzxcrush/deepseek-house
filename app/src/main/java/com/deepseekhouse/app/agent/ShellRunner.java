@@ -39,6 +39,11 @@ public final class ShellRunner {
 
     /** 在 {@code cwd} 下执行命令；任何内部异常都转成 exitCode=-1 的结果，不抛出。 */
     public Result run(String command, File cwd) {
+        return run(command, cwd, false);
+    }
+
+    /** root=true 时通过 {@code /system/bin/su -c <cmd>} 执行（需要系统 root 管理器授权）。 */
+    public Result run(String command, File cwd, boolean root) {
         String cmd = command == null ? "" : command;
         if (cmd.trim().isEmpty()) {
             return new Result(-1, "命令为空", false, false);
@@ -52,7 +57,9 @@ public final class ShellRunner {
         final boolean[] truncated = new boolean[]{false};
         Thread reader = null;
         try {
-            ProcessBuilder builder = new ProcessBuilder(SHELL, "-c", cmd);
+            ProcessBuilder builder = root
+                    ? RootManager.rootProcessBuilder(cmd)
+                    : new ProcessBuilder(SHELL, "-c", cmd);
             builder.directory(workingDir);
             builder.redirectErrorStream(true);
             Map<String, String> env = builder.environment();

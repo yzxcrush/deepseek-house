@@ -25,7 +25,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.3.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.4.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -45,7 +45,7 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.3.0.apk`
+产物：`dist/DeepSeekHouse-2.4.0.apk`
 
 ### 云端构建（GitHub Actions）
 
@@ -67,6 +67,13 @@ CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → 
 - **工作区**：默认 `Android/data/com.deepseekhouse.app/files/workspace`，可切换到 `/sdcard/house-workspace`；聊天页「文件」抽屉 = 目录树 + 文件预览；底部「终端」面板 = 输入命令 → `/system/bin/sh` 执行 → 实时输出
 - **工具调用可视化**：消息流里显示工具卡片（工具名/参数摘要/状态：等待确认/成功/失败/已拒绝/结果折叠）
 - **手机号登录（本地 OTP MVP）**：登录页「API Key / 手机号」双标签；验证码通过通知渠道展示（仅本机演示，5 分钟有效、60s 限频、错 3 次锁 5 分钟），token 本地保存可退出；预留 `SmsProvider` 接口，可切换为自建后端 + 阿里云/腾讯云短信
+
+## 🔓 Root 模式（v2.4.0，可选）
+
+- 设置页新增「Root 模式（终端 / run_shell）」开关与状态行；开启前自动 `su -c id` 检测
+- 开启后：App 内置终端、AI 的 `run_shell` 工具通过 `/system/bin/su -c` 执行，可读写 root 路径
+- 前提：设备已 root（KernelSU/Magisk），并在 root 管理器里**允许「DeepSeek House」**（未授权时开关会提示并保持关闭）
+- 也可不改 App：用 `su` 启动 `termux-mcp/server.py`，通过 MCP 的 `run_shell` 获得 root（见 termux-mcp/README.md）
 
 ## 🧩 插件生态与记忆（P3，v2.2.0）
 

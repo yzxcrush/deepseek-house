@@ -26,6 +26,7 @@ public final class Prefs {
     public static final String KEY_BACK_DEPTH = "backDepth";
     /** F9 应用锁开关（只存原生 SharedPreferences，JS 通过 isAppLockEnabled() 查询）。 */
     public static final String KEY_APP_LOCK = "appLock";
+    public static final String KEY_ROOT_MODE = "rootMode";
     /** ARCH v2 P1：工作区根目录（空字符串 = 使用默认 getExternalFilesDir("workspace")）。 */
     public static final String KEY_WORKSPACE_ROOT = "workspaceRoot";
     /** ARCH v2 P1：手机号登录 token（32 位 hex，绝不进入 getPrefs() 的 JS 载荷）。 */
@@ -106,6 +107,23 @@ public final class Prefs {
             return sp.getBoolean(KEY_APP_LOCK, false);
         } catch (Throwable t) {
             return false;
+        }
+    }
+
+    /** ARCH v2 P4+：Root 模式（终端/run_shell 是否通过 su 执行）。 */
+    public boolean isRootMode() {
+        try {
+            return sp.getBoolean(KEY_ROOT_MODE, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public void setRootMode(boolean enabled) {
+        try {
+            sp.edit().putBoolean(KEY_ROOT_MODE, enabled).apply();
+        } catch (Throwable ignored) {
+            // 忽略
         }
     }
 

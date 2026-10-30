@@ -195,7 +195,7 @@
     security: {
       appLock: false,
       encrypted: false
-    }
+    , rootMode: false, rootMessage: ''}
   };
 
   var WORKBENCH_KEY = 'dsh.workbench';
@@ -4025,6 +4025,21 @@
     var data = info && typeof info === 'object' ? info : {};
     if (Object.prototype.hasOwnProperty.call(data, 'appLock')) state.security.appLock = !!data.appLock;
     if (Object.prototype.hasOwnProperty.call(data, 'encrypted')) state.security.encrypted = !!data.encrypted;
+    if (Object.prototype.hasOwnProperty.call(data, 'rootMode')) state.security.rootMode = !!data.rootMode;
+    if (Object.prototype.hasOwnProperty.call(data, 'rootMessage')) state.security.rootMessage = String(data.rootMessage || '');
+    var rootToggle = r('set-rootmode');
+    if (rootToggle) rootToggle.checked = !!state.security.rootMode;
+    var rootStatus = r('set-root-status');
+    if (rootStatus) {
+      rootStatus.classList.remove('is-on', 'is-warn');
+      if (state.security.rootMode) {
+        rootStatus.textContent = state.security.rootMessage || '已启用（su 执行）';
+        rootStatus.classList.add('is-on');
+      } else {
+        rootStatus.textContent = state.security.rootMessage || '未启用';
+        rootStatus.classList.add('is-warn');
+      }
+    }
     var toggle = r('set-applock');
     if (toggle) toggle.checked = !!state.security.appLock;
     var status = r('set-encryption-status');
@@ -4043,7 +4058,8 @@
     }
     return {
       appLock: !!state.security.appLock,
-      encrypted: !!state.security.encrypted
+      encrypted: !!state.security.encrypted,
+      rootMode: !!state.security.rootMode
     };
   }
 
@@ -4056,6 +4072,19 @@
       return false;
     }
     state.security.appLock = next;
+    if (toggle) toggle.checked = next;
+    return true;
+  }
+
+  function toggleRootMode(enabled) {
+    var next = !!enabled;
+    var toggle = r('set-rootmode');
+    if (!invoke('onToggleRootMode', next)) {
+      if (toggle) toggle.checked = !next;
+      UI.toast('Root 模式服务尚未就绪');
+      return false;
+    }
+    state.security.rootMode = next;
     if (toggle) toggle.checked = next;
     return true;
   }
@@ -6353,6 +6382,10 @@
     if (target.id === 'set-applock') {
       toggleAppLock(!!target.checked);
     }
+    /* Root 模式开关 */
+    if (target.id === 'set-rootmode') {
+      toggleRootMode(!!target.checked);
+    }
   }
 
   function onKeyDown(event) {
@@ -6588,7 +6621,7 @@
       'workbench-refresh', 'terminal-resize',
       'composer-images', 'attachment-sheet', 'image-viewer', 'image-viewer-img',
       'build-panel', 'build-panel-title', 'build-tasks', 'build-empty',
-      'set-applock', 'set-encryption-status'
+      'set-applock', 'set-encryption-status', 'set-rootmode', 'set-root-status'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -7189,5 +7222,5 @@
   UI.setSecurityInfo = setSecurityInfo;
   UI.refreshSettingsStats = refreshSettingsStats;
 
-  UI.version = '2.3.0';
+  UI.version = '2.4.0';
 })();

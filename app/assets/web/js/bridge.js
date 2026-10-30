@@ -1086,6 +1086,7 @@
   var MOCK_STORAGE_SECRET = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='; /* 32 字节示例密钥（Base64） */
   var MOCK_IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
+  var mockRootMode = false;
   var mockP4 = {
     foregroundActive: false,
     foregroundText: '',
@@ -2793,6 +2794,34 @@
         } catch (e) { warn('getStorageSecret 失败：' + (e && e.message)); return ''; }
       }
       return String(mockP4.storageSecret || '');
+    },
+
+    /* ---------------- Root 模式（需 KernelSU/Magisk 授权） ---------------- */
+    isRootMode: function () {
+      if (hasNative && hasNativeMethod('isRootMode')) {
+        try { return !!DSNative.isRootMode(); } catch (e) { warn('isRootMode 失败：' + (e && e.message)); return false; }
+      }
+      return !!mockRootMode;
+    },
+
+    setRootMode: function (enabled) {
+      var on = !!enabled;
+      if (hasNative && hasNativeMethod('setRootMode')) {
+        try { DSNative.setRootMode(on); return true; } catch (e) { warn('setRootMode 失败：' + (e && e.message)); return false; }
+      }
+      mockRootMode = on;
+      return true;
+    },
+
+    checkRoot: function () {
+      if (hasNative && hasNativeMethod('checkRoot')) {
+        try {
+          var raw = DSNative.checkRoot();
+          if (raw && typeof raw === 'object') return raw;
+          try { return JSON.parse(String(raw)); } catch (e2) { return { root: false, uid: -1, message: '返回格式异常' }; }
+        } catch (e) { warn('checkRoot 失败：' + (e && e.message)); return { root: false, uid: -1, message: '检测失败' }; }
+      }
+      return { root: false, uid: -1, message: '当前环境不支持 root（浏览器 mock）' };
     },
 
     /* ------------------------------------------------------------------ *

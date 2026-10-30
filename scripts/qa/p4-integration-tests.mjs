@@ -169,6 +169,11 @@ export function registerP4IntegrationTests() {
     ['function sendWithImages', 'function pickImageSource', 'function toggleAppLock', 'function startForegroundService', 'function onSharedEvent'].forEach((s) => includes(appjs, s, '缺少 app.js ' + s));
     const bridge = read('app/assets/web/js/bridge.js');
     ['pickImage:', 'setForeground:', 'notify:', 'setAppLock:', 'getStorageSecret:'].forEach((s) => includes(bridge, s, '缺少 Bridge ' + s));
+    const bridge2 = read('app/assets/web/js/bridge.js');
+    ['checkRoot:', 'setRootMode:', 'isRootMode:'].forEach((x) => includes(bridge2, x, '缺少 Bridge root ' + x));
+    const jb = read('app/src/main/java/com/deepseekhouse/app/JsBridge.java');
+    ['checkRoot', 'setRootMode', 'isRootMode'].forEach((x) => includes(jb, x, '缺少 JsBridge root ' + x));
+    includes(read('app/src/main/java/com/deepseekhouse/app/agent/RootManager.java'), 'uid=0', 'RootManager 缺少 uid=0 检测');
     const store = read('app/assets/web/js/store.js');
     ['dsh.v1.enc', 'AES-GCM'].forEach((s) => includes(store, s, '缺少 Store 加密 ' + s));
   });

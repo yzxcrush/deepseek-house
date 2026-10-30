@@ -723,7 +723,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.3.0' }
+      { label: '版本', value: '2.4.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -1123,6 +1123,7 @@
       onRemoveImage: safe(function (index) { return removePendingImageAt(index); }, 'onRemoveImage'),
       onSendWithImages: safe(function (text, images) { return sendWithImages(text, images); }, 'onSendWithImages'),
       onToggleAppLock: safe(function (enabled) { return toggleAppLock(enabled); }, 'onToggleAppLock'),
+      onToggleRootMode: safe(function (enabled) { return toggleRootMode(enabled); }, 'onToggleRootMode'),
       onRefreshSecurity: safe(function () { return refreshSecurityInfo(); }, 'onRefreshSecurity'),
       onGetSecurity: safe(function () { return refreshSecurityInfo(); }, 'onGetSecurity'),
       onOpenBuildPanel: safe(function () { return openBuildPanel(); }, 'onOpenBuildPanel'),
@@ -5439,6 +5440,35 @@
     return !!(state.prefs && state.prefs.appLock);
   }
 
+  /** Root 模式：开启前先 checkRoot；未授权则提示去 KernelSU/Magisk 授权 */
+  function toggleRootMode(enabled) {
+    var B = global.Bridge;
+    var U = getUI();
+    var next = enabled === undefined || enabled === null
+      ? !(B && typeof B.isRootMode === 'function' && B.isRootMode()) : !!enabled;
+    if (next) {
+      var check = null;
+      try { if (B && typeof B.checkRoot === 'function') check = B.checkRoot(); } catch (e) { warn('checkRoot 失败：' + errText(e)); }
+      if (!check || !check.root) {
+        try { if (B && typeof B.setRootMode === 'function') B.setRootMode(false); } catch (e2) { /* ignore */ }
+        state.prefs.rootMode = false;
+        try { Store.setPrefs({ rootMode: false }); } catch (e3) { /* ignore */ }
+        if (U && typeof U.setSecurityInfo === 'function') {
+          U.setSecurityInfo({ rootMode: false, rootMessage: (check && check.message) ? String(check.message) : '未获得 root 授权' });
+        }
+        toast('未获得 root 授权：请在 KernelSU / Magisk 管理器中允许「DeepSeek House」后重试');
+        return false;
+      }
+    }
+    var ok = false;
+    try { if (B && typeof B.setRootMode === 'function') ok = B.setRootMode(next) !== false; } catch (e4) { warn('setRootMode 失败：' + errText(e4)); }
+    state.prefs.rootMode = next;
+    try { Store.setPrefs({ rootMode: next }); } catch (e5) { /* ignore */ }
+    refreshSecurityInfo();
+    toast(ok ? (next ? 'Root 模式已开启：终端与 run_shell 将以 su 执行' : 'Root 模式已关闭') : 'Root 模式设置失败', !ok);
+    return ok;
+  }
+
   function toggleAppLock(enabled) {
     var next = enabled === undefined || enabled === null ? !readAppLockEnabled() : !!enabled;
     var ok = false;
@@ -5460,10 +5490,26 @@
     } catch (e) { warn('读取加密状态失败：' + errText(e)); }
     var appLock = readAppLockEnabled();
     state.prefs.appLock = appLock;
+    var rootMode = false;
+    var rootMessage = '未启用';
+    try {
+      if (global.Bridge) {
+        rootMode = typeof global.Bridge.isRootMode === 'function' ? !!global.Bridge.isRootMode() : false;
+        if (rootMode) {
+          var rc = typeof global.Bridge.checkRoot === 'function' ? global.Bridge.checkRoot() : null;
+          rootMode = !!(rc && rc.root);
+          rootMessage = rc && rc.message ? String(rc.message) : (rootMode ? '已获得 root（uid=0）' : '未获得 root 授权');
+          if (!rootMode && typeof global.Bridge.setRootMode === 'function') global.Bridge.setRootMode(false);
+        }
+      }
+    } catch (eRoot) { warn('读取 Root 状态失败：' + errText(eRoot)); }
+    state.prefs.rootMode = rootMode;
     var info = {
       appLock: appLock,
       encrypted: !!(enc.encrypted || enc.secretAvailable),
-      message: enc.error ? String(enc.error) : ''
+      message: enc.error ? String(enc.error) : '',
+      rootMode: rootMode,
+      rootMessage: rootMessage
     };
     var U = getUI();
     if (U && typeof U.setSecurityInfo === 'function') {
