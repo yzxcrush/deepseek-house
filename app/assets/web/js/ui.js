@@ -130,7 +130,7 @@
     pressStart: null,
     pressFired: false,
 
-    /* ARCH v2 P1：文件树抽屉 / 工作区 / 终端 / 高危确认 / 手机号登录 / 审计 */
+    /* ARCH v2 P1：文件树抽屉 / 工作区 / 终端 / 高危确认 / 审计 */
     fileDrawer: {
       open: false,
       entries: [],
@@ -152,13 +152,6 @@
       timer: 0
     },
     riskResolve: null,
-    loginTab: 'apikey',
-    otp: {
-      timer: 0,
-      left: 0,
-      demoCode: '',
-      sent: false
-    },
     audit: [],
     /* ARCH v2 P2：MCP 服务器管理 */
     mcp: {
@@ -1945,209 +1938,6 @@
     return new Promise(function (resolve) {
       state.riskResolve = resolve;
     });
-  }
-
-  /* ================================================================== *
-   * ARCH v2 P1：手机号登录（API Key / 手机号 tab）
-   * ================================================================== */
-  function activeLoginTab() {
-    return state.loginTab === 'phone' ? 'phone' : 'apikey';
-  }
-
-  function switchLoginTab(tab) {
-    state.loginTab = tab === 'phone' ? 'phone' : 'apikey';
-    var tabs = document.querySelectorAll('#login-tabs [data-login-tab]');
-    Array.prototype.forEach.call(tabs, function (btn) {
-      var on = btn.getAttribute('data-login-tab') === state.loginTab;
-      btn.classList.toggle('is-active', on);
-      btn.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    var apiForm = r('login-form');
-    if (apiForm) apiForm.hidden = state.loginTab !== 'apikey';
-    var phoneForm = r('login-phone-form');
-    if (phoneForm) phoneForm.hidden = state.loginTab !== 'phone';
-    var note = document.querySelector('.login-note');
-    if (note) {
-      note.textContent = state.loginTab === 'phone'
-        ? '验证码只在本机校验。开启通知权限后，验证码会显示在「登录验证码」通知中。'
-        : (state.login.hasKey
-          ? '已检测到本机保存的 Key。输入新的 Key 可替换，直接重新登录即可验证。'
-          : 'Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。');
-    }
-    var error = state.login.error || '';
-    var apiError = r('login-error');
-    var phoneError = r('login-phone-error');
-    if (apiError) {
-      apiError.textContent = state.loginTab === 'apikey' ? error : '';
-      apiError.hidden = state.loginTab !== 'apikey' || !error;
-    }
-    if (phoneError) {
-      phoneError.textContent = state.loginTab === 'phone' ? error : '';
-      phoneError.hidden = state.loginTab !== 'phone' || !error;
-    }
-  }
-
-  function updateOtpButton() {
-    var btn = r('login-send-otp');
-    if (!btn) return;
-    if (state.otp.left > 0) {
-      btn.disabled = true;
-      btn.textContent = state.otp.left + 's 后重发';
-    } else {
-      btn.disabled = !!state.login.busy;
-      btn.textContent = '发送验证码';
-    }
-  }
-
-  function stopOtpCountdown() {
-    if (state.otp.timer) {
-      clearInterval(state.otp.timer);
-      state.otp.timer = 0;
-    }
-    state.otp.left = 0;
-    state.otp.sent = false;
-    updateOtpButton();
-  }
-
-  function startOtpCountdown(seconds) {
-    stopOtpCountdown();
-    var total = parseInt(seconds, 10);
-    if (!isFinite(total) || total <= 0) total = 60;
-    total = Math.max(1, Math.min(600, total));
-    state.otp.left = total;
-    state.otp.sent = true;
-    updateOtpButton();
-    state.otp.timer = setInterval(function () {
-      state.otp.left -= 1;
-      if (state.otp.left <= 0) {
-        stopOtpCountdown();
-        return;
-      }
-      updateOtpButton();
-    }, 1000);
-  }
-
-  function showOtpHint(text) {
-    var hint = r('login-otp-hint');
-    if (!hint) return;
-    var message = text == null ? '' : String(text);
-    if (state.otp.demoCode) {
-      message += (message ? '\n' : '') + '演示验证码：' + state.otp.demoCode + '（仅本机模拟）';
-    }
-    hint.textContent = message;
-    hint.hidden = !message;
-  }
-
-  function showLoginErrorInTab(text) {
-    var message = text == null ? '' : String(text);
-    state.login.error = message;
-    var apiError = r('login-error');
-    var phoneError = r('login-phone-error');
-    if (activeLoginTab() === 'phone') {
-      if (phoneError) {
-        phoneError.textContent = message;
-        phoneError.hidden = !message;
-      }
-      if (apiError) {
-        apiError.textContent = '';
-        apiError.hidden = true;
-      }
-    } else {
-      if (apiError) {
-        apiError.textContent = message;
-        apiError.hidden = !message;
-      }
-      if (phoneError) {
-        phoneError.textContent = '';
-        phoneError.hidden = true;
-      }
-    }
-  }
-
-  function doSendOtp() {
-    var input = r('login-phone');
-    var phone = input ? String(input.value || '') : '';
-    var normalized = phone.replace(/[\s-]/g, '');
-    if (!normalized) {
-      showLoginErrorInTab('请输入手机号');
-      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
-      return;
-    }
-    if (!/^\+?\d{5,20}$/.test(normalized)) {
-      showLoginErrorInTab('手机号格式不正确');
-      if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
-      return;
-    }
-    if (state.otp.left > 0) return;
-    showLoginErrorInTab('');
-    if (!invoke('onSendOtp', normalized)) {
-      showLoginErrorInTab('登录服务尚未就绪');
-      return;
-    }
-    startOtpCountdown(60);
-    showOtpHint('验证码已发送，请查看系统通知。');
-    var otpInput = r('login-otp');
-    if (otpInput) { try { otpInput.focus(); } catch (err) { /* 静默 */ } }
-  }
-
-  function doPhoneLogin() {
-    var phoneInput = r('login-phone');
-    var otpInput = r('login-otp');
-    var phone = phoneInput ? String(phoneInput.value || '') : '';
-    var normalized = phone.replace(/[\s-]/g, '');
-    var code = otpInput ? String(otpInput.value || '').replace(/\s/g, '') : '';
-    if (!normalized) {
-      showLoginErrorInTab('请输入手机号');
-      if (phoneInput) { try { phoneInput.focus(); } catch (err) { /* 静默 */ } }
-      return;
-    }
-    if (!code) {
-      showLoginErrorInTab('请输入验证码');
-      if (otpInput) { try { otpInput.focus(); } catch (err) { /* 静默 */ } }
-      return;
-    }
-    showLoginErrorInTab('');
-    if (!invoke('onPhoneLogin', normalized, code)) {
-      showLoginErrorInTab('登录服务尚未就绪');
-    }
-  }
-
-  function onOtpSent(evt) {
-    var data = evt && typeof evt === 'object' ? evt : {};
-    if (data.phone) {
-      var input = r('login-phone');
-      if (input && !String(input.value || '').trim()) input.value = String(data.phone);
-    }
-    state.otp.demoCode = data.demoCode ? String(data.demoCode) : '';
-    if (state.loginTab !== 'phone') switchLoginTab('phone');
-
-    /* 失败事件（限频 / 手机号格式错误）带 message：显示在错误位，不当作“已发送” */
-    var failed = !!data.message && !data.demoCode;
-    if (failed) {
-      showLoginErrorInTab(String(data.message));
-      showOtpHint('');
-      if (!state.otp.timer) {
-        startOtpCountdown(data.resendSeconds != null ? data.resendSeconds : 60);
-      }
-      return;
-    }
-
-    var resend = data.resendSeconds != null ? data.resendSeconds : 60;
-    startOtpCountdown(resend);
-    showLoginErrorInTab('');
-    showOtpHint(data.message ? String(data.message) : '验证码已发送，请查看系统通知。');
-  }
-
-  function onOtpVerified(evt) {
-    var data = evt && typeof evt === 'object' ? evt : {};
-    if (data.ok === false) {
-      showLoginErrorInTab(data.message ? String(data.message) : '验证码不正确或已过期');
-      return;
-    }
-    stopOtpCountdown();
-    state.otp.demoCode = '';
-    showOtpHint('');
-    showLoginErrorInTab('');
   }
 
   /* ================================================================== *
@@ -4148,7 +3938,6 @@
     closeMenu();
     if (name !== 'chat') closeDrawer();
     if (name !== 'chat') closeFileDrawer();
-    if (name !== 'login') stopOtpCountdown();
     closeAllModals();
     closeModelPickerPanel(true);
     closeAgentPickerPanel(true);
@@ -5323,21 +5112,6 @@
     var toggle = document.querySelector('[data-action="toggle-key"]');
     if (toggle) toggle.classList.remove('is-on');
 
-    /* ARCH v2 P1：手机号登录表单 / 验证码倒计时复位 */
-    stopOtpCountdown();
-    state.otp.demoCode = '';
-    state.otp.sent = false;
-    var phoneInput = r('login-phone');
-    if (phoneInput) phoneInput.value = '';
-    var otpInput = r('login-otp');
-    if (otpInput) otpInput.value = '';
-    var phoneError = r('login-phone-error');
-    if (phoneError) {
-      phoneError.textContent = '';
-      phoneError.hidden = true;
-    }
-    showOtpHint('');
-    switchLoginTab('apikey');
   }
 
   /* ------------------------------------------------------------------ *
@@ -5963,12 +5737,6 @@
       case 'risk-deny':
         resolveRisk(false);
         break;
-      case 'login-tab-apikey':
-        switchLoginTab('apikey');
-        break;
-      case 'send-otp':
-        doSendOtp();
-        break;
       case 'set-workspace':
         if (!invoke('onSetWorkspace')) UI.toast('工作区服务尚未就绪');
         break;
@@ -6298,12 +6066,6 @@
 
     if (state.menuOpen && !target.closest('#longpress')) closeMenu();
 
-    var loginTabNode = target.closest('[data-login-tab]');
-    if (loginTabNode) {
-      switchLoginTab(loginTabNode.getAttribute('data-login-tab'));
-      return;
-    }
-
     var shareNode = target.closest('[data-share-id]');
     if (shareNode) {
       invoke('onShareChat', shareNode.getAttribute('data-share-id'));
@@ -6432,13 +6194,6 @@
       }
       return;
     }
-    if (target.id === 'login-phone' || target.id === 'login-otp') {
-      if (key === 'Enter') {
-        event.preventDefault();
-        doPhoneLogin();
-      }
-      return;
-    }
     if (target.id === 'mcp-form-name' || target.id === 'mcp-form-url' || target.id === 'mcp-form-token') {
       if (key === 'Enter') {
         event.preventDefault();
@@ -6481,10 +6236,6 @@
       event.preventDefault();
       doLogin();
       return;
-    }
-    if (form && form.id === 'login-phone-form') {
-      event.preventDefault();
-      doPhoneLogin();
     }
   }
 
@@ -6597,8 +6348,6 @@
       'risk-modal', 'risk-tool', 'risk-badge', 'risk-args', 'risk-hint', 'risk-deny', 'risk-accept',
       'backup-modal', 'backup-export', 'backup-import',
       'file-preview-modal', 'file-preview-name', 'file-preview-path', 'file-preview-content',
-      'login-tabs', 'login-phone-form', 'login-phone', 'login-otp', 'login-send-otp',
-      'login-phone-submit', 'login-phone-error', 'login-otp-hint',
       'set-workspace-row', 'set-workspace-value', 'set-workspace-writable',
       'set-workspace-access', 'set-workspace-reset', 'set-workspace-reset-hint',
       'screen-audit', 'audit-list', 'audit-empty', 'audit-count',
@@ -7004,27 +6753,10 @@
     /* busy 未传视为“当前不在验证中”，避免上一轮 busy 状态残留 */
     state.login.busy = Object.prototype.hasOwnProperty.call(data, 'busy') ? !!data.busy : false;
 
-    if (Object.prototype.hasOwnProperty.call(data, 'phoneLogin')) {
-      switchLoginTab(data.phoneLogin ? 'phone' : 'apikey');
-    }
-    if (Object.prototype.hasOwnProperty.call(data, 'phone')) {
-      var phoneInputEl = r('login-phone');
-      if (phoneInputEl && data.phone != null) phoneInputEl.value = String(data.phone);
-    }
-    if (Object.prototype.hasOwnProperty.call(data, 'demoCode')) {
-      state.otp.demoCode = data.demoCode ? String(data.demoCode) : '';
-    }
-
     var error = r('login-error');
-    var phoneError = r('login-phone-error');
-    var showingPhone = activeLoginTab() === 'phone';
     if (error) {
-      error.textContent = showingPhone ? '' : state.login.error;
-      error.hidden = showingPhone || !state.login.error;
-    }
-    if (phoneError) {
-      phoneError.textContent = showingPhone ? state.login.error : '';
-      phoneError.hidden = !showingPhone || !state.login.error;
+      error.textContent = state.login.error;
+      error.hidden = !state.login.error;
     }
 
     var submit = r('login-submit');
@@ -7032,28 +6764,16 @@
       submit.disabled = state.login.busy;
       submit.textContent = state.login.busy ? '验证中…' : (state.login.hasKey ? '进入' : '登录');
     }
-    var phoneSubmit = r('login-phone-submit');
-    if (phoneSubmit) {
-      phoneSubmit.disabled = state.login.busy;
-      phoneSubmit.textContent = state.login.busy ? '验证中…' : '登录';
-    }
     var keyInput = r('login-key');
     if (keyInput) keyInput.disabled = state.login.busy;
     var baseInput = r('login-baseurl');
     if (baseInput) baseInput.disabled = state.login.busy;
-    var loginPhone = r('login-phone');
-    if (loginPhone) loginPhone.disabled = state.login.busy;
-    var loginOtp = r('login-otp');
-    if (loginOtp) loginOtp.disabled = state.login.busy;
-    updateOtpButton();
 
     var note = document.querySelector('.login-note');
     if (note) {
-      note.textContent = showingPhone
-        ? '验证码只在本机校验。开启通知权限后，验证码会显示在「登录验证码」通知中。'
-        : (state.login.hasKey
-          ? '已检测到本机保存的 Key。输入新的 Key 可替换，直接重新登录即可验证。'
-          : 'Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。');
+      note.textContent = state.login.hasKey
+        ? '已检测到本机保存的 Key。输入新的 Key 可替换，直接重新登录即可验证。'
+        : 'Key 只保存在本机的设备私有存储中，不会上传。支持自定义 OpenAI 兼容端点。';
     }
   };
 
@@ -7148,10 +6868,6 @@
   UI.confirmRisk = function (tool, args, risk) { return confirmRisk(tool, args, risk); };
   UI.renderAudit = function (items) { return renderAudit(items); };
   UI.openAudit = openAudit;
-  UI.onOtpSent = onOtpSent;
-  UI.onOtpVerified = onOtpVerified;
-  UI.switchLoginTab = switchLoginTab;
-  UI.getLoginTab = activeLoginTab;
   UI.renderFilePreview = openFilePreview;
   UI.showFilePreview = openFilePreview;
   UI.previewFile = openFilePreview;
@@ -7222,5 +6938,5 @@
   UI.setSecurityInfo = setSecurityInfo;
   UI.refreshSettingsStats = refreshSettingsStats;
 
-  UI.version = '2.4.0';
+  UI.version = '2.4.1';
 })();

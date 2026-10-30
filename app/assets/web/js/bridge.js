@@ -82,15 +82,13 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * ARCH v2 P1：原生事件 Promise 桥（tool-confirm / tool-result / otp-* / auth-changed）
+   * ARCH v2 P1：原生事件 Promise 桥（tool-confirm / tool-result / workspace-changed 等）
    * DSHost.onEvent 收到这些事件时先 emit，再结算 waitForEvent 注册的 Promise。
    * ------------------------------------------------------------------ */
 
   var AGENT_EVENT_TYPES = {
     'tool-confirm': true,
     'tool-result': true,
-    'otp-sent': true,
-    'otp-verified': true,
     'auth-changed': true,
     'workspace-changed': true,
     /* ARCH v2 P2：MCP Client 事件 */
@@ -275,15 +273,13 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * ARCH v2 P1：原生 Agent / 工作区 / 审计 / 手机号认证 —— mock 实现
+   * ARCH v2 P1：原生 Agent / 工作区 / 审计 —— mock 实现
    * 触发条件：无 DSNative（浏览器/Node），或真实原生缺少对应新方法（旧版本兜底）。
    * 行为：内存文件树/审计/OTP，事件走 dispatchAgentEvent（与原生同构）。
    * ------------------------------------------------------------------ */
 
   var MOCK_WORKSPACE_ROOT = '/sdcard/house-workspace';
-  var mockWorkspace = { root: MOCK_WORKSPACE_ROOT, writable: true, allFilesAccess: false };
-  var mockAuth = { loggedIn: false, phone: '' };
-  var mockOtp = null; // {phone, code, ttl, sentAt, attempts, lockedUntil}
+  var mockWorkspace = { root: MOCK_WORKSPACE_ROOT, writable: true, allFilesAccess: false }; // {phone, code, ttl, sentAt, attempts, lockedUntil}
   var mockPendingTools = Object.create(null); // requestId -> {name, args, risk}
   var mockConfirmedMidTools = Object.create(null); // MID 工具首次确认后记住
   var mockAudit = [];
@@ -506,9 +502,6 @@
     };
   }
 
-  function mockAuthState() {
-    return { loggedIn: !!mockAuth.loggedIn, phone: String(mockAuth.phone || '') };
-  }
 
   function mockSetWorkspace(path) {
     var p = String(path === null || path === undefined ? '' : path).replace(/^\s+|\s+$/g, '');
@@ -1336,13 +1329,6 @@
     return out;
   }
 
-  function normalizeAuthState(raw) {
-    if (!raw || typeof raw !== 'object' || raw.error) return { loggedIn: false, phone: '' };
-    return {
-      loggedIn: !!raw.loggedIn,
-      phone: raw.phone === undefined || raw.phone === null ? '' : String(raw.phone)
-    };
-  }
 
   /* ARCH v2 P3：原生插件目录 / 记忆方法名探测（旧原生缺方法时回落 mock） */
   var P3_NATIVE_METHODS = {
@@ -1522,7 +1508,7 @@
   var Bridge = {
     __isMock: !hasNative,
     __native: hasNative,
-    __mockConfig: { chunkDelay: 14, validateDelay: 180, otpCode: '123456', otpTtlSeconds: 300 },
+    __mockConfig: { chunkDelay: 14, validateDelay: 180 },
     /** v2.0 F3：mock 模式下 Bridge.importTextFile() 返回的备份内容（QA/浏览器自测用） */
     __mockImportPayload: null,
     __setMockImport: function (name, content) {
@@ -2280,104 +2266,6 @@
     },
 
     /* ------------------------------------------------------------------ *
-     * ARCH v2 P1：手机号登录（本地 OTP MVP）
-     * ------------------------------------------------------------------ */
-    requestOtp: function (phone) {
-      var p = String(phone === null || phone === undefined ? '' : phone).replace(/[\s-]/g, '');
-      if (!/^\+?\d{6,20}$/.test(p)) return false;
-      if (hasNative && hasNativeMethod('requestOtp')) {
-        try {
-          DSNative.requestOtp(p);
-          return true;
-        } catch (e) {
-          warn('requestOtp 失败：' + (e && e.message));
-          return false;
-        }
-      }
-      var now = Date.now();
-      var cfg = Bridge.__mockConfig || {};
-      var ttl = Number(cfg.otpTtlSeconds) || 300;
-      var demoCode = String(cfg.otpCode || '123456');
-      if (mockOtp && mockOtp.phone === p && now - mockOtp.sentAt < 60000) {
-        emitAgentLater(10, {
-          type: 'otp-sent',
-          phone: p,
-          ok: false,
-          ttlSeconds: 0,
-          demoCode: '',
-          message: '发送过于频繁，请稍后重试'
-        });
-        return true;
-      }
-      mockOtp = { phone: p, code: demoCode, ttl: ttl, sentAt: now, attempts: 0, lockedUntil: 0 };
-      emitAgentLater(20, { type: 'otp-sent', phone: p, ok: true, ttlSeconds: ttl, demoCode: demoCode, message: '' });
-      return true;
-    },
-
-    verifyOtp: function (requestId, phone, code) {
-      var rid = String(requestId === null || requestId === undefined ? '' : requestId);
-      if (!rid) return false;
-      var p = String(phone === null || phone === undefined ? '' : phone).replace(/[\s-]/g, '');
-      var c = String(code === null || code === undefined ? '' : code).replace(/\s/g, '');
-      if (hasNative && hasNativeMethod('verifyOtp')) {
-        try {
-          DSNative.verifyOtp(rid, p, c);
-          return true;
-        } catch (e) {
-          warn('verifyOtp 失败：' + (e && e.message));
-          return false;
-        }
-      }
-      var now = Date.now();
-      var fail = function (message) {
-        emitAgentLater(10, { type: 'otp-verified', requestId: rid, ok: false, message: message });
-      };
-      if (!mockOtp || mockOtp.phone !== p) { fail('请先获取验证码'); return true; }
-      if (mockOtp.lockedUntil && now < mockOtp.lockedUntil) { fail('验证码错误次数过多，请 5 分钟后再试'); return true; }
-      if (now - mockOtp.sentAt > mockOtp.ttl * 1000) { fail('验证码已过期，请重新发送'); return true; }
-      if (c !== mockOtp.code) {
-        mockOtp.attempts = (mockOtp.attempts || 0) + 1;
-        if (mockOtp.attempts >= 3) {
-          mockOtp.lockedUntil = now + 5 * 60 * 1000;
-          fail('验证码错误次数过多，请 5 分钟后再试');
-        } else {
-          fail('验证码错误，还可尝试 ' + (3 - mockOtp.attempts) + ' 次');
-        }
-        return true;
-      }
-      mockAuth = { loggedIn: true, phone: p };
-      mockOtp = null;
-      emitAgentLater(10, { type: 'otp-verified', requestId: rid, ok: true, message: '' });
-      emitAgentLater(20, { type: 'auth-changed', loggedIn: true, phone: p });
-      return true;
-    },
-
-    authState: function () {
-      if (hasNative && hasNativeMethod('authState')) {
-        var raw = callNative('authState', [], true);
-        if (raw && typeof raw === 'object' && !raw.error) return normalizeAuthState(raw);
-        return { loggedIn: false, phone: '' };
-      }
-      return mockAuthState();
-    },
-
-    logout: function () {
-      if (hasNative && hasNativeMethod('logout')) {
-        try {
-          DSNative.logout();
-          return true;
-        } catch (e) {
-          warn('logout 失败：' + (e && e.message));
-          return false;
-        }
-      }
-      mockAuth = { loggedIn: false, phone: '' };
-      mockOtp = null;
-      emitAgentLater(10, { type: 'auth-changed', loggedIn: false, phone: '' });
-      return true;
-    },
-
-    /* ------------------------------------------------------------------ *
      * ARCH v2 P2：MCP Client（配置 CRUD / 连接管理 / 工具刷新）
      * 事件：mcp-status / mcp-tools / mcp-progress（native JsBridge 或 mock 发出）
      * ------------------------------------------------------------------ */
@@ -2834,12 +2722,6 @@
         return !!evt && String(evt.requestId) === rid;
       }, timeoutMs || 120000);
     },
-    waitOtpVerified: function (requestId, timeoutMs) {
-      var rid = String(requestId === null || requestId === undefined ? '' : requestId);
-      return waitForEvent('otp-verified', function (evt) {
-        return !!evt && String(evt.requestId) === rid;
-      }, timeoutMs || 30000);
-    },
     readFileAsync: function (path, timeoutMs) {
       var rid = genP1RequestId('file');
       var wait = waitForEvent('tool-result', function (evt) {
@@ -2872,23 +2754,11 @@
       return wait.then(function (evt) {
         return evt || { ok: false, requestId: rid, result: '命令执行超时' };
       });
-    },
-    verifyOtpAsync: function (phone, code, timeoutMs) {
-      var rid = genP1RequestId('otp');
-      var wait = waitForEvent('otp-verified', function (evt) {
-        return !!evt && String(evt.requestId) === rid;
-      }, timeoutMs || 30000);
-      var started = Bridge.verifyOtp(rid, phone, code);
-      if (!started) return Promise.resolve({ ok: false, requestId: rid, message: '无法校验验证码（原生不可用）' });
-      return wait.then(function (evt) {
-        return evt || { ok: false, requestId: rid, message: '验证超时，请重试' };
-      });
     }
   };
 
   /* ARCH v2 P1：mock 状态调试/QA 入口（仅测试使用） */
   Bridge.__mockAgent = {
-    authState: function () { return mockAuthState(); },
     workspaceInfo: function () { return mockWorkspaceInfo(); },
     audit: function () { return mockAudit.slice(); },
     listDir: function (path) { return mockListDir(path); },
@@ -2897,8 +2767,6 @@
     execTool: function (name, args) { return mockExecNativeTool(name, args); },
     reset: function () {
       mockSeedFs();
-      mockAuth = { loggedIn: false, phone: '' };
-      mockOtp = null;
       mockAudit = [];
       mockAuditSeq = 0;
       mockPendingTools = Object.create(null);

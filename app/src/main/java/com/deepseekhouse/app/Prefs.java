@@ -29,10 +29,6 @@ public final class Prefs {
     public static final String KEY_ROOT_MODE = "rootMode";
     /** ARCH v2 P1：工作区根目录（空字符串 = 使用默认 getExternalFilesDir("workspace")）。 */
     public static final String KEY_WORKSPACE_ROOT = "workspaceRoot";
-    /** ARCH v2 P1：手机号登录 token（32 位 hex，绝不进入 getPrefs() 的 JS 载荷）。 */
-    public static final String KEY_AUTH_TOKEN = "authToken";
-    /** ARCH v2 P1：最近一次绑定的手机号（登出后保留，用于识别“已绑定未登录”）。 */
-    public static final String KEY_AUTH_PHONE = "authPhone";
     /** ARCH v2 P2：MCP 服务器配置 JSON 数组 [{id,name,url,token,enabled}]。 */
     public static final String KEY_MCP_SERVERS = "mcpServers";
     /** ARCH v2 P3：house-plugins 目录插件的 enabled 状态（JSON 对象 fileName→bool）。 */
@@ -145,26 +141,6 @@ public final class Prefs {
 
     public void setWorkspaceRoot(String path) {
         sp.edit().putString(KEY_WORKSPACE_ROOT, path == null ? "" : path.trim()).apply();
-    }
-
-    /** 手机号登录 token（空 = 未登录）。只给 AuthManager/原生层使用，不暴露给 JS。 */
-    public String getAuthToken() {
-        String value = sp.getString(KEY_AUTH_TOKEN, "");
-        return value == null ? "" : value;
-    }
-
-    public void setAuthToken(String token) {
-        sp.edit().putString(KEY_AUTH_TOKEN, token == null ? "" : token.trim()).apply();
-    }
-
-    /** 已绑定手机号（登出后保留）。 */
-    public String getAuthPhone() {
-        String value = sp.getString(KEY_AUTH_PHONE, "");
-        return value == null ? "" : value;
-    }
-
-    public void setAuthPhone(String phone) {
-        sp.edit().putString(KEY_AUTH_PHONE, phone == null ? "" : phone.trim()).apply();
     }
 
     // ---------------------------------------------------------------- ARCH v2 P2 MCP 配置

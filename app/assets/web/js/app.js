@@ -13,7 +13,7 @@
  *
  * ARCH v2 P1 追加（本地 Agent 工作站）：
  *   L1 原生工具循环（插件 tools + native toolSchemas；execTool/confirmTool/tool-result，最多 5 轮）
- *   手机号登录（requestOtp/verifyOtp/authState/logout，API Key 模式保留）
+ *   工具循环、文件树、终端、审计、工作区
  *   工作区文件树（listDir/readFile）、终端（runShell）、审计（auditRecent）、备份/恢复/fork 回调接线
  *
  * ARCH v2 P2 追加（MCP Client + Termux 构建服务）：
@@ -129,15 +129,12 @@
     presets: [], /* v2.0 F1：智能体预设（Store.presets 快照） */
     pendingAgentChatId: null, /* v2.0 F1：新建会话时先创建、等待智能体选择的占位会话 */
     /* ARCH v2 P1：原生 Agent / 认证 / 工作区 / 终端 / 审计 */
-    auth: { loggedIn: false, phone: '' },
     nativeTools: {}, /* 原生工具 schema：name -> {risk, def}（native 名称优先） */
     workspace: null,
     filePreview: null,
     pendingShell: {}, /* runShell requestId -> {command, at}（区分终端与工具循环） */
     pendingConfirm: null, /* UI 以 handler 方式确认时使用：allow => void */
     confirmChain: Promise.resolve(),
-    loginPhone: '', /* 登录页手机号 tab 当前手机号 */
-    loginOtpSent: false,
     /* ARCH v2 P2：MCP Client（配置/状态/工具缓存/构建进度） */
     mcpServers: [], /* [{id,name,url,token,enabled,builtin?}] */
     mcpStatus: {}, /* id -> {status,message,tools:[{name,description}],toolCount} */
@@ -399,29 +396,11 @@
     /* ARCH v2 P1：初始化工作区信息（设置页文件树头部显示 root；旧原生会得到空值） */
     try { refreshWorkspaceInfo(); } catch (e4) { warn('初始化工作区失败：' + errText(e4)); }
 
-    /* ARCH v2 P1：启动时读取原生 authState（手机号登录态）。API Key 仍然是聊天的必要条件。 */
-    state.auth = readAuthState();
-    state.loginPhone = state.auth.phone || '';
-
     if (!state.apiKey) {
-      if (state.auth.loggedIn) {
-        /* 已登录手机号但还没有 API Key：不强制登录页，进入会话列表并提示配置 Key */
-        enterChats();
-        toast('已通过手机号登录，请在设置中配置 API Key 后开始聊天', true);
-      } else {
-        state.nav = { screen: 'login', drawerOpen: false };
-        setBackDepth(0);
-        ui('showScreen', 'login');
-        /* SPEC L1：已绑定手机号但未登录 → 登录页直接展示手机号 tab；否则默认 API Key tab */
-        var boundPhone = state.auth.phone || '';
-        ui('renderLogin', {
-          hasKey: false,
-          busy: false,
-          phone: boundPhone,
-          phoneLogin: !!boundPhone,
-          loggedIn: false
-        });
-      }
+      state.nav = { screen: 'login', drawerOpen: false };
+      setBackDepth(0);
+      ui('showScreen', 'login');
+      ui('renderLogin', { hasKey: false, busy: false });
     } else {
       enterChats();
     }
@@ -723,7 +702,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.4.0' }
+      { label: '版本', value: '2.4.1' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -920,13 +899,6 @@
     B.onEvent('back', function () { onBack(); });
     /* v2.0 F3：备份文件导入事件（{name, content}；取消时 content 为空 / error:'cancelled'，静默） */
     B.onEvent('file-imported', function (evt) { onFileImported(evt); });
-    /* ARCH v2 P1：手机号验证码 / 登录态 / 终端输出（工具循环的 tool-confirm / tool-result 由各请求自行消费） */
-    B.onEvent('otp-sent', function (evt) { onOtpSent(evt); });
-    B.onEvent('auth-changed', function (evt) {
-      if (!evt) return;
-      state.auth = { loggedIn: !!evt.loggedIn, phone: evt.phone ? String(evt.phone) : '' };
-      if (evt.phone) state.loginPhone = String(evt.phone);
-    });
     B.onEvent('tool-result', function (evt) {
       if (!evt || !evt.requestId) return;
       var pending = state.pendingShell[evt.requestId];
@@ -1066,9 +1038,6 @@
         refreshChatList();
         toast(next ? '已置顶' : '已取消置顶');
       }, 'onTogglePin'),
-      /* ARCH v2 P1：手机号登录 */
-      onSendOtp: safe(function (phone) { return sendOtp(phone); }, 'onSendOtp'),
-      onPhoneLogin: safe(function (phone, code) { phoneLogin(phone, code); return true; }, 'onPhoneLogin'),
       /* ARCH v2 P1：工作区文件树 / 终端 / 审计 / 工作区切换 */
       onOpenFile: safe(function (path, isDir) { return onOpenFile(path, isDir); }, 'onOpenFile'),
       onListDir: safe(function (path) { return loadWorkspaceDir(path); }, 'onListDir'),
@@ -1186,14 +1155,10 @@
     var doLogout = function () {
       if (state.busy) stopGeneration();
       try { if (global.Bridge && global.Bridge.setPrefs) global.Bridge.setPrefs({ apiKey: '' }); } catch (e) { /* ignore */ }
-      /* ARCH v2 P1：退出手机号登录态（原生侧清除 token；mock 模式清除内存态） */
-      try { if (global.Bridge && typeof global.Bridge.logout === 'function') global.Bridge.logout(); } catch (e1) { /* ignore */ }
-      var wasPhone = (state.auth && state.auth.phone) || state.loginPhone || '';
-      state.auth = { loggedIn: false, phone: '' };
       state.apiKey = '';
       state.nav = { screen: 'login', drawerOpen: false };
       ui('showScreen', 'login');
-      ui('renderLogin', { hasKey: false, busy: false, loggedIn: false, phone: wasPhone, phoneLogin: !!wasPhone });
+      ui('renderLogin', { hasKey: false, busy: false });
       setBackDepth(0);
     };
     if (skipConfirm) { doLogout(); return; }
@@ -3610,157 +3575,6 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * ARCH v2 P1：手机号登录（本地 OTP MVP，API Key 模式保留）
-   * ------------------------------------------------------------------ */
-
-  function readAuthState() {
-    var raw = null;
-    try {
-      if (global.Bridge && typeof global.Bridge.authState === 'function') raw = global.Bridge.authState();
-    } catch (e) {
-      warn('读取 authState 失败：' + errText(e));
-    }
-    if (!raw || typeof raw !== 'object') return { loggedIn: false, phone: '' };
-    return { loggedIn: !!raw.loggedIn, phone: raw.phone ? String(raw.phone) : '' };
-  }
-
-  function normalizePhone(phone) {
-    var p = String(phone === null || phone === undefined ? '' : phone).replace(/[\s-]/g, '');
-    return /^\+?\d{6,20}$/.test(p) ? p : '';
-  }
-
-  function renderPhoneLogin(patch) {
-    var base = {
-      hasKey: !!state.apiKey,
-      phoneLogin: true,
-      phone: state.loginPhone || '',
-      busy: false,
-      error: '',
-      otpSent: !!state.loginOtpSent
-    };
-    var keys = Object.keys(patch || {});
-    for (var i = 0; i < keys.length; i++) base[keys[i]] = patch[keys[i]];
-    ui('renderLogin', base);
-  }
-
-  /** handlers.onSendOtp(phone)：发送验证码；结果由 otp-sent 事件回填倒计时/demoCode */
-  function sendOtp(phone) {
-    var p = normalizePhone(phone);
-    state.loginPhone = p || state.loginPhone;
-    if (!p) {
-      renderPhoneLogin({ error: '请输入正确的手机号' });
-      return false;
-    }
-    if (!(global.Bridge && typeof global.Bridge.requestOtp === 'function')) {
-      renderPhoneLogin({ error: '当前环境不支持手机号登录' });
-      return false;
-    }
-    renderPhoneLogin({ phone: p, busy: false, error: '' });
-    var ok = false;
-    try { ok = global.Bridge.requestOtp(p) !== false; } catch (e) {
-      warn('requestOtp 失败：' + errText(e));
-      ok = false;
-    }
-    if (!ok) {
-      renderPhoneLogin({ phone: p, error: '验证码发送失败，请稍后重试' });
-      return false;
-    }
-    return true;
-  }
-
-  /** otp-sent 事件：转发 UI.onOtpSent（倒计时 + demoCode 提示），UI 未实现时退化为 renderLogin/toast */
-  function onOtpSent(evt) {
-    if (!evt) return;
-    var phone = evt.phone ? String(evt.phone) : (state.loginPhone || '');
-    var ttl = Number(evt.ttlSeconds) || 300;
-    var demo = evt.demoCode ? String(evt.demoCode) : '';
-    var message = evt.message ? String(evt.message) : '';
-    state.loginPhone = phone;
-    state.loginOtpSent = !message;
-    var payload = { phone: phone, ttlSeconds: ttl, demoCode: demo, message: message, ok: evt.ok !== false };
-    if (evt.ok === false) state.loginOtpSent = false;
-    var U = getUI();
-    var handled = false;
-    if (U && typeof U.onOtpSent === 'function') {
-      try { U.onOtpSent(payload); handled = true; } catch (e) { warn('UI.onOtpSent 异常：' + errText(e)); }
-    }
-    if (!handled) {
-      if (evt.ok === false) {
-        if (message) toast(message, true);
-        renderPhoneLogin({ phone: phone, otpSent: false, demoCode: '', error: message });
-      } else if (demo) {
-        toast('验证码已发送（本地演示码 ' + demo + '）', true);
-      } else if (message) {
-        toast(message, true);
-      }
-    }
-  }
-
-  function renderPhoneLoginError(message, patch) {
-    renderPhoneLogin(Object.assign({}, patch || {}, { error: String(message || '') }));
-  }
-
-  /** handlers.onPhoneLogin(phone, code)：Bridge.verifyOtp → otp-verified(ok) → 进入会话列表 */
-  function phoneLogin(phone, code) {
-    if (state.loginBusy) return;
-    var p = normalizePhone(phone) || state.loginPhone;
-    var c = String(code === null || code === undefined ? '' : code).replace(/\s/g, '');
-    if (!p) { renderPhoneLoginError('请输入手机号'); return; }
-    if (!c) { renderPhoneLoginError('请输入验证码'); return; }
-    if (!(global.Bridge && typeof global.Bridge.verifyOtp === 'function')) {
-      renderPhoneLoginError('当前环境不支持手机号登录');
-      return;
-    }
-    state.loginBusy = true;
-    renderPhoneLogin({ phone: p, busy: true, error: '', otpSent: true });
-    var requestId = genAgentRequestId('otp');
-    var wait = null;
-    try {
-      wait = global.Bridge.waitOtpVerified(requestId, 30000);
-    } catch (e) {
-      warn('waitOtpVerified 失败：' + errText(e));
-    }
-    var started = false;
-    try { started = global.Bridge.verifyOtp(requestId, p, c) !== false; } catch (e2) {
-      warn('verifyOtp 失败：' + errText(e2));
-      started = false;
-    }
-    if (!started) {
-      state.loginBusy = false;
-      renderPhoneLoginError('验证码校验不可用，请检查原生版本');
-      return;
-    }
-    if (!wait || typeof wait.then !== 'function') {
-      state.loginBusy = false;
-      renderPhoneLoginError('验证超时，请重试');
-      return;
-    }
-    wait.then(function (evt) {
-      state.loginBusy = false;
-      /* UI.onOtpVerified：清理倒计时/提示（失败时展示错误；成功时清理演示码） */
-      var U = getUI();
-      if (U && typeof U.onOtpVerified === 'function') {
-        try { U.onOtpVerified(evt || { ok: false, message: '验证超时，请重试' }); } catch (e3) { warn('UI.onOtpVerified 异常：' + errText(e3)); }
-      }
-      if (!evt) { renderPhoneLoginError('验证超时，请重试'); return; }
-      if (evt.ok) { onPhoneLoginSuccess(p); return; }
-      renderPhoneLoginError(evt.message || '验证码错误');
-    });
-  }
-
-  function onPhoneLoginSuccess(phone) {
-    state.auth = { loggedIn: true, phone: String(phone || '') };
-    state.loginPhone = String(phone || '');
-    state.loginOtpSent = false;
-    ui('renderLogin', { hasKey: !!state.apiKey, phoneLogin: true, phone: state.loginPhone, busy: false, error: '', loggedIn: true });
-    enterChats();
-    toast('登录成功', true);
-    if (!state.apiKey) {
-      setTimeout(function () { toast('请在设置中配置 API Key 后开始聊天', true); }, 700);
-    }
-  }
-
-  /* ------------------------------------------------------------------ *
    * ARCH v2 P1：工作区 / 文件树 / 终端 / 审计
    * ------------------------------------------------------------------ */
 
@@ -5742,10 +5556,6 @@
   App.captureCitations = safe(function (name, text) { return captureCitations(name, text); }, 'App.captureCitations');
 
   /* ARCH v2 P1 对外接口（UI 回调 / QA 可直接调用） */
-  App.getAuthState = function () { return { loggedIn: !!(state.auth && state.auth.loggedIn), phone: (state.auth && state.auth.phone) || '' }; };
-  App.refreshAuthState = safe(function () { state.auth = readAuthState(); return state.auth; }, 'App.refreshAuthState');
-  App.sendOtp = safe(function (phone) { return sendOtp(phone); }, 'App.sendOtp');
-  App.phoneLogin = safe(function (phone, code) { phoneLogin(phone, code); return true; }, 'App.phoneLogin');
   App.getToolSchemas = function () { return getToolSchemas(); };
   App.isNativeTool = function (name) { return isNativeTool(name); };
   App.getNativeTools = function () { return state.nativeTools; };

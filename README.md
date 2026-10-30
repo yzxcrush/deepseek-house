@@ -66,7 +66,6 @@ CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → 
 - **安全与审计**：所有工具调用写入 SQLite 审计库（时间/工具/参数/结果/是否确认）；`PathPolicy` 路径白名单（工作区 canonical 前缀、拒绝 `..` 与 symlink 越界）；可选的 All-Files-Access 授权
 - **工作区**：默认 `Android/data/com.deepseekhouse.app/files/workspace`，可切换到 `/sdcard/house-workspace`；聊天页「文件」抽屉 = 目录树 + 文件预览；底部「终端」面板 = 输入命令 → `/system/bin/sh` 执行 → 实时输出
 - **工具调用可视化**：消息流里显示工具卡片（工具名/参数摘要/状态：等待确认/成功/失败/已拒绝/结果折叠）
-- **手机号登录（本地 OTP MVP）**：登录页「API Key / 手机号」双标签；验证码通过通知渠道展示（仅本机演示，5 分钟有效、60s 限频、错 3 次锁 5 分钟），token 本地保存可退出；预留 `SmsProvider` 接口，可切换为自建后端 + 阿里云/腾讯云短信
 
 ## 🔓 Root 模式（v2.4.0，可选）
 

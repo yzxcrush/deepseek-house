@@ -319,7 +319,9 @@ UI.closeModelPicker()
 
 # ARCH v2 P1（2026-10-29）：本地 Agent 工作站 — 工具框架 / 安全审计 / 工作区
 技术栈：**纯 Java（手工 aapt→javac→d8→apksigner，无 Gradle/AndroidX/Kotlin）**。UI 仍为 WebView。
-本批 = 模块一（函数调用框架）+ 模块七（安全与审计）+ 模块四（工作区与文件管理）+ 手机号登录（本地 OTP MVP）。
+本批 = 模块一（函数调用框架）+ 模块七（安全与审计）+ 模块四（工作区与文件管理）。
+
+> 变更：v2.4.1 起移除手机号 OTP 登录（AuthManager / SmsProvider / 登录页双 tab 已删除），仅保留 API Key 登录；如需恢复可接真实短信后端。
 后续批次：P2 模块二/六（MCP Client + Termux 构建服务）、P3 模块三/五（插件市场 + 记忆）、P4 模块八（UI 深化）。
 
 ## 写入归属
@@ -340,40 +342,14 @@ UI.closeModelPicker()
 - `PathPolicy`：工作区根默认 `getExternalFilesDir("workspace")`；可通过 `setWorkspace` 改为 `/sdcard/house-workspace`（若已授予 All-Files-Access，否则返回需要授权的错误）；`isAllowed()` 必须 canonical path 前缀匹配 + 拒绝 `..` 穿越与 symlink 越界；写操作仅工作区内。
 - `ShellRunner`：ProcessBuilder，读取合并输出，超时 destroy。
 - `AuditDb`（SQLiteOpenHelper，filesDir/audit.db）：表 `audit(id, ts, tool, args, result, ok, confirmed)`；每次 exec（成功/失败/被拒绝）必须写一条；提供 recent(limit)。
-- `AuthManager`（手机号登录 MVP）：`requestOtp(phone)` 生成 6 位码（5 分钟有效、同一手机号 60s 限频），通过通知渠道「登录验证码」显示（同时事件带 `demoCode` 便于本机验证）；`verifyOtp` 校验（错 3 次锁 5 分钟）成功后生成随机 token 存 Prefs；`authState()`、`logout()`。预留 `interface SmsProvider { boolean send(String phone, String code); }`，后续接自建后端/阿里云短信时替换实现即可。
-- JsBridge 新方法（注入名仍 DSNative）：
-```
-String  toolSchemas()
-void    execTool(String requestId, String name, String argsJson)
-void    confirmTool(String requestId, boolean allow)
-String  workspaceInfo()      -> {"root":..,"writable":bool,"allFilesAccess":bool}
-String  listDir(String path) -> JSON array
-void    readFile(String requestId, String path)
-void    writeFile(String requestId, String path, String content)
-void    runShell(String requestId, String command)
-String  auditRecent(int limit) -> JSON array
-void    setWorkspace(String path)
-void    requestOtp(String phone)
-void    verifyOtp(String requestId, String phone, String code)
-String  authState()          -> {"loggedIn":bool,"phone":".."}
-void    logout()
-```
-- 事件（主线程 evaluateJavascript → `window.DSHost.onEvent(json)`）：
-```
-{"type":"tool-confirm","requestId":..,"tool":..,"args":{..},"risk":"high"}
-{"type":"tool-result","requestId":..,"tool":..,"ok":true,"result":"..","confirmed":true}
-{"type":"otp-sent","phone":"..","ttlSeconds":300,"demoCode":"123456"}   // demoCode 仅本地模拟模式
-{"type":"otp-verified","requestId":..,"ok":true,"message":".."}
-{"type":"auth-changed","loggedIn":true,"phone":".."}
-```
-- 风险策略：LOW 直接执行；MID 首次执行前确认（同一工具会话内确认一次即可）；HIGH **每次**确认；用户拒绝时返回 `ok:false,result:"用户拒绝执行"` 并写审计。
+- ~~AuthManager（手机号登录 MVP）~~：v2.4.1 已移除。
 
 ## U1. UI（web 壳）
 - 聊天页顶栏新增「文件」按钮 → 左侧文件树抽屉（覆盖层 82% 宽，面包屑 + 目录树 + 刷新；点击文件预览/插入路径；显示 workspace 根路径）。
 - 聊天页底部新增可折叠「终端」面板（等宽输出、输入命令、执行/清空/复制；高度可展开/收起）。
 - 消息流中的工具调用卡片：工具名 + 参数摘要 + 状态（等待确认/运行中/成功/失败）+ 结果折叠（默认收起，点击展开）。
 - 高危工具确认弹窗：显示工具名/风险/参数 JSON，按钮「拒绝 / 允许执行」。
-- 登录页新增 tab：「API Key」与「手机号登录」（手机号、验证码、发送（60s 倒计时）、登录、验证码提示位）。
+
 - 设置页新增「工作区」行（显示当前根目录 + 更改按钮）；个人资料「更多」新增「审计日志」入口（列表：时间/工具/结果/是否确认）与「备份与恢复」（F3 已实现的导出/导入回调接线）。
 - 消息长按菜单新增「从此处新建分支」（F4 已实现回调 onForkMessage）。
 - 风格继续 Telegram 深色 #181818 / #517AF6 / 卡片 #1f1f1f / 次要文字 #8b8b8b。
@@ -382,14 +358,14 @@ void    logout()
 - 工具循环升级：请求 `tools = 插件 tools + DSNative.toolSchemas()`（native 工具优先匹配）；收到 tool_calls 后：
   - native 工具 → `DSNative.execTool(requestId,name,argsJson)`；等待 `tool-confirm` 事件 → `UI` 确认弹窗 → `DSNative.confirmTool`；等待 `tool-result` → 追加 `role:"tool"` 消息（带 toolName/args/result/ok）→ 继续请求，最多 5 轮。
   - 插件工具保持现有 DSPlugins.runTool 路径。
-- 认证：登录页手机号模式 → `DSNative.requestOtp` → `DSNative.verifyOtp`；启动时 `authState()`，已绑定手机号但未登录 → 显示手机号登录页；退出登录调用 `DSNative.logout()`；API Key 模式保留。
+- 认证：仅 API Key 登录；启动读取 API Key；退出登录清除本机 Key。
 - 工作区/终端/审计：`workspaceInfo/listDir/readFile/runShell/auditRecent` 的 Promise 封装（bridge.js），app.js 负责调用与数据流转，UI 只渲染。
 - 备份/恢复、fork 的 UI 回调接线（F3/F4 后端已就绪）。
 - 必须保持现有 82 项测试全绿，并给新能力补测试。
 
 ## 验收
 1. `node scripts/check-js.mjs` + `bash scripts/check-assets.sh` 通过；`javac` 0 error。
-2. 真机（root 安装）验证：文件树能列出工作区、终端能执行 `echo hi`、AI 触发 read_file 会走确认/结果卡片、手机号登录可用本地验证码完成、审计日志有记录。
+2. 真机（root 安装）验证：文件树能列出工作区、终端能执行 `echo hi`、AI 触发 read_file 会走确认/结果卡片、审计日志有记录。
 3. 无 AndroidX/Gradle/Kotlin 依赖；APK 体积增长 ≤300KB。
 
 ---

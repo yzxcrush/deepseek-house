@@ -718,7 +718,7 @@ window.DSPlugins.register({id:'user.temp',name:'临时',version:'1.0.0',builtin:
     return { ...ctx, native };
   }
 
-  test('P1 原生返回值归一化：toolSchemas / workspaceInfo / listDir / auditRecent / authState / getLastError', () => {
+  test('P1 原生返回值归一化：toolSchemas / workspaceInfo / listDir / auditRecent / getLastError', () => {
     const { win, native } = p1BridgeWindow();
     const B = win.Bridge;
     equal(B.__isMock, false, '注入 DSNative 后不应处于 mock 模式');
@@ -755,13 +755,9 @@ window.DSPlugins.register({id:'user.temp',name:'临时',version:'1.0.0',builtin:
     equal(audit[0].tool, 'list_dir', '审计 tool 字段不正确');
     equal(audit[0].ok, true, '审计 ok 字段不正确');
     equal(audit[0].confirmed, false, '审计 confirmed 字段不正确');
-
-    const auth = B.authState();
-    equal(auth.loggedIn, true, 'authState.loggedIn 不正确');
-    equal(auth.phone, '13800000000', 'authState.phone 不正确');
   });
 
-  test('P1 方法转发：execTool/confirmTool/readFile/writeFile/runShell/setWorkspace/requestOtp/verifyOtp/logout', async () => {
+  test('P1 方法转发：execTool/confirmTool/readFile/writeFile/runShell/setWorkspace', async () => {
     const { win, native } = p1BridgeWindow();
     const B = win.Bridge;
 
@@ -781,16 +777,6 @@ window.DSPlugins.register({id:'user.temp',name:'临时',version:'1.0.0',builtin:
     equal(B.setWorkspace('/sdcard/qa-ws'), true, 'setWorkspace 应返回 true');
     equal(native.__calls.filter((c) => c.method === 'setWorkspace').pop().args[0], '/sdcard/qa-ws', 'setWorkspace 参数未透传');
 
-    equal(B.requestOtp('138-0000-0001'), true, 'requestOtp 应返回 true 且手机号需去除分隔符');
-    equal(native.__calls.filter((c) => c.method === 'requestOtp').pop().args[0], '13800000001', 'requestOtp 手机号归一化不正确');
-
-    // verifyOtp + waitOtpVerified：事件由 __emit 注入
-    equal(B.verifyOtp('rid_otp', '13800000001', '123456'), true, 'verifyOtp 应返回 true');
-    deepEqual(native.__calls.filter((c) => c.method === 'verifyOtp').pop().args, ['rid_otp', '13800000001', '123456'], 'verifyOtp 参数未透传');
-    const otpWaiter = B.waitOtpVerified('rid_otp', 1000);
-    native.__emit({ type: 'otp-verified', requestId: 'rid_otp', ok: true, message: '' });
-    const otpEvt = await otpWaiter;
-    equal(otpEvt && otpEvt.ok, true, 'waitOtpVerified 未收到 otp-verified');
 
     // tool-result 的 Promise 通道
     const toolWaiter = B.waitToolResult('rid_tool', 1000);
@@ -798,11 +784,6 @@ window.DSPlugins.register({id:'user.temp',name:'临时',version:'1.0.0',builtin:
     const toolEvt = await toolWaiter;
     equal(toolEvt && toolEvt.result, 'ok', 'waitToolResult 未收到 tool-result');
 
-    equal(B.logout(), true, 'logout 应返回 true');
-    ok(native.__calls.some((c) => c.method === 'logout'), 'Bridge.logout 未调用原生');
-    const after = B.authState();
-    equal(after.loggedIn, false, 'logout 后 authState.loggedIn 应为 false');
-    equal(after.phone, '13800000000', 'logout 后应保留绑定手机号');
   });
 
   /* ================================================================== *

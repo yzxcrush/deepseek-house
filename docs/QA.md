@@ -36,7 +36,7 @@ scripts/qa/
 ├── static-checks.mjs      # 静态契约扫描（前端 + Java/Manifest 跨端核对 + P1/P2/P3 + python py_compile）
 ├── unit-tests.mjs         # 单元测试（util/markdown/store/bridge mock/plugins + Bridge P1/P2/P3 原生封装）
 ├── integration-tests.mjs  # jsdom 集成冒烟（真实 index.html + 全部脚本 + DSNative mock）
-├── p1-integration-tests.mjs # ARCH v2 P1 集成：工具循环/文件树/终端/审计/OTP/工作区（每条独立窗口）
+├── p1-integration-tests.mjs # ARCH v2 P1 集成：工具循环/文件树/终端/审计/工作区（每条独立窗口）
 ├── p2-integration-tests.mjs # ARCH v2 P2 集成：MCP 服务器管理/连接/工具发现/构建进度卡（每条独立窗口）
 └── p3-integration-tests.mjs # ARCH v2 P3 集成：插件市场/HMAC/记忆注入与压缩/插件槽位（每条独立窗口）
 ```
@@ -83,7 +83,6 @@ scripts/qa/
 | P1 U1/L1 工作区文件树 | 聊天页顶栏「文件」→ `#file-drawer` 打开（aria-hidden=false）→ `listDir(工作区根)` → `#file-root` 显示根路径 → 目录/文件行渲染（默认 3 行、目录 1 + 文件 2、`#file-foot` 计数）；点目录 → `listDir(目录路径)` + 面包屑；点文件 → `readFile(requestId, 文件路径)` → 注入 `tool-result` → `#file-preview-modal` 打开（文件名/路径/内容）；`listDir` 返回 `{error}` → `#file-tree .file-empty--error`「目录读取失败：<原生错误>」+ foot 状态 | P1 集成 · 工作区文件树 3 项 |
 | P1 U1 终端面板 | 聊天页「终端」→ `#terminal-panel` 展开（hidden=false / aria-hidden=false）；输入 `echo hi` 点执行 → `runShell(requestId,'echo hi')`、执行中输入禁用且按钮「执行中…」→ 注入 `tool-result` → `#terminal-output` 出现 `$ echo hi` 与输出、`appendTerminal` 后输入恢复可用、按钮恢复「执行」 | P1 集成 · 终端 1 项 |
 | P1 U1 审计日志 | 个人资料 →「审计日志」→ `auditRecent(50)` → `#audit-list` 渲染时间（`YYYY-MM-DD HH:MM:SS`）/工具/成功失败/已确认·免确认·未确认拒绝、参数与结果、`#audit-count` 条数、空状态隐藏 | P1 集成 · 审计 1 项 |
-| P1 N1 手机号登录（本地 OTP） | 登录页 tab「API Key ↔ 手机号登录」表单互斥 + aria-selected；输入手机号发送 → `requestOtp(phone)` + 60s 倒计时；注入 `otp-sent{demoCode,ttlSeconds}` → `#login-otp-hint` 显示「演示验证码：xxxxxx」与倒计时；输入验证码提交 → `verifyOtp(requestId,phone,code)` → 注入 `otp-verified ok` → 进入会话列表、`App.getAuthState()` 已登录；注入 `otp-verified ok:false` → `#login-phone-error` 显示原生 message、停留登录页、busy 复位；`authState` 已登录启动（无 API Key）→ 直接进入会话列表并提示配置 Key；设置页退出登录 → 确认弹窗 → `Bridge.logout()` 被调用 + 清空 prefs.apiKey + 回登录页 | P1 集成 · 手机号登录 6 项 |
 | P1 N1 工作区切换 | 启动即调用 `workspaceInfo()`；设置页 `#set-workspace-row` 显示根目录/读写状态/存储权限（需要 All-Files-Access 提示）/「恢复默认工作区」入口与默认路径；`App.setWorkspace(newPath)` → `setWorkspace(path)` → `workspace-changed` 事件回填（file-root/设置行/`listDir(新根)`）→ 恢复默认 → `setWorkspace(defaultRoot)` + isDefault=true + 入口隐藏 | P1 集成 · 工作区 2 项 |
 | P1 跨端静态契约 | `index.html` 必备 id（`file-drawer/terminal-panel/risk-modal/login-tabs/screen-audit/set-workspace-row` 等 40+）与 `data-action`；`ui.js` P1 API（`confirmRisk/renderFileTree/appendTerminal/renderAudit/setWorkspaceInfo/renderFilePreview/onOtpSent/onOtpVerified`）；`app.js` P1 handlers/对外接口/事件监听；`bridge.js` 14 个原生封装 + `waitForEvent/getLastError/readFileAsync/...`；`JsBridge.java` 14 个 `@JavascriptInterface` 方法与 6 类事件 + `requiresConfirmation/sessionConfirmedTools/pendingTools/auditTool`；原生 `agent/` 8 个类（ToolDef/ToolRegistry/ToolExecutor/PathPolicy/ShellRunner/AuditDb/AuthManager/Workspace）、5 个内置工具与风险级别、审计表字段、OTP `demoCode`/60s、Shell 30s、Manifest `MANAGE_EXTERNAL_STORAGE` | P1 静态 5 项 |
 | P1 单元（Bridge 原生分支） | 原生返回值归一化：`toolSchemas/workspaceInfo/listDir/auditRecent/authState`；`listDir {error}` → `[]` + `getLastError('listDir')`；方法转发参数透传：`execTool/confirmTool/readFile/writeFile/runShell/setWorkspace/requestOtp/verifyOtp/logout`；`waitOtpVerified/waitToolResult` 事件 Promise 通道 | 单元 · bridge.js P1 原生封装 2 项 |
@@ -151,7 +150,6 @@ jsdom 没有真实布局/渲染/原生桥，集成测试用以下 stub 保证可
 | `auditRecent(limit)` | 返回 `opts.p1.audit` 前 N 条 | 审计页字段/时间/状态渲染 |
 | `setWorkspace(path)` | 更新 `__p1.workspace.root`；默认异步回 `workspace-changed{ok,root}`（`autoWorkspaceChanged` 可关） | 断言 `setWorkspace` 参数 + 等待回填 |
 | `requestOtp/verifyOtp` | 记录到 `__p1.otpRequests/verifyRequests`，**不自动发事件** | 注入 `otp-sent{demoCode,ttlSeconds}`、`otp-verified{requestId,ok,message}` |
-| `authState()/logout()` | 返回 `__p1.auth`；`logout` 清登录态但保留绑定手机号并异步回 `auth-changed` | 启动分支 / 退出登录用例 |
 
 P1 用例**每条使用独立 jsdom 窗口**（`loadAppWindow` + `close()`），不共享会话状态，可单独复现；窗口内页面错误（排除 jsdom 已知噪音）按失败处理。
 
@@ -266,7 +264,7 @@ test('行为描述', () => {
 - **视觉/交互**（jsdom 无布局）：Telegram 深色质感、气泡圆角/尾角、抽屉 220ms 动画、长按菜单（复制/删除/重命名/导出）、滚动到底悬浮按钮、输入中三点动画、`prefers-reduced-motion`、安全区 `env(safe-area-inset-*)`、键盘 `adjustResize` 行为。
 - **构建验收**：`bash scripts/build.sh`、`apksigner verify`、`aapt dump badging`、`unzip -l` 资源清单（Lead 负责）。
 - **APK 安装冒烟**：安装/首次启动/登录/退出登录后保留会话。
-- **ARCH v2 P1 真机验证**（jsdom 无法覆盖）：AI 触发 `read_file/list_dir` 的确认/结果卡片；`write_file`（MID 首次确认）与 `run_shell`（HIGH 每次确认）真机弹窗与审计落库（`filesDir/audit.db`）；PathPolicy 拒绝 `..`/symlink 越界与 `/sdcard` 未授权场景；文件树列出 `/sdcard/house-workspace`、点击预览；终端执行 `echo hi`；手机号登录通知渠道「登录验证码」显示 OTP、60s 限频/错 3 次锁 5 分钟；`setWorkspace('/sdcard/house-workspace')` 在授予 MANAGE_EXTERNAL_STORAGE 后生效；Android 11+ 「所有文件访问权限」跳转。
+- **ARCH v2 P1 真机验证**（jsdom 无法覆盖）：AI 触发 `read_file/list_dir` 的确认/结果卡片；`write_file`（MID 首次确认）与 `run_shell`（HIGH 每次确认）真机弹窗与审计落库（`filesDir/audit.db`）；PathPolicy 拒绝 `..`/symlink 越界与 `/sdcard` 未授权场景；文件树列出 `/sdcard/house-workspace`、点击预览；终端执行 `echo hi`；`setWorkspace('/sdcard/house-workspace')` 在授予 MANAGE_EXTERNAL_STORAGE 后生效；Android 11+ 「所有文件访问权限」跳转。
 - **ARCH v2 P2 真机验证**（jsdom 无法覆盖）：Termux 内 `./termux-mcp/setup.sh` + `./start.sh` 启动 Python MCP Server（127.0.0.1:8787 + Token）；App 设置 → MCP 服务器 → 添加 `http://127.0.0.1:8787/mcp` + Token → 显示已连接与 5 个工具；让 AI 调 `list_workspace` / `pack_apk`，确认弹窗（MID）→ 结果卡片与进度条/日志（Termux server 是否发 `mcp-progress` 决定进度是否实时）→ 审计落库与 tool-result；断网/Token 错误时的 error 状态与重连（1s/2s/4s/8s/30s）；`python3 -m py_compile`、`curl initialize`、`tools/list` 手工验证。
 - **ARCH v2 P3 真机验证**（jsdom 无法覆盖）：插件目录（`getExternalFilesDir("house-plugins")` 与可选 `/sdcard/house-plugins`）真实读写、`.js/.json` 文件名白名单与 512KB 限制、`pluginOpenDir` 打开系统文件管理器到插件目录；用真实 `PluginRepository.hmac/sha256` 签名的本地市场索引（https 或真实部署）安装插件 → 工具出现在工具列表；HMAC/sha256 被篡改时拒绝写入；记忆页增删长期偏好/项目记忆后重启仍在（`filesDir/memory.db` 的 `session_summary`/`memory_kv` 表）；真实超长会话（>19200 字符）压缩后 `memorySaveSummary` 落库、重启后摘要仍注入 system prompt；HousePlugin `uiSlots` 面板在真机聊天页打开与动作执行。
 
@@ -283,7 +281,7 @@ ALL TESTS PASSED (139)
 - 若产品代码后续变更导致失败，`npm test` 会列出每个失败项的 suite/测试名/断言信息，退出码非 0。
 
 
-## 10. ARCH v2 P4 覆盖（v2.3.0，148 项）
+## 10. ARCH v2 P4 覆盖（v2.3.0，142 项）
 
 `scripts/qa/p4-integration-tests.mjs`（9 项）：
 - 图片消息：`App.pickImage('gallery')` → 待发送队列 → `App.sendWithImages` → startChat 请求 `messages[].content` 为 `[{type:'text'},{type:'image_url',image_url:{url}}]`，发送后队列清空

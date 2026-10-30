@@ -3714,7 +3714,7 @@ body { background-color: #181818; }
 
 /* ==========================================================================
    ARCH v2 P1：本地 Agent 工作站 UI
-   文件树抽屉 / 底部终端面板 / 工具调用卡片 / 高危确认 / 手机号登录 /
+   文件树抽屉 / 底部终端面板 / 工具调用卡片 / 高危确认 /
    工作区设置行 / 审计日志页 / 备份恢复弹窗
    配色：背景 #181818，卡片 #1f1f1f，面板 #232323，强调 #517AF6，次要 #8b8b8b
    ========================================================================== */
@@ -4315,68 +4315,6 @@ body { background-color: #181818; }
   color: #5f5f5f;
 }
 
-/* ---------- 登录页：API Key / 手机号登录 切换 ---------- */
-.login-tabs {
-  display: flex;
-  flex: none;
-  gap: 3px;
-  width: 100%;
-  margin-bottom: 18px;
-  padding: 3px;
-  border-radius: 12px;
-  background-color: #232323;
-}
-
-.login-tab {
-  flex: 1 1 0;
-  height: 38px;
-  border-radius: 9px;
-  color: #8b8b8b;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1;
-  transition: background-color 150ms ease, color 150ms ease;
-}
-
-.login-tab:active {
-  color: #d6d6d6;
-}
-
-.login-tab.is-active {
-  background-color: var(--accent);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(81, 122, 246, 0.35);
-}
-
-.login-phone-form[hidden] {
-  display: none;
-}
-
-.field-suffix.login-otp-send {
-  width: auto;
-  padding: 0 10px;
-  border-radius: 9px;
-  color: var(--accent-2);
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.field-suffix.login-otp-send:disabled {
-  color: #8b8b8b;
-  opacity: 0.75;
-}
-
-.login-otp-hint {
-  padding: 8px 11px;
-  border: 1px solid rgba(81, 122, 246, 0.28);
-  border-radius: 10px;
-  background-color: rgba(81, 122, 246, 0.1);
-  color: #adbfff;
-  font-size: 12.5px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-}
 
 /* ---------- 设置页：工作区路径行 ---------- */
 .form-value--path {

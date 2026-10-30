@@ -201,22 +201,21 @@ export function createMockNative(opts = {}) {
   const auto = Object.assign({ validateKey: true, startChat: false }, opts.auto || {});
 
   /* ------------------------------------------------------------------ *
-   * ARCH v2 P1：mock 原生 Agent 工具 / 工作区 / 审计 / 手机号登录（OTP）
+   * ARCH v2 P1：mock 原生 Agent 工具 / 工作区 / 审计
    *
    * 契约与 JsBridge.java 保持一致：
-   *   toolSchemas()/workspaceInfo()/listDir()/auditRecent()/authState()
+   *   toolSchemas()/workspaceInfo()/listDir()/auditRecent()
    *   同步返回 **JSON 字符串**（Bridge 会 JSON.parse）；
    *   execTool/confirmTool/readFile/writeFile/runShell/setWorkspace/
-   *   requestOtp/verifyOtp/logout 只记录调用，**事件（tool-confirm / tool-result /
+   *   事件（tool-confirm / tool-result /
    *   otp-sent / otp-verified / workspace-changed / auth-changed）默认由测试通过
    *   app.native.__emit(evt) 主动注入**，保证用例可精确控制时序。
    *   例外：setWorkspace 默认自动回 workspace-changed（原生异步 setRoot 的等价物），
-   *        logout 默认自动回 auth-changed；均可用 opts.p1.auto* 关闭。
+   *        均可用 opts.p1.auto* 关闭。
    *
    * 可通过 opts.p1 配置（测试里也可直接修改 app.native.__p1 运行时状态）：
    *   { tools, workspace:{root,writable,allFilesAccess,defaultRoot,isDefault},
    *     dirs:{path:[entries]}, files:{path:content}, audit:[...],
-   *     auth:{loggedIn,phone}, otp:{ttlSeconds,demoCode},
    *     listDirError, workspaceInfoError,
    *     autoWorkspaceChanged:true, autoAuthChanged:true,
    *     autoToolEvents:false, autoDirectResults:false }
@@ -249,7 +248,6 @@ export function createMockNative(opts = {}) {
     dirs: p1cfg.dirs && typeof p1cfg.dirs === 'object' ? p1cfg.dirs : {},
     files: p1cfg.files && typeof p1cfg.files === 'object' ? p1cfg.files : {},
     audit: Array.isArray(p1cfg.audit) ? p1cfg.audit.slice() : [],
-    auth: Object.assign({ loggedIn: false, phone: '' }, p1cfg.auth && typeof p1cfg.auth === 'object' ? p1cfg.auth : {}),
     otp: Object.assign({ ttlSeconds: 300, demoCode: '123456' }, p1cfg.otp && typeof p1cfg.otp === 'object' ? p1cfg.otp : {}),
     listDirError: p1cfg.listDirError ? String(p1cfg.listDirError) : '',
     workspaceInfoError: p1cfg.workspaceInfoError ? String(p1cfg.workspaceInfoError) : '',
@@ -262,8 +260,6 @@ export function createMockNative(opts = {}) {
     fileRequests: [], // readFile 记录
     shellRequests: [], // runShell 记录
     writeRequests: [], // writeFile 记录
-    otpRequests: [], // requestOtp 记录
-    verifyRequests: [], // verifyOtp 记录
   };
 
   function p1ResolvePath(p) {
@@ -951,33 +947,6 @@ export function createMockNative(opts = {}) {
           message: '工作区已切换', allFilesAccess: !!p1.workspace.allFilesAccess,
         }), 5);
       }
-    },
-
-    /* ---------------- ARCH v2 P1：手机号登录（本地 OTP MVP） ---------------- */
-    requestOtp(phone) {
-      record('requestOtp', [phone]);
-      const p = String(phone == null ? '' : phone).replace(/[\s-]/g, '');
-      p1.otpRequests.push({ phone: p, at: Date.now() });
-      p1.otp.phone = p;
-      p1.otp.sentAt = Date.now();
-    },
-    verifyOtp(requestId, phone, code) {
-      record('verifyOtp', [requestId, phone, code]);
-      p1.verifyRequests.push({
-        requestId: String(requestId == null ? '' : requestId),
-        phone: String(phone == null ? '' : phone),
-        code: String(code == null ? '' : code),
-      });
-    },
-    authState() {
-      record('authState', []);
-      return JSON.stringify({ loggedIn: !!p1.auth.loggedIn, phone: p1.auth.phone == null ? '' : String(p1.auth.phone) });
-    },
-    logout() {
-      record('logout', []);
-      const phone = p1.auth.phone == null ? '' : String(p1.auth.phone);
-      p1.auth = { loggedIn: false, phone };
-      if (p1.autoAuthChanged) setTimeout(() => emit({ type: 'auth-changed', loggedIn: false, phone }), 5);
     },
 
     /* ---------------- ARCH v2 P2：原生 MCP Client（JsBridge 契约） ---------------- */

@@ -460,16 +460,14 @@ export function registerStaticTests() {
       'terminal-panel', 'terminal-output', 'terminal-input', 'terminal-run',
       // 工具卡片 / 高危确认弹窗
       'risk-modal', 'risk-tool', 'risk-badge', 'risk-args', 'risk-hint', 'risk-accept', 'risk-deny',
-      // 手机号登录
-      'login-tabs', 'login-form', 'login-phone-form', 'login-phone', 'login-otp', 'login-send-otp',
-      'login-phone-submit', 'login-phone-error', 'login-otp-hint',
+      'login-form',
       // 审计日志
       'screen-audit', 'audit-list', 'audit-empty', 'audit-count',
       // 工作区设置行
       'set-workspace-row', 'set-workspace-value', 'set-workspace-writable', 'set-workspace-access', 'set-workspace-reset',
       // 文件预览
       'file-preview-modal', 'file-preview-name', 'file-preview-path', 'file-preview-content',
-      // 登录 tab 与入口按钮 data-action
+      // 入口按钮 data-action
       'chat-head-avatar',
     ];
     const missingIds = requiredIds.filter((id) => !new RegExp(`id\\s*=\\s*["']${id}["']`).test(html));
@@ -477,16 +475,13 @@ export function registerStaticTests() {
     for (const action of [
       'open-files', 'close-files', 'files-refresh',
       'toggle-terminal', 'terminal-close', 'terminal-clear', 'terminal-copy', 'terminal-run',
-      'risk-accept', 'risk-deny', 'send-otp', 'login-tab-apikey',
       'set-workspace', 'reset-workspace', 'open-audit', 'refresh-audit',
     ]) {
       ok(html.indexOf(`data-action="${action}"`) !== -1, `index.html 缺少 data-action="${action}"`);
     }
-    ok(html.indexOf('data-login-tab="apikey"') !== -1 && html.indexOf('data-login-tab="phone"') !== -1,
-      'index.html 登录 tab 缺少 apikey/phone 两个切换按钮');
     // 工具卡片渲染容器由 JS 动态创建，样式类必须在 CSS 中定义
     const css = readOrNull(path.join(WEB_DIR, 'css', 'app.css')) || '';
-    for (const cls of ['.tool-card', '.tool-badge', '.file-node', '.terminal-output', '.risk-badge', '.login-tabs', '.audit-row']) {
+    for (const cls of ['.tool-card', '.tool-badge', '.file-node', '.terminal-output', '.risk-badge', '.audit-row']) {
       ok(css.indexOf(cls) !== -1, `app.css 缺少 P1 样式类 ${cls}`);
     }
   });
@@ -499,7 +494,7 @@ export function registerStaticTests() {
     // UI：渲染 / 弹窗 / 登录 OTP / 工作区 / 文件预览
     for (const name of [
       'confirmRisk', 'renderFileTree', 'appendTerminal', 'renderAudit', 'setWorkspaceInfo',
-      'renderFilePreview', 'onOtpSent', 'onOtpVerified',
+      'renderFilePreview',
     ]) {
       const exposed = definesMethod(uiCode, name) || new RegExp(`UI\\.${name}\\s*=`).test(uiCode);
       ok(exposed, `ui.js 缺少 P1 API：UI.${name}`);
@@ -508,15 +503,15 @@ export function registerStaticTests() {
       ok(uiCode.indexOf(`'${action}'`) !== -1, `ui.js 未处理动态 action ${action}`);
     }
     for (const name of [
-      'switchLoginTab', 'openFileDrawer', 'closeFileDrawer', 'toggleTerminal', 'runTerminalCommand',
-      'resolveRisk', 'startOtpCountdown', 'showOtpHint', 'openAudit', 'updateWorkspaceDom',
+      'openFileDrawer', 'closeFileDrawer', 'toggleTerminal', 'runTerminalCommand',
+      'resolveRisk', 'openAudit', 'updateWorkspaceDom',
     ]) {
       ok(definesMethod(uiCode, name), `ui.js 缺少 P1 内部实现：${name}`);
     }
 
     // App：P1 handlers + 对外接口
     for (const name of [
-      'onOpenFile', 'onListDir', 'onRunShell', 'onOpenAudit', 'onSendOtp', 'onPhoneLogin',
+      'onOpenFile', 'onListDir', 'onRunShell', 'onOpenAudit',
       'onSetWorkspace', 'onResetWorkspace', 'onToolConfirm',
     ]) {
       ok(new RegExp(`\\b${name}\\s*:`).test(appCode), `app.js handlers 缺少 ${name}`);
@@ -524,13 +519,13 @@ export function registerStaticTests() {
     for (const name of [
       'getToolSchemas', 'isNativeTool', 'getNativeTools', 'getWorkspaceInfo', 'refreshWorkspaceInfo',
       'listDir', 'openFile', 'runShell', 'openAudit', 'setWorkspace', 'resetWorkspace',
-      'getFilePreview', 'confirmTool', 'sendOtp', 'phoneLogin', 'refreshAuthState', 'getAuthState',
+      'getFilePreview', 'confirmTool',
     ]) {
       ok(new RegExp(`App\\.${name}\\s*=`).test(appCode), `app.js 缺少对外接口 App.${name}`);
     }
     for (const name of [
       'getToolSchemas', 'execNativeTool', 'execPluginTool', 'askToolConfirm', 'appendToolResultMessage',
-      'refreshWorkspaceInfo', 'loadWorkspaceDir', 'onOtpSent', 'phoneLogin', 'runShellCommand', 'openAudit',
+      'refreshWorkspaceInfo', 'loadWorkspaceDir', 'runShellCommand', 'openAudit',
     ]) {
       ok(definesMethod(appCode, name), `app.js 缺少 P1 实现函数 ${name}`);
     }
@@ -538,33 +533,31 @@ export function registerStaticTests() {
     // Bridge：14 个原生方法封装 + 事件等待辅助
     for (const name of [
       'toolSchemas', 'execTool', 'confirmTool', 'workspaceInfo', 'listDir', 'readFile', 'writeFile',
-      'runShell', 'auditRecent', 'setWorkspace', 'requestOtp', 'verifyOtp', 'authState', 'logout',
+      'runShell', 'auditRecent', 'setWorkspace',
     ]) {
       ok(definesMethod(bridgeCode, name), `bridge.js 缺少 P1 原生封装 Bridge.${name}`);
     }
-    for (const name of ['getLastError', 'waitForEvent', 'waitToolResult', 'waitOtpVerified', 'readFileAsync', 'runShellAsync', 'verifyOtpAsync']) {
+    for (const name of ['getLastError', 'waitForEvent', 'waitToolResult', 'readFileAsync', 'runShellAsync']) {
       ok(definesMethod(bridgeCode, name), `bridge.js 缺少 P1 辅助 API Bridge.${name}`);
     }
-    for (const evt of ['tool-confirm', 'tool-result', 'otp-sent', 'otp-verified', 'auth-changed', 'workspace-changed']) {
+    for (const evt of ['tool-confirm', 'tool-result', 'workspace-changed']) {
       ok(bridgeCode.indexOf(`'${evt}'`) !== -1, `bridge.js 未注册 P1 事件类型 ${evt}`);
     }
-    for (const evt of ['tool-confirm', 'tool-result', 'otp-sent', 'auth-changed', 'workspace-changed']) {
+    for (const evt of ['tool-confirm', 'tool-result', 'workspace-changed']) {
       ok(appCode.indexOf(`'${evt}'`) !== -1, `app.js 未监听 P1 事件 ${evt}`);
     }
-    // otp-verified 走 Bridge.waitOtpVerified 的 Promise 通道（verifyOtp 后 await）
-    ok(appCode.indexOf('waitOtpVerified') !== -1, 'app.js 未通过 Bridge.waitOtpVerified 等待 otp-verified');
   });
 
-  test('JsBridge.java 实现 P1 契约 14 个方法 + 6 类事件 + 风险确认策略', () => {
+  test('JsBridge.java 实现 P1 契约 10 个方法 + 事件 + 风险确认策略', () => {
     const source = readOrNull(JS_BRIDGE);
     ok(source, 'JsBridge.java 不存在');
     const methods = [
       'toolSchemas', 'execTool', 'confirmTool', 'workspaceInfo', 'listDir', 'readFile', 'writeFile',
-      'runShell', 'auditRecent', 'setWorkspace', 'requestOtp', 'verifyOtp', 'authState', 'logout',
+      'runShell', 'auditRecent', 'setWorkspace',
     ];
     const missing = methods.filter((name) => !new RegExp(`public\\s+(?:static\\s+)?(?:String|void|int|boolean)\\s+${name}\\s*\\(`).test(source));
     ok(missing.length === 0, `JsBridge.java 缺少 SPEC N1 方法：${missing.join(', ')}`);
-    equal(methods.length, 14, 'P1 契约方法数量应为 14');
+    equal(methods.length, 10, 'P1 契约方法数量应为 10');
     // 每个新方法都必须 @JavascriptInterface 暴露给 WebView
     for (const name of methods) {
       const idx = source.search(new RegExp(`public\\s+(?:String|void|int|boolean)\\s+${name}\\s*\\(`));
@@ -573,10 +566,10 @@ export function registerStaticTests() {
       ok(before.indexOf('@JavascriptInterface') !== -1, `JsBridge.${name} 缺少 @JavascriptInterface`);
     }
     // JS → 原生事件
-    for (const emitName of ['emitToolConfirm', 'emitToolResult', 'emitOtpSent', 'emitOtpVerified', 'emitAuthChanged', 'emitWorkspaceChanged']) {
+    for (const emitName of ['emitToolConfirm', 'emitToolResult', 'emitWorkspaceChanged']) {
       ok(source.indexOf(emitName) !== -1, `JsBridge.java 缺少事件发送 ${emitName}`);
     }
-    for (const type of ['"tool-confirm"', '"tool-result"', '"otp-sent"', '"otp-verified"', '"auth-changed"', '"workspace-changed"']) {
+    for (const type of ['"tool-confirm"', '"tool-result"', '"workspace-changed"']) {
       ok(source.indexOf(type) !== -1, `JsBridge.java 事件类型缺失 ${type}`);
     }
     // 风险策略：HIGH 每次确认 / MID 会话内首次确认
@@ -589,7 +582,7 @@ export function registerStaticTests() {
 
   test('原生 Agent 包：工具定义/注册/执行/路径策略/Shell/审计/OTP 实现齐全', () => {
     const agentDir = path.join(JAVA_DIR, 'agent');
-    const requiredFiles = ['ToolDef.java', 'ToolRegistry.java', 'ToolExecutor.java', 'PathPolicy.java', 'ShellRunner.java', 'AuditDb.java', 'AuthManager.java', 'Workspace.java'];
+    const requiredFiles = ['ToolDef.java', 'ToolRegistry.java', 'ToolExecutor.java', 'PathPolicy.java', 'ShellRunner.java', 'AuditDb.java', 'Workspace.java'];
     for (const file of requiredFiles) {
       const source = readOrNull(path.join(agentDir, file));
       ok(source, `缺少原生 Agent 类文件：agent/${file}`);
@@ -621,12 +614,6 @@ export function registerStaticTests() {
     }
     ok(/recent\s*\(/.test(audit), 'AuditDb 缺少 recent(limit)');
 
-    const auth = readOrNull(path.join(agentDir, 'AuthManager.java')) || '';
-    ok(/requestOtp/.test(auth) && /verifyOtp/.test(auth), 'AuthManager 缺少 requestOtp/verifyOtp');
-    ok(/SmsProvider/.test(auth), 'AuthManager 缺少可替换 SmsProvider 接口');
-    ok(/demoCode/.test(auth), 'AuthManager 未提供本地演示验证码 demoCode');
-    ok(/60/.test(auth), 'AuthManager 缺少 60s 限频逻辑');
-
     const shell = readOrNull(path.join(agentDir, 'ShellRunner.java')) || '';
     ok(/ProcessBuilder/.test(shell), 'ShellRunner 未使用 ProcessBuilder');
     ok(/30/.test(shell) && /destroy/.test(shell), 'ShellRunner 缺少 30s 超时 destroy');
@@ -642,7 +629,7 @@ export function registerStaticTests() {
   test('QA 覆盖矩阵已包含 ARCH v2 P1 用例说明（docs/QA.md）', () => {
     const qaDoc = readOrNull(path.join(ROOT, 'docs', 'QA.md')) || '';
     ok(qaDoc, 'docs/QA.md 不存在');
-    for (const keyword of ['ARCH v2 P1', 'P1 集成', 'p1-integration-tests.mjs', 'tool-confirm', 'requestOtp', 'listDir', 'setWorkspace']) {
+    for (const keyword of ['ARCH v2 P1', 'P1 集成', 'p1-integration-tests.mjs', 'tool-confirm', 'listDir', 'setWorkspace']) {
       ok(qaDoc.indexOf(keyword) !== -1, `docs/QA.md 覆盖矩阵缺少 P1 关键词：${keyword}`);
     }
   });

@@ -17,7 +17,6 @@ import android.webkit.WebView;
 import android.widget.Toast;
 
 import com.deepseekhouse.app.agent.AuditDb;
-import com.deepseekhouse.app.agent.AuthManager;
 import com.deepseekhouse.app.agent.ToolDef;
 import com.deepseekhouse.app.agent.RootManager;
 import com.deepseekhouse.app.agent.ToolExecutor;
@@ -62,8 +61,7 @@ import java.util.regex.Pattern;
  * {@link #confirmTool(String, boolean)} / {@link #toolSchemas()}（tool-confirm / tool-result）、
  * 工作区 {@link #workspaceInfo()} / {@link #listDir(String)} / {@link #readFile(String, String)} /
  * {@link #writeFile(String, String, String)} / {@link #runShell(String, String)} / {@link #setWorkspace(String)}、
- * 审计 {@link #auditRecent(int)}、手机号 OTP 登录 {@link #requestOtp(String)} / {@link #verifyOtp(String, String, String)} /
- * {@link #authState()} / {@link #logout()}（otp-sent / otp-verified / auth-changed）。</p>
+ * 审计 {@link #auditRecent(int)}、工作区 {@link #setWorkspace(String)}、Root 检测 {@link #checkRoot()}。</p>
  *
  * <p>ARCH v2 P2 追加：MCP Client {@link #mcpServers()} / {@link #mcpSaveServer(String)} /
  * {@link #mcpDeleteServer(String)} / {@link #mcpConnect(String)} / {@link #mcpDisconnect(String)} /
@@ -85,11 +83,10 @@ public final class JsBridge {
     private final ApiClient api;
     private final Handler main;
 
-    // ARCH v2 P1：工作区 / 审计 / 内置工具 / 手机号登录
+    // ARCH v2 P1：工作区 / 审计 / 内置工具
     private final Workspace workspace;
     private final AuditDb auditDb;
     private final ToolExecutor toolExecutor;
-    private final AuthManager auth;
     /** ARCH v2 P2：MCP 客户端（连接管理 / tools/list 注册 / tools/call 转发）。 */
     private final McpManager mcp;
     /** ARCH v2 P3：house-plugins 插件目录（app 可写 + sdcard 只读扫描）。 */
@@ -147,7 +144,6 @@ public final class JsBridge {
         this.auditDb = new AuditDb(activity);
         this.toolExecutor = new ToolExecutor(workspace, auditDb);
         this.toolExecutor.setRootMode(prefs.isRootMode());
-        this.auth = new AuthManager(activity, prefs);
         this.toolPool = Executors.newCachedThreadPool(new ThreadFactory() {
             private final AtomicInteger seq = new AtomicInteger(1);
 
@@ -762,56 +758,6 @@ public final class JsBridge {
         } catch (Throwable ignored) {
             // 忽略
         }
-    }
-
-    // ------------------------------------------------------------ 手机号 OTP 登录（本地演示）
-
-    /** SPEC N1 {@code requestOtp(phone)}：生成 6 位码（5 分钟有效、60s 限频），发 {@code otp-sent}。 */
-    @JavascriptInterface
-    public void requestOtp(String phone) {
-        try {
-            AuthManager.OtpResult result = auth.requestOtp(phone);
-            emitOtpSent(result);
-        } catch (Throwable t) {
-            emitOtpSent(new AuthManager.OtpResult(false, AuthManager.normalizePhone(phone),
-                    0, "", "验证码发送失败：" + describe(t)));
-        }
-    }
-
-    /** SPEC N1 {@code verifyOtp(requestId,phone,code)}：校验验证码，成功发 {@code otp-verified} + {@code auth-changed}。 */
-    @JavascriptInterface
-    public void verifyOtp(String requestId, String phone, String code) {
-        String rid = requestId == null ? "" : requestId;
-        try {
-            AuthManager.VerifyResult result = auth.verifyOtp(phone, code);
-            emitOtpVerified(rid, result.ok, result.message);
-            if (result.ok) {
-                emitAuthChanged(true, result.phone);
-            }
-        } catch (Throwable t) {
-            emitOtpVerified(rid, false, "登录失败：" + describe(t));
-        }
-    }
-
-    /** SPEC N1 {@code authState()}：{@code {"loggedIn":bool,"phone":".."}}。 */
-    @JavascriptInterface
-    public String authState() {
-        try {
-            return auth.authStateJson();
-        } catch (Throwable t) {
-            return "{\"loggedIn\":false,\"phone\":\"\"}";
-        }
-    }
-
-    /** SPEC N1 {@code logout()}：清 token（保留绑定手机号），发 {@code auth-changed}。 */
-    @JavascriptInterface
-    public void logout() {
-        try {
-            auth.logout();
-        } catch (Throwable ignored) {
-            // 忽略
-        }
-        emitAuthChanged(false, auth.phone());
     }
 
     // ============================================================ ARCH v2 P2 MCP Client
@@ -1714,51 +1660,6 @@ public final class JsBridge {
             if (serverId != null && !serverId.isEmpty()) {
                 o.put("serverId", serverId);
             }
-        } catch (JSONException ignored) {
-            return;
-        }
-        emitEvent(o.toString());
-    }
-
-    /** {@code {"type":"otp-sent","phone":"..","ttlSeconds":300,"demoCode":"123456"}}（失败时 ttl=0/demoCode=""）。 */
-    private void emitOtpSent(AuthManager.OtpResult result) {
-        JSONObject o = new JSONObject();
-        try {
-            o.put("type", "otp-sent");
-            o.put("phone", result == null ? "" : result.phone);
-            o.put("ttlSeconds", result == null ? 0 : result.ttlSeconds);
-            o.put("demoCode", result == null ? "" : result.demoCode);
-            o.put("ok", result != null && result.ok);
-            if (result != null && result.message != null && !result.message.isEmpty()) {
-                o.put("message", result.message);
-            }
-        } catch (JSONException ignored) {
-            return;
-        }
-        emitEvent(o.toString());
-    }
-
-    /** {@code {"type":"otp-verified","requestId":..,"ok":true,"message":".."}} */
-    private void emitOtpVerified(String requestId, boolean ok, String message) {
-        JSONObject o = new JSONObject();
-        try {
-            o.put("type", "otp-verified");
-            o.put("requestId", requestId == null ? "" : requestId);
-            o.put("ok", ok);
-            o.put("message", message == null ? "" : message);
-        } catch (JSONException ignored) {
-            return;
-        }
-        emitEvent(o.toString());
-    }
-
-    /** {@code {"type":"auth-changed","loggedIn":true,"phone":".."}} */
-    private void emitAuthChanged(boolean loggedIn, String phone) {
-        JSONObject o = new JSONObject();
-        try {
-            o.put("type", "auth-changed");
-            o.put("loggedIn", loggedIn);
-            o.put("phone", phone == null ? "" : phone);
         } catch (JSONException ignored) {
             return;
         }
