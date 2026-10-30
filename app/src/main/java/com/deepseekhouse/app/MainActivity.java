@@ -14,6 +14,9 @@ import android.provider.MediaStore;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.util.Log;
+import android.webkit.ConsoleMessage;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -142,6 +145,20 @@ public final class MainActivity extends Activity {
         view.setVerticalScrollBarEnabled(false);
         view.setHorizontalScrollBarEnabled(false);
         view.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        view.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage message) {
+                try {
+                    if (message != null) {
+                        Log.i("DSHWeb", message.message() + " (" + message.sourceId()
+                                + ":" + message.lineNumber() + ")");
+                    }
+                } catch (Throwable ignored) {
+                    // 忽略
+                }
+                return true;
+            }
+        });
         view.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {

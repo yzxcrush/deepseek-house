@@ -6512,8 +6512,15 @@
         (global.CSS.supports('backdrop-filter', 'blur(2px)') ||
          global.CSS.supports('-webkit-backdrop-filter', 'blur(2px)')));
     } catch (e2) { canBlur = false; }
-    if (sdk && sdk < 31) return 'frost';
-    return canBlur ? 'liquid' : 'frost';
+    /* Android 12+ 一律使用液态玻璃（现代 WebView 均支持 backdrop-filter）；
+       低版本走毛玻璃，避免 GPU 压力。canBlur 仅用于无 sdkInt 的浏览器环境兜底。 */
+    var picked;
+    if (sdk) picked = sdk >= 31 ? 'liquid' : 'frost';
+    else picked = canBlur ? 'liquid' : 'frost';
+    try {
+      global.localStorage.setItem('dsh.glassDebug', JSON.stringify({ sdk: sdk, canBlur: canBlur, mode: picked }));
+    } catch (e3) { /* ignore */ }
+    return picked;
   }
 
   function applyGlassMode(mode) {
@@ -6976,5 +6983,5 @@
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '2.5.0';
+  UI.version = '2.5.5';
 })();
