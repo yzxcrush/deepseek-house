@@ -17,6 +17,8 @@ echo "asset contract checks: $WEB"
 echo "- referenced assets"
 while IFS= read -r ref; do
   [ -z "$ref" ] && continue
+  # 去掉缓存参数（?v=2.5.5），只校验真实文件
+  ref="${ref%%\?*}"
   case "$ref" in
     http*|//*|data:*|"#") fail "external/prohibited reference in index.html: $ref" ;;
     *) [ -f "$WEB/$ref" ] && pass "$ref" || fail "missing referenced file: $ref" ;;
