@@ -5670,3 +5670,158 @@ body { background-color: #181818; }
 #set-encryption-status.is-warn {
   color: #f0b256;
 }
+
+/* ==========================================================================
+   液态玻璃 / 毛玻璃 主题层（v2.5.0）
+   - html.glass-liquid：Android 12+（API 31+）且 WebView 支持 backdrop-filter
+     半透明背景 + 背景模糊 + 高光边缘 + 流动光泽（仿酷安液态玻璃）
+   - html.glass-frost：低版本 / 不支持背景模糊时自动降级为毛玻璃
+     （半透明深色底 + 细高光边 + 无 blur，省 GPU、保证可读性）
+   模式由 ui.js 的 detectGlassMode() 自动探测，可用 UI.setGlassMode() 手动切换。
+   ========================================================================== */
+
+/* ---------- 液态玻璃：主表面 ---------- */
+html.glass-liquid .topbar,
+html.glass-liquid .composer,
+html.glass-liquid .bottom-nav,
+html.glass-liquid .drawer,
+html.glass-liquid .file-drawer,
+html.glass-liquid .terminal-panel,
+html.glass-liquid .plugin-panel,
+html.glass-liquid .emoji-panel,
+html.glass-liquid .attachment-sheet-panel,
+html.glass-liquid .model-picker-sheet,
+html.glass-liquid .build-panel-sheet {
+  background: rgba(26, 27, 31, 0.58) !important;
+  -webkit-backdrop-filter: blur(26px) saturate(1.7);
+  backdrop-filter: blur(26px) saturate(1.7);
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+/* 大面板（弹窗/抽屉）稍提高不透明度，保证文字可读 */
+html.glass-liquid .modal-panel,
+html.glass-liquid .file-drawer,
+html.glass-liquid .plugin-panel,
+html.glass-liquid .model-picker-sheet,
+html.glass-liquid .build-panel-sheet,
+html.glass-liquid .attachment-sheet-panel {
+  background: rgba(26, 27, 31, 0.74) !important;
+}
+
+/* ---------- 液态玻璃：高光边缘 + 流光 ---------- */
+html.glass-liquid .topbar,
+html.glass-liquid .bottom-nav,
+html.glass-liquid .composer {
+  position: relative;
+  overflow: hidden;
+}
+
+html.glass-liquid .topbar::before,
+html.glass-liquid .bottom-nav::before,
+html.glass-liquid .composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: linear-gradient(115deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.02) 30%,
+    rgba(140, 180, 255, 0.10) 55%,
+    rgba(255, 255, 255, 0.02) 78%,
+    rgba(255, 255, 255, 0.10) 100%);
+  mix-blend-mode: screen;
+  opacity: 0.85;
+}
+
+html.glass-liquid .topbar::after,
+html.glass-liquid .bottom-nav::after,
+html.glass-liquid .composer::after {
+  content: "";
+  position: absolute;
+  top: -60%;
+  bottom: -60%;
+  left: -40%;
+  width: 38%;
+  pointer-events: none;
+  z-index: 0;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.10), transparent);
+  transform: translateX(-120%) rotate(8deg);
+  animation: glass-sheen 9s ease-in-out infinite;
+  mix-blend-mode: screen;
+}
+
+html.glass-liquid .topbar > *,
+html.glass-liquid .bottom-nav > *,
+html.glass-liquid .composer > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes glass-sheen {
+  0%, 62% { transform: translateX(-120%) rotate(8deg); opacity: 0; }
+  70% { opacity: 0.9; }
+  100% { transform: translateX(420%) rotate(8deg); opacity: 0; }
+}
+
+/* FAB / 圆形按钮的玻璃质感 */
+html.glass-liquid .fab {
+  background: linear-gradient(145deg, rgba(105, 140, 255, 0.92), rgba(64, 96, 220, 0.88)) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 10px 26px rgba(38, 70, 190, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+/* ---------- 毛玻璃：低版本降级 ---------- */
+html.glass-frost .topbar,
+html.glass-frost .composer,
+html.glass-frost .bottom-nav {
+  background: rgba(26, 26, 29, 0.96) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-color: rgba(255, 255, 255, 0.07) !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.38);
+}
+
+html.glass-frost .drawer,
+html.glass-frost .file-drawer,
+html.glass-frost .terminal-panel,
+html.glass-frost .plugin-panel,
+html.glass-frost .emoji-panel,
+html.glass-frost .attachment-sheet-panel,
+html.glass-frost .model-picker-sheet,
+html.glass-frost .build-panel-sheet,
+html.glass-frost .modal-panel {
+  background: rgba(28, 28, 31, 0.97) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+}
+
+/* 毛玻璃表面的细高光边（无 blur 也有玻璃感） */
+html.glass-frost .topbar,
+html.glass-frost .composer,
+html.glass-frost .bottom-nav,
+html.glass-frost .drawer,
+html.glass-frost .file-drawer,
+html.glass-frost .modal-panel {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html.glass-frost .fab {
+  background: linear-gradient(145deg, rgba(96, 130, 245, 0.96), rgba(64, 96, 220, 0.94)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+/* 降低动效用户偏好 */
+@media (prefers-reduced-motion: reduce) {
+  html.glass-liquid .topbar::after,
+  html.glass-liquid .bottom-nav::after,
+  html.glass-liquid .composer::after {
+    animation: none;
+    opacity: 0;
+  }
+}

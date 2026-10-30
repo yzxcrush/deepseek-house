@@ -6493,10 +6493,43 @@
   /* ------------------------------------------------------------------ *
    * 公开 API（SPEC §4.2 全部实现）
    * ------------------------------------------------------------------ */
+  /* ------------------------------------------------------------------ *
+   * 液态玻璃 / 毛玻璃（v2.5.0，自动降级）
+   * - liquid：Android 12+（API 31+）且 WebView 支持 backdrop-filter
+   * - frost ：低版本 / 不支持背景模糊时使用毛玻璃
+   * ------------------------------------------------------------------ */
+  function detectGlassMode() {
+    var sdk = 0;
+    try {
+      if (global.Bridge && typeof global.Bridge.appInfo === 'function') {
+        var info = global.Bridge.appInfo();
+        if (info && typeof info === 'object' && info.sdkInt) sdk = Number(info.sdkInt) || 0;
+      }
+    } catch (e) { /* ignore */ }
+    var canBlur = false;
+    try {
+      canBlur = !!(global.CSS && typeof global.CSS.supports === 'function' &&
+        (global.CSS.supports('backdrop-filter', 'blur(2px)') ||
+         global.CSS.supports('-webkit-backdrop-filter', 'blur(2px)')));
+    } catch (e2) { canBlur = false; }
+    if (sdk && sdk < 31) return 'frost';
+    return canBlur ? 'liquid' : 'frost';
+  }
+
+  function applyGlassMode(mode) {
+    var next = mode === 'liquid' ? 'liquid' : 'frost';
+    var root = document.documentElement;
+    root.classList.remove('glass-liquid', 'glass-frost');
+    root.classList.add(next === 'liquid' ? 'glass-liquid' : 'glass-frost');
+    state.glassMode = next;
+    return next;
+  }
+
   UI.init = function (callbacks) {
     if (state.initialized) return;
     state.cb = callbacks && typeof callbacks === 'object' ? callbacks : {};
     cacheRefs();
+    try { applyGlassMode(detectGlassMode()); } catch (eGlass) { state.glassMode = 'frost'; }
     state.initialized = true;
     bindEvents();
     loadWorkbenchPrefs();
@@ -6938,5 +6971,10 @@
   UI.setSecurityInfo = setSecurityInfo;
   UI.refreshSettingsStats = refreshSettingsStats;
 
-  UI.version = '2.4.1';
+  /* 液态玻璃 / 毛玻璃 */
+  UI.setGlassMode = function (mode) { return applyGlassMode(mode); };
+  UI.getGlassMode = function () { return state.glassMode || 'frost'; };
+  UI.detectGlassMode = detectGlassMode;
+
+  UI.version = '2.5.0';
 })();

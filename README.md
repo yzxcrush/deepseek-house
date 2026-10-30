@@ -17,6 +17,7 @@
 - **记忆**：SQLite 存会话摘要 / 长期偏好 / 项目记忆，自动注入 systemPrompt；上下文超过预算 80% 自动摘要压缩
 - **移动端集成**：图片消息（拍照/相册 + 全屏预览）、生成期前台通知 / 后台完成通知、其他 App 分享进入、应用锁 + AES-GCM 本地加密
 - **可选 Root**：设置里开启后，终端与 `run_shell` 通过 `su` 执行（需 KernelSU/Magisk 授权；未授权时自动关闭，不影响其他功能）
+- **液态玻璃 / 毛玻璃**：仿酷安液态玻璃（背景模糊 + 高光边缘 + 流动光泽）；Android 12 以下或 WebView 不支持背景模糊时自动降级为毛玻璃，兼顾低版本性能
 - **开源与构建**：MIT；`aapt → javac → d8 → zipalign → apksigner` 手工链，Termux 可直接构建；GitHub Actions 自动出包并发布 Release
 
 
@@ -48,7 +49,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.4.1.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.5.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -68,7 +69,7 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.4.1.apk`
+产物：`dist/DeepSeekHouse-2.5.0.apk`
 
 ### 云端构建（GitHub Actions）
 

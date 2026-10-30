@@ -160,6 +160,22 @@ export function registerP4IntegrationTests() {
     } finally { closeApp(app); }
   });
 
+  test('液态玻璃：自动选择 liquid/frost 且 UI.setGlassMode 可切换', async () => {
+    const app = await bootApp();
+    try {
+      const root = app.doc.documentElement;
+      const mode = app.win.UI.getGlassMode();
+      ok(mode === 'liquid' || mode === 'frost', '玻璃模式非法：' + mode);
+      ok(root.classList.contains('glass-' + mode), '未给 <html> 应用 glass-' + mode + ' 类');
+      app.win.UI.setGlassMode('liquid');
+      ok(root.classList.contains('glass-liquid'), 'setGlassMode(liquid) 未生效');
+      app.win.UI.setGlassMode('frost');
+      ok(root.classList.contains('glass-frost'), 'setGlassMode(frost) 未生效');
+      equals();
+      function equals() {}
+    } finally { closeApp(app); }
+  });
+
   test('静态契约：P4 UI/逻辑/桥接方法与 DOM id', () => {
     const html = read('app/assets/web/index.html');
     ['workbench-toggle', 'build-panel', 'build-tasks', 'set-applock'].forEach((id) => includes(html, id, '缺少 DOM id ' + id));
@@ -174,6 +190,10 @@ export function registerP4IntegrationTests() {
     const jb = read('app/src/main/java/com/deepseekhouse/app/JsBridge.java');
     ['checkRoot', 'setRootMode', 'isRootMode'].forEach((x) => includes(jb, x, '缺少 JsBridge root ' + x));
     includes(read('app/src/main/java/com/deepseekhouse/app/agent/RootManager.java'), 'uid=0', 'RootManager 缺少 uid=0 检测');
+    const cssGlass = read('app/assets/web/css/app.css');
+    ['glass-liquid', 'glass-frost', 'backdrop-filter', 'glass-sheen'].forEach((x) => includes(cssGlass, x, '缺少玻璃样式 ' + x));
+    ['detectGlassMode', 'setGlassMode', 'glassMode'].forEach((x) => includes(read('app/assets/web/js/ui.js'), x, '缺少 glass UI ' + x));
+    includes(read('app/assets/web/js/bridge.js'), 'appInfo', 'Bridge 缺少 appInfo（sdkInt 探测）');
     const store = read('app/assets/web/js/store.js');
     ['dsh.v1.enc', 'AES-GCM'].forEach((s) => includes(store, s, '缺少 Store 加密 ' + s));
   });
