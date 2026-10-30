@@ -1,8 +1,24 @@
 # DeepSeek House
 
-仿 Telegram 风格的 **DeepSeek 安卓客户端**（第三方）。纯 WebView + 原生桥接实现，支持 **API Key / Token 登录**、**流式对话**、**推理过程展示**，以及**可自由安装的插件系统**。
+**DeepSeek House** 是一个把 DeepSeek 变成「手机端本地 Agent 工作站」的安卓第三方客户端：**Telegram 风格界面 + AI 工具调用 + MCP 远程工具 + 插件生态 + 本地记忆 + 工作台三栏**。纯 **Java + WebView** 实现，不用 Gradle/Kotlin/AndroidX，可在 Termux 里手工构建。
+
+一句话：**它不只会聊天——AI 可以在你手机上读写文件、执行终端命令、通过 MCP 调用 Termux 构建服务，让「AI 自己把 APK 打包出来」在手机上成为现实。**
 
 > 非官方项目，与 DeepSeek 官方无关。API Key 仅保存在本机，直接与 `api.deepseek.com` 通信。
+
+## 📱 简介
+
+- **形态**：单 Activity + WebView（HTML/CSS/JS 前端）+ Java 原生桥接；深色 Telegram 风格 UI，支持壁纸、气泡分组、抽屉、表情面板
+- **对话**：流式输出、推理过程折叠、Markdown/代码块、多会话、置顶/归档/搜索、智能体预设、备份恢复、对话分支、引用来源卡
+- **Agent 工具**：5 个内置工具（读写文件 / 列目录 / 执行 shell / HTTP GET）+ 风险分级（low 直接执行、mid 首次确认、high 每次确认）+ SQLite 审计日志 + 工作区路径白名单
+- **工作台**：文件树抽屉/宽屏固定栏、文件预览、底部终端（可拖拽）、全局构建任务面板、工具调用卡片（参数/状态/结果）
+- **MCP**：内置 MCP Client（JSON-RPC 2.0 / streamable-http / 自动重连 / 心跳），可连接 Termux 里的 Python MCP Server，获得 `pack_apk`、`decompile_apk`、`repack_apk`、`run_gradle`、`run_shell`、`list_workspace` 等能力；**`pack_apk` 已实测可在手机上直接构建本 App**
+- **插件生态**：HousePlugin 生命周期（onLoad/onUnload/tools/uiSlots）、插件市场（SHA-256 + HMAC 校验）、侧边栏面板、内置示例插件
+- **记忆**：SQLite 存会话摘要 / 长期偏好 / 项目记忆，自动注入 systemPrompt；上下文超过预算 80% 自动摘要压缩
+- **移动端集成**：图片消息（拍照/相册 + 全屏预览）、生成期前台通知 / 后台完成通知、其他 App 分享进入、应用锁 + AES-GCM 本地加密
+- **可选 Root**：设置里开启后，终端与 `run_shell` 通过 `su` 执行（需 KernelSU/Magisk 授权；未授权时自动关闭，不影响其他功能）
+- **开源与构建**：MIT；`aapt → javac → d8 → zipalign → apksigner` 手工链，Termux 可直接构建；GitHub Actions 自动出包并发布 Release
+
 
 <p align="center">
   <img src="docs/icon.png" width="120" alt="DeepSeek House icon">
@@ -21,11 +37,18 @@
 - **插件系统**：内置计算器 / 时间 / 网页抓取 / 提示词模板；支持安装任意 `.js` 插件，
   插件可注册**斜杠命令**与**模型工具**（function calling），模型可自动调用插件
 - **登录与设置**：API Key、自定义 Base URL（兼容自建/中转 endpoint）、模型、温度、最大 token、系统提示词
+- **Agent 工具调用**：函数调用循环（最多 5 轮）、工具结果卡片、危险操作确认弹窗、审计日志
+- **MCP 远程工具**：MCP 服务器管理页、连接状态/工具发现、构建进度卡与日志流
+- **插件市场**：https 索引、SHA-256/HMAC 校验、安装/更新/卸载、插件侧边栏面板
+- **记忆与上下文**：长期偏好/项目记忆/会话摘要、80% 自动压缩、记忆管理页
+- **工作台**：三栏布局（宽屏）+ 可拖拽终端 + 构建任务面板
+- **图片与系统集成**：拍照/相册发图、前台服务通知、分享进入、应用锁、本地加密
+- **可选 Root 模式**：终端/命令以 root 执行（KernelSU/Magisk 授权后）
 - **零依赖前端**：无 CDN、无外部字体图片，离线可用
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.4.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.4.1.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -45,7 +68,7 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.4.0.apk`
+产物：`dist/DeepSeekHouse-2.4.1.apk`
 
 ### 云端构建（GitHub Actions）
 
