@@ -579,6 +579,35 @@ def tool_run_gradle(args):
     return payload
 
 
+
+def tool_run_shell(args):
+    """run_shell {command, timeout?} -> {ok,exit_code,output,...}
+    在 Termux 中执行任意 shell 命令；服务以 root 启动时命令即以 root 执行。
+    """
+    command = arg_str(args, "command", required=True, label="命令")
+    try:
+        timeout = int(args.get("timeout") or 60)
+    except (TypeError, ValueError):
+        timeout = 60
+    timeout = max(1, min(timeout, 600))
+    cwd = CONFIG.allow_root
+    if not os.path.isdir(cwd):
+        return {"ok": False, "error": "工作目录不存在：%s" % cwd}
+    started = time.time()
+    result = run_command(["sh", "-c", command], cwd=cwd, timeout=timeout)
+    return {
+        "ok": bool(result.get("ok")),
+        "command": command,
+        "cwd": cwd,
+        "uid": os.getuid(),
+        "exit_code": result.get("exit_code"),
+        "timed_out": bool(result.get("timed_out")),
+        "duration_ms": result.get("duration_ms"),
+        "output": result.get("output") or "",
+        "error": result.get("error"),
+    }
+
+
 def tool_list_workspace(args):
     """list_workspace {path?} -> {ok,path,entries:[...],...}"""
     target = arg_str(args, "path") or CONFIG.allow_root
@@ -698,6 +727,19 @@ TOOLS = [
         "handler": tool_run_gradle,
     },
     {
+        "name": "run_shell",
+        "description": "在 Termux 中执行 shell 命令并返回输出（服务以 root 启动时即为 root 权限）。用于构建、文件操作、诊断等。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "要执行的 shell 命令，例如 id / ls -la / uname -a"},
+                "timeout": {"type": "integer", "description": "超时秒数（1-600，默认 60）"},
+            },
+            "required": ["command"],
+        },
+        "handler": tool_run_shell,
+    },
+    {
         "name": "list_workspace",
         "description": "列出允许根目录内的目录内容（名称/路径/是否目录/大小/修改时间），便于 App 端调试工作区。",
         "inputSchema": {
@@ -764,7 +806,7 @@ def dispatch(request):
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": "DeepSeek House Termux MCP Server：提供 pack_apk / decompile_apk / repack_apk / run_gradle / list_workspace 工具。",
+                "instructions": "DeepSeek House Termux MCP Server：提供 pack_apk / decompile_apk / repack_apk / run_gradle / list_workspace / run_shell 工具。",
             }
             return make_result(req_id, result)
 

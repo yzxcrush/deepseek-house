@@ -310,3 +310,30 @@ Accept: application/json, text/event-stream
 App 侧的 MCP Client（Java）会：`initialize` → `notifications/initialized` → `tools/list` →
 把工具注册成 `mcp:<serverId>:<name>`（risk=MID、needConfirm=true）→ 用户确认后 `tools/call`，
 拼接 `result.content[].text` 作为工具结果。断开连接后注销这些工具。
+
+
+## 6. Root 模式（AI 获得 root 工具）
+
+Termux 本身已 root 时，用 `su` 启动 MCP Server 即可让 AI 的 `run_shell` 以 root 执行：
+
+```bash
+su -c "nohup $(command -v python3) ~/deepseek-house/termux-mcp/server.py \
+  --port 8787 --token <TOKEN> --allow-root /data --project ~/deepseek-house \
+  >/tmp/mcp-root.log 2>&1 &"
+```
+
+验证：
+
+```bash
+curl -s http://127.0.0.1:8787/mcp -H 'Authorization: Bearer <TOKEN>' -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_shell","arguments":{"command":"id"}}}'
+# 期望 output 含 uid=0(root)
+```
+
+安全提示：root 模式下 `run_shell` 不再受 `--allow-root` 路径限制（命令本身可访问任意路径），
+请只在可信环境开启，且 Token 不要泄露。
+
+## 7. run_shell
+
+`run_shell {command, timeout?}`：在 Termux 执行任意 shell 命令并返回 `{ok,uid,exit_code,output,duration_ms}`；
+普通用户启动时 uid 为 Termux 用户（如 u0_a455），`su` 启动时为 `uid=0(root)`。
