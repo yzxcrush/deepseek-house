@@ -281,3 +281,16 @@ ALL TESTS PASSED (139)
 - 此前 P1 新增 25 项、P2 新增 15 项，基线 82 项；四次扩展均保持旧用例全绿（122→139）。
 - 运行耗时约 11s；无需网络；退出码 0（仅 `py_compile` 用例需要本机 `python3`，缺失会给出明确失败信息）。
 - 若产品代码后续变更导致失败，`npm test` 会列出每个失败项的 suite/测试名/断言信息，退出码非 0。
+
+
+## 10. ARCH v2 P4 覆盖（v2.3.0，148 项）
+
+`scripts/qa/p4-integration-tests.mjs`（9 项）：
+- 图片消息：`App.pickImage('gallery')` → 待发送队列 → `App.sendWithImages` → startChat 请求 `messages[].content` 为 `[{type:'text'},{type:'image_url',image_url:{url}}]`，发送后队列清空
+- 前台通知：发送触发 `setForeground(true,'正在生成回复…')`，done 触发 `setForeground(false)`；`app-state foreground=false` + done → `notify('回复完成', …)`
+- 分享进入：注入 `shared` 事件 → 新建会话 + composer 预填文本
+- 应用锁：`App.toggleAppLock(true/false)` → 原生 `setAppLock` 同步
+- 本地加密：`getStorageSecret` 非空时 localStorage 仅写 `dsh.v1.enc`，不保留明文 `dsh.v1`
+- 工作台：`App.toggleWorkbench(true)` → 状态/持久化生效
+- 构建任务面板：`UI.renderBuildTasks/updateBuildTask/openBuildPanel` 渲染进度与打开面板
+- 静态契约：`workbench-toggle/build-panel/build-tasks/set-applock` 等 DOM id，UI/App/Bridge/Store 的 P4 API 与加密实现

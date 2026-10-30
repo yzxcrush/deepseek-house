@@ -52,6 +52,15 @@ try {
   process.exitCode = 1;
 }
 
+// ARCH v2 P4 集成用例（工作台 / 图片消息 / 前台通知 / 分享进入 / 应用锁加密 / 构建任务）
+try {
+  const p4 = await import('./p4-integration-tests.mjs');
+  p4.registerP4IntegrationTests();
+} catch (err) {
+  console.error('\n⚠ 无法加载 P4 集成测试模块 p4-integration-tests.mjs：', err && err.message);
+  process.exitCode = 1;
+}
+
 // ARCH v2 P3 集成用例（插件市场 / HMAC / 记忆注入与压缩 / 插件槽位）
 try {
   const p3 = await import('./p3-integration-tests.mjs');

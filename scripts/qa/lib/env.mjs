@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { webcrypto } from 'node:crypto';
 import { JSDOM, ResourceLoader, VirtualConsole } from 'jsdom';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -95,6 +96,26 @@ export function installStubs(win) {
   if (typeof win.requestAnimationFrame !== 'function') {
     win.requestAnimationFrame = (cb) => win.setTimeout(() => cb(Date.now()), 16);
     win.cancelAnimationFrame = (id) => win.clearTimeout(id);
+  }
+  // ARCH v2 P4 F9：jsdom 没有 crypto.subtle / TextEncoder，用 Node 的 WebCrypto 补齐
+  try {
+    if (!win.crypto) win.crypto = webcrypto;
+    if (!win.crypto.subtle) {
+      Object.defineProperty(win.crypto, 'subtle', { configurable: true, value: webcrypto.subtle });
+    }
+    if (typeof win.crypto.getRandomValues !== 'function') {
+      win.crypto.getRandomValues = function (array) { return webcrypto.getRandomValues(array); };
+    }
+    if (typeof win.TextEncoder === 'undefined') win.TextEncoder = TextEncoder;
+    if (typeof win.TextDecoder === 'undefined') win.TextDecoder = TextDecoder;
+    if (typeof win.atob !== 'function') {
+      win.atob = (value) => Buffer.from(String(value), 'base64').toString('binary');
+    }
+    if (typeof win.btoa !== 'function') {
+      win.btoa = (value) => Buffer.from(String(value), 'binary').toString('base64');
+    }
+  } catch {
+    /* ignore */
   }
   // URL.createObjectURL（jsdom 默认无）
   try {
@@ -661,6 +682,34 @@ export function createMockNative(opts = {}) {
     };
   }
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2 P4：mock 原生图片选择 / 前台服务与通知 / 应用锁与存储密钥
+   *
+   * 契约与 JsBridge.java 一致：
+   *   pickImage(source) → 异步 image-picked{dataUrl,width,height,name}（或 image-error）
+   *   setForeground(active,text) / notify(title,text) / setAppLock(enabled) /
+   *   isAppLockEnabled() / getStorageSecret()
+   * opts.p4 可覆盖：{ image:{dataUrl,width,height,name}, imageError, storageSecret,
+   *                  appLock:false }；运行时经 app.native.__p4 读写。
+   * getStorageSecret 默认返回 ''（不启用加密），旧用例 localStorage 行为不变。
+   * ------------------------------------------------------------------ */
+  const P4_IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const p4cfg = opts.p4 && typeof opts.p4 === 'object' ? opts.p4 : {};
+  const p4 = {
+    image: Object.assign({
+      dataUrl: P4_IMAGE_DATA_URL,
+      width: 1,
+      height: 1,
+      name: 'qa-image.png',
+    }, p4cfg.image && typeof p4cfg.image === 'object' ? p4cfg.image : {}),
+    imageError: p4cfg.imageError ? String(p4cfg.imageError) : '',
+    storageSecret: p4cfg.storageSecret ? String(p4cfg.storageSecret) : '',
+    appLock: !!p4cfg.appLock,
+    foreground: { active: false, text: '' },
+    notifications: [],
+    pickImageCalls: [],
+  };
+
   function record(method, args) {
     calls.push({ method, args, at: Date.now() });
   }
@@ -1126,6 +1175,44 @@ export function createMockNative(opts = {}) {
       return JSON.stringify(p3MemoryAllJson());
     },
 
+    /* ---------------- ARCH v2 P4：F6 图片 / F7 前台通知 / F9 应用锁与存储密钥 ---------------- */
+    pickImage(source) {
+      record('pickImage', [source]);
+      p4.pickImageCalls.push(String(source == null ? '' : source));
+      if (p4.imageError) {
+        setTimeout(() => emit({ type: 'image-error', message: p4.imageError }), 5);
+        return;
+      }
+      const image = p4.image || {};
+      setTimeout(() => emit({
+        type: 'image-picked',
+        dataUrl: String(image.dataUrl || P4_IMAGE_DATA_URL),
+        width: Number(image.width) || 0,
+        height: Number(image.height) || 0,
+        name: image.name == null ? '' : String(image.name),
+      }), 5);
+    },
+    setForeground(active, text) {
+      record('setForeground', [!!active, String(text == null ? '' : text)]);
+      p4.foreground = { active: !!active, text: String(text == null ? '' : text) };
+    },
+    notify(title, text) {
+      record('notify', [String(title == null ? '' : title), String(text == null ? '' : text)]);
+      p4.notifications.push({ title: String(title == null ? '' : title), text: String(text == null ? '' : text), at: Date.now() });
+    },
+    setAppLock(enabled) {
+      record('setAppLock', [!!enabled]);
+      p4.appLock = !!enabled;
+    },
+    isAppLockEnabled() {
+      record('isAppLockEnabled', []);
+      return !!p4.appLock;
+    },
+    getStorageSecret() {
+      record('getStorageSecret', []);
+      return p4.storageSecret || '';
+    },
+
     __calls: calls,
     __pending: pending,
     __prefs: prefs,
@@ -1134,6 +1221,8 @@ export function createMockNative(opts = {}) {
     __p2: p2,
     /** 可运行时改写的 httpFetch 响应表：native.__http.responses[url] = {status,body} */
     __http: { responses: httpResponses, defaultBody: httpDefaultBody },
+    /** P4 mock 运行时状态（测试可读写：image/imageError/storageSecret/appLock/foreground/notifications） */
+    __p4: p4,
     /** P3 mock 运行时状态 + 签名助手（测试可读写：plugins/summaries/kv，sha256For/hmacFor） */
     __p3: Object.assign(p3, {
       sha256For: (content) => p3Sha256Hex(content),
