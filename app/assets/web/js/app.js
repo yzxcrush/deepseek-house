@@ -108,6 +108,12 @@
     'deepseek-v4-flash': { input: 1.0, output: 4.0 },
     '_default': { input: 2.0, output: 8.0 }
   };
+  /* ARCH v2.7.0 批次2：快照 / PIN / 加密备份 / 失败诊断 */
+  var WRITE_TOOL_NAMES = { 'write_file': true, 'run_shell': true, 'pack_apk': true, 'repack_apk': true, 'decompile_apk': true, 'run_gradle': true };
+  var PIN_ITERATIONS = 100000;
+  var PIN_MAX_FAILURES = 5;
+  var PIN_LOCK_MS = 5 * 60 * 1000;
+  var BACKUP_ENC_VERSION = 1;
   var SLASH_COMMANDS = [
     { cmd: '/new', desc: '新建会话', usage: '/new' },
     { cmd: '/clear', desc: '清空当前会话消息', usage: '/clear' },
@@ -195,7 +201,13 @@
     traceRenderTimer: null,
     traceOpening: false,
     costOpening: false,
-    toolPolicyOpening: false
+    toolPolicyOpening: false,
+    /* 批次2 v2.7.0：快照 / PIN / 加密备份 */
+    chatSnapshotTaken: {}, /* chatId -> true（本会话首次改动才快照） */
+    lastSnapshotByChat: {}, /* chatId -> 快照对象 */
+    snapshotOpening: false,
+    pinBusy: false,
+    pendingBackupPassword: '' /* onImportBackup 传入的密码，供 file-imported 解密用 */
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -734,7 +746,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.5.5' }
+      { label: '版本', value: '2.7.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -887,7 +899,7 @@
         }
         return;
       }
-      if (uiScreen === 'cost' || uiScreen === 'tool-policy') {
+      if (uiScreen === 'cost' || uiScreen === 'tool-policy' || uiScreen === 'snapshots') {
         closeDrawer();
         if (state.nav.screen !== 'settings') {
           state.nav = { screen: 'settings', drawerOpen: false, from: state.nav.screen || 'chats' };
@@ -1013,10 +1025,10 @@
       /* v2.0 F4：从消息新建分支 */
       onForkMessage: safe(function (msgId) { return forkMessage(msgId); }, 'onForkMessage'),
       /* v2.0 F3：备份 / 恢复 */
-      onExportBackup: safe(function () { return exportBackup(); }, 'onExportBackup'),
-      onImportBackup: safe(function () { return importBackup(); }, 'onImportBackup'),
-      onBackupExport: safe(function () { return exportBackup(); }, 'onBackupExport'),
-      onBackupImport: safe(function () { return importBackup(); }, 'onBackupImport'),
+      onExportBackup: safe(function (opts) { return exportBackup(opts); }, 'onExportBackup'),
+      onImportBackup: safe(function (opts) { return importBackup(opts); }, 'onImportBackup'),
+      onBackupExport: safe(function (opts) { return exportBackup(opts); }, 'onBackupExport'),
+      onBackupImport: safe(function (opts) { return importBackup(opts); }, 'onBackupImport'),
       onSelectChat: safe(function (id) { selectChat(id); }, 'onSelectChat'),
       onDeleteChat: safe(function (id) { deleteChat(id, true); }, 'onDeleteChat'),
       onRenameChat: safe(function (id, title) { renameChat(id, title); }, 'onRenameChat'),
@@ -1158,7 +1170,16 @@
       onOpenCost: safe(function () { return openCostPage(); }, 'onOpenCost'),
       onOpenToolPolicies: safe(function () { return openToolPoliciesPage(); }, 'onOpenToolPolicies'),
       onSaveToolPolicy: safe(function (tool, mode) { return saveToolPolicy(tool, mode); }, 'onSaveToolPolicy'),
-      onExportAudit: safe(function (format) { return exportAudit(format); }, 'onExportAudit')
+      onExportAudit: safe(function (format) { return exportAudit(format); }, 'onExportAudit'),
+      /* ARCH v2.7.0 批次2：快照 / PIN */
+      onOpenSnapshots: safe(function () { return openSnapshotsPage(); }, 'onOpenSnapshots'),
+      onDiffSnapshot: safe(function (id) { return onSnapshotDiffRequest(id); }, 'onDiffSnapshot'),
+      onRestoreSnapshot: safe(function (id) { return restoreSnapshot(id); }, 'onRestoreSnapshot'),
+      onDeleteSnapshot: safe(function (id) { return deleteSnapshotById(id); }, 'onDeleteSnapshot'),
+      onCreateSnapshot: safe(function () { return createSnapshot('手动快照'); }, 'onCreateSnapshot'),
+      onSetPin: safe(function (pin) { return setPin(pin); }, 'onSetPin'),
+      onDisablePin: safe(function () { return disablePin(); }, 'onDisablePin'),
+      onVerifyPin: safe(function (pin) { return verifyPin(pin); }, 'onVerifyPin')
     };
   }
 
@@ -1838,7 +1859,9 @@
         }, function (e2) {
           var text = '工具执行失败：' + errText(e2);
           recordToolResultTrace(chat, name, false, text, Date.now() - startedAt, false, callTraceId);
-          resolve(appendToolResultMessage(chat, name, args, toolCallId, text, false, 'error', false));
+          var failMsg = appendToolResultMessage(chat, name, args, toolCallId, text, false, 'error', false);
+          try { attachDiagnosticsToMessage(chat, failMsg, buildToolDiagnostics(name, args, text, null, Date.now() - startedAt)); } catch (eD) { /* ignore */ }
+          resolve(failMsg);
         });
       }, function (e3) {
         var text = '工具策略校验失败：' + errText(e3);
@@ -1900,6 +1923,7 @@
       var risk = toolRiskOf(name);
       var onceKey = policyOnceKey(chat ? chat.id : '', name);
       var policy = null;
+      var currentSnapshot = null; /* 批次2：本会话首次写工作区前的快照 */
 
       function cleanup() {
         if (timer) { clearTimeout(timer); timer = null; }
@@ -1933,11 +1957,17 @@
           recordToolResultTrace(chat, name, ok, resultText, Date.now() - startedAt,
             label === 'confirmed' || label === 'auto' || label === 'replayed', null);
         } catch (eT) { /* ignore */ }
+        var finalMsg = null;
         if (progressEntry) {
-          resolve(finalizeProgressToolMessage(progressEntry, resultText, ok, stateText, confirmed));
+          finalMsg = finalizeProgressToolMessage(progressEntry, resultText, ok, stateText, confirmed);
         } else {
-          resolve(appendToolResultMessage(chat, name, args, toolCallId, resultText, ok, stateText, confirmed));
+          finalMsg = appendToolResultMessage(chat, name, args, toolCallId, resultText, ok, stateText, confirmed);
         }
+        if (currentSnapshot) attachSnapshotToToolMessage(chat, finalMsg, currentSnapshot);
+        if (!ok) {
+          try { attachDiagnosticsToMessage(chat, finalMsg, buildToolDiagnostics(name, args, resultText, evt, Date.now() - startedAt)); } catch (eD) { /* ignore */ }
+        }
+        resolve(finalMsg);
       }
 
       function finishDenied(reasonText) {
@@ -1948,11 +1978,21 @@
           if (callTraceId) updateTraceStep(chat.id, callTraceId, { confirmed: 'denied' });
           recordToolResultTrace(chat, name, false, reasonText, Date.now() - startedAt, false, null);
         } catch (eT) { /* ignore */ }
-        resolve(appendToolResultMessage(chat, name, args, toolCallId, reasonText, false, 'rejected', false));
+        var deniedMsg = appendToolResultMessage(chat, name, args, toolCallId, reasonText, false, 'rejected', false);
+        try {
+          attachDiagnosticsToMessage(chat, deniedMsg, {
+            hint: String(reasonText || '工具被权限策略禁止执行'),
+            hints: ['检查「设置 → 工具权限」中的策略', '如需允许，将策略改为「自动/首次确认/每次确认」'],
+            path: args && (args.path || args.command) ? String(args.path || args.command).slice(0, 300) : ''
+          });
+        } catch (eD) { /* ignore */ }
+        resolve(deniedMsg);
       }
 
       function beginExecution() {
         if (settled) return;
+        /* 批次2：写类工具本会话首次执行前创建快照（同步，拿 id 写入工具卡） */
+        try { currentSnapshot = maybeSnapshotBeforeWrite(chat, name); } catch (eS) { warn('创建快照失败：' + errText(eS)); currentSnapshot = null; }
         /* P2：构建类工具 / MCP 工具先建 running 卡片，供 mcp-progress 映射 */
         if (isMcpProgressTool(name)) {
           runningMsg = createRunningToolMessage(chat, name, args, toolCallId);
@@ -2691,32 +2731,63 @@
   }
 
   /** App.exportBackup()：导出 JSON 备份到用户选择的文件 */
-  function exportBackup() {
+  /**
+   * App.exportBackup(opts?)：导出备份。
+   * opts 支持 string（密码）或 {encrypt:boolean,password:string}；传密码则 PBKDF2+AES-GCM 加密
+   * （文件名 dsh-backup-enc-YYYYMMDD.json，格式 {v:1,salt,iv,data,...}）；无密码保持旧明文格式。
+   */
+  function exportBackup(opts) {
+    var password = '';
+    var encrypt = false;
+    if (typeof opts === 'string') {
+      password = opts.replace(/^\s+|\s+$/g, '');
+      encrypt = !!password;
+    } else if (opts && typeof opts === 'object') {
+      password = String(opts.password === null || opts.password === undefined ? '' : opts.password).replace(/^\s+|\s+$/g, '');
+      encrypt = opts.encrypt === true || (opts.encrypt !== false && !!password);
+    }
     var payload = buildBackupObject();
-    var json = '';
+    var B = global.Bridge;
+    if (!B || typeof B.saveTextFile !== 'function') { toast('当前环境不支持导出文件', true); return false; }
+    if (encrypt) {
+      if (!password) { toast('请输入备份密码', true); return false; }
+      if (!subtleCrypto()) { toast('当前环境不支持加密（WebCrypto 不可用）', true); return false; }
+      return encryptBackupPayload(payload, password).then(function (container) {
+        var json = '';
+        try { json = JSON.stringify(container); } catch (e) { toast('加密备份序列化失败', true); return false; }
+        var encName = 'dsh-backup-enc-' + backupDateStamp() + '.json';
+        var ok = false;
+        try { ok = B.saveTextFile(encName, json); } catch (e2) { warn('保存加密备份失败：' + errText(e2)); }
+        if (ok === false) { toast('导出加密备份失败', true); return false; }
+        toast('正在导出加密备份（' + payload.chats.length + ' 个会话，PBKDF2+AES-GCM）…', true);
+        return true;
+      }, function (err) {
+        toast('加密备份失败：' + errText(err), true);
+        return false;
+      });
+    }
+    var jsonPlain = '';
     try {
-      json = JSON.stringify(payload, null, 2);
-    } catch (e) {
-      warn('序列化备份失败：' + errText(e));
+      jsonPlain = JSON.stringify(payload, null, 2);
+    } catch (e3) {
+      warn('序列化备份失败：' + errText(e3));
       toast('导出备份失败：数据序列化错误', true);
       return false;
     }
     var name = 'DeepSeekHouse-backup-' + backupDateStamp() + '.json';
-    var B = global.Bridge;
-    if (!B || typeof B.saveTextFile !== 'function') { toast('当前环境不支持导出文件', true); return false; }
-    var ok = false;
-    try {
-      ok = B.saveTextFile(name, json);
-    } catch (e2) {
-      warn('保存备份失败：' + errText(e2));
-    }
-    if (ok === false) { toast('导出备份失败', true); return false; }
+    var plainOk = false;
+    try { plainOk = B.saveTextFile(name, jsonPlain); } catch (e4) { warn('保存备份失败：' + errText(e4)); }
+    if (plainOk === false) { toast('导出备份失败', true); return false; }
     toast('正在导出备份（' + payload.chats.length + ' 个会话）…', true);
     return true;
   }
 
-  /** App.importBackup()：选择 JSON 文件；结果通过 file-imported 事件回填 */
-  function importBackup() {
+  /** App.importBackup(opts?)：选择 JSON 文件；加密备份会提示密码；结果通过 file-imported 事件回填 */
+  function importBackup(opts) {
+    var password = '';
+    if (typeof opts === 'string') password = opts;
+    else if (opts && typeof opts === 'object') password = String(opts.password === null || opts.password === undefined ? '' : opts.password);
+    state.pendingBackupPassword = password || '';
     var B = global.Bridge;
     if (!B || typeof B.importTextFile !== 'function') { toast('当前环境不支持导入文件', true); return false; }
     toast('请选择备份文件…', true);
@@ -2731,7 +2802,30 @@
     return true;
   }
 
-  /** file-imported 事件：取消静默；非法文件给出提示 */
+  /** 备份数据校验 + 二次确认 + 应用（明文/解密后通用） */
+  function validateAndApplyBackup(parsed) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      toast('导入失败：不是有效的备份 JSON', true);
+      return false;
+    }
+    if (String(parsed.app || '') !== BACKUP_APP_ID) {
+      toast('导入失败：不是 DeepSeek House 备份文件', true);
+      return false;
+    }
+    if (!Array.isArray(parsed.chats)) {
+      toast('导入失败：备份缺少会话数据（chats）', true);
+      return false;
+    }
+    var when = formatBackupTime(parsed.exportedAt);
+    var detail = '将用备份中的 ' + parsed.chats.length + ' 个会话覆盖当前全部会话、设置、模型与预设' +
+      (when ? '（备份时间 ' + when + '）' : '') + '，且不可恢复。确定继续吗？';
+    confirmAsync('导入备份', detail).then(function (ok) {
+      if (ok) applyBackup(parsed);
+    });
+    return true;
+  }
+
+  /** file-imported 事件：取消静默；兼容明文 JSON / 加密备份（v:1 salt/iv/data） */
   function onFileImported(evt) {
     if (!evt || typeof evt !== 'object') return false;
     if (evt.cancelled || evt.error === 'cancelled') return false; /* 用户取消：静默 */
@@ -2752,21 +2846,23 @@
       toast('导入失败：不是有效的备份 JSON', true);
       return false;
     }
-    if (String(parsed.app || '') !== BACKUP_APP_ID) {
-      toast('导入失败：不是 DeepSeek House 备份文件', true);
-      return false;
+    /* 批次2：加密备份 → 需要密码（UI.requirePassword / promptAsync）→ 解密后再走校验 */
+    if (isEncryptedBackupObject(parsed)) {
+      var presetPassword = String(state.pendingBackupPassword || '');
+      state.pendingBackupPassword = '';
+      var passwordWork = presetPassword ? Promise.resolve(presetPassword) : promptBackupPassword('输入备份密码');
+      passwordWork.then(function (password) {
+        if (!password) { toast('已取消导入（加密备份需要密码）'); return; }
+        decryptBackupPayload(parsed, password).then(function (data) {
+          validateAndApplyBackup(data);
+        }, function () {
+          toast('密码错误或备份文件损坏', true);
+        });
+      });
+      return true;
     }
-    if (!Array.isArray(parsed.chats)) {
-      toast('导入失败：备份缺少会话数据（chats）', true);
-      return false;
-    }
-    var when = formatBackupTime(parsed.exportedAt);
-    var detail = '将用备份中的 ' + parsed.chats.length + ' 个会话覆盖当前全部会话、设置、模型与预设' +
-      (when ? '（备份时间 ' + when + '）' : '') + '，且不可恢复。确定继续吗？';
-    confirmAsync('导入备份', detail).then(function (ok) {
-      if (ok) applyBackup(parsed);
-    });
-    return true;
+    state.pendingBackupPassword = '';
+    return validateAndApplyBackup(parsed);
   }
 
   /** 应用备份：整体替换 Store → 同步原生 prefs / 插件启用态 → 刷新 UI */
@@ -2873,10 +2969,16 @@
       }
       toast('会话已删除');
     };
-    if (skipConfirm) { doDelete(); return; }
-    confirmAsync('删除会话', '确定删除「' + (chat.title || '该会话') + '」吗？删除后不可恢复。').then(function (ok) {
-      if (ok) doDelete();
-    });
+    var guarded = function () {
+      requirePin('删除会话').then(function (allowed) {
+        if (!allowed) return;
+        if (skipConfirm) { doDelete(); return; }
+        confirmAsync('删除会话', '确定删除「' + (chat.title || '该会话') + '」吗？删除后不可恢复。').then(function (ok) {
+          if (ok) doDelete();
+        });
+      });
+    };
+    guarded();
   }
 
   function applyRename(chatId, title) {
@@ -5592,10 +5694,13 @@
       }
     } catch (eRoot) { warn('读取 Root 状态失败：' + errText(eRoot)); }
     state.prefs.rootMode = rootMode;
+    var pinLocked = isPinLocked();
     var info = {
       appLock: appLock,
       encrypted: !!(enc.encrypted || enc.secretAvailable),
-      message: enc.error ? String(enc.error) : '',
+      pin: hasPin(),
+      pinLocked: pinLocked,
+      message: enc.error ? String(enc.error) : (pinLocked ? 'PIN 已锁定，请稍后再试' : ''),
       rootMode: rootMode,
       rootMessage: rootMessage
     };
@@ -5603,7 +5708,7 @@
     if (U && typeof U.setSecurityInfo === 'function') {
       try { U.setSecurityInfo(info); } catch (e2) { warn('UI.setSecurityInfo 异常：' + errText(e2)); }
     }
-    return { appLock: info.appLock, encrypted: info.encrypted, state: enc };
+    return { appLock: info.appLock, encrypted: info.encrypted, pin: info.pin, pinLocked: info.pinLocked, state: enc };
   }
 
   /* ---------------- P4 构建任务跟踪 ---------------- */
@@ -6293,6 +6398,498 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2.7.0 批次2：快照 / PIN / 加密备份 / 失败诊断
+   * ------------------------------------------------------------------ */
+
+  /* ---------------- 通用 WebCrypto 辅助 ---------------- */
+
+  function b64FromBytes(bytes) {
+    var chunks = [];
+    var limit = 0x8000;
+    for (var i = 0; i < bytes.length; i += limit) {
+      chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + limit)));
+    }
+    try { return global.btoa(chunks.join('')); } catch (e) { return ''; }
+  }
+
+  function bytesFromB64(b64) {
+    var text = String(b64 === null || b64 === undefined ? '' : b64);
+    if (!text) return new Uint8Array(0);
+    try {
+      var bin = global.atob(text);
+      var out = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    } catch (e) { return new Uint8Array(0); }
+  }
+
+  function randomBytesArr(n) {
+    var arr = new Uint8Array(n);
+    try { global.crypto.getRandomValues(arr); } catch (e) {
+      for (var i = 0; i < n; i++) arr[i] = Math.floor(Math.random() * 256);
+    }
+    return arr;
+  }
+
+  function subtleCrypto() {
+    return (global.crypto && global.crypto.subtle) ? global.crypto.subtle : null;
+  }
+
+  function cryptoTextEncoder() {
+    return typeof global.TextEncoder !== 'undefined' ? new global.TextEncoder() : null;
+  }
+
+  function cryptoTextDecoder() {
+    return typeof global.TextDecoder !== 'undefined' ? new global.TextDecoder() : null;
+  }
+
+  /** PBKDF2-SHA256(pin, salt) → base64(32 bytes) */
+  function derivePinHash(pin, saltB64, iterations) {
+    var subtle = subtleCrypto();
+    var enc = cryptoTextEncoder();
+    if (!subtle || !enc) return Promise.resolve('');
+    var iterationCount = Number(iterations) || PIN_ITERATIONS;
+    var salt = bytesFromB64(saltB64);
+    return subtle.importKey('raw', enc.encode(String(pin === null || pin === undefined ? '' : pin)), { name: 'PBKDF2' }, false, ['deriveBits'])
+      .then(function (baseKey) {
+        return subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: iterationCount, hash: 'SHA-256' }, baseKey, 256);
+      })
+      .then(function (bits) { return b64FromBytes(new Uint8Array(bits)); }, function () { return ''; });
+  }
+
+  /** PBKDF2 → AES-GCM 256 key（用于备份加密） */
+  function deriveAesKey(password, saltB64, iterations) {
+    var subtle = subtleCrypto();
+    var enc = cryptoTextEncoder();
+    if (!subtle || !enc) return Promise.reject(new Error('WebCrypto 不可用，无法加解密备份'));
+    var iterationCount = Number(iterations) || PIN_ITERATIONS;
+    return subtle.importKey('raw', enc.encode(String(password === null || password === undefined ? '' : password)), { name: 'PBKDF2' }, false, ['deriveKey'])
+      .then(function (baseKey) {
+        return subtle.deriveKey(
+          { name: 'PBKDF2', salt: bytesFromB64(saltB64), iterations: iterationCount, hash: 'SHA-256' },
+          baseKey,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      });
+  }
+
+  /* ---------------- PIN（PBKDF2-SHA256 100k，4-6 位数字） ---------------- */
+
+  function getPinState() {
+    try {
+      if (global.Store && typeof global.Store.getPrefs === 'function') {
+        var prefs = global.Store.getPrefs();
+        if (prefs && prefs.appPin) return prefs.appPin;
+      }
+    } catch (e) { /* ignore */ }
+    return (state.prefs && state.prefs.appPin) || { enabled: false, salt: '', hash: '', iterations: PIN_ITERATIONS, failures: 0, lockUntil: 0 };
+  }
+
+  function savePinState(pinState) {
+    state.prefs.appPin = pinState;
+    try { Store.setPrefs({ appPin: pinState }); } catch (e) { warn('保存 PIN 失败：' + errText(e)); }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ appPin: pinState }); } catch (e2) { /* ignore */ }
+    try { refreshSecurityInfo(); } catch (e3) { /* ignore */ }
+  }
+
+  function hasPin() {
+    var p = getPinState();
+    return !!(p && p.enabled && p.salt && p.hash);
+  }
+
+  function isPinLocked() {
+    var p = getPinState();
+    return !!(p && p.lockUntil && Number(p.lockUntil) > Date.now());
+  }
+
+  function pinLockRemainingSec() {
+    var p = getPinState();
+    return Math.max(0, Math.ceil((Number(p && p.lockUntil ? p.lockUntil : 0) - Date.now()) / 1000));
+  }
+
+  function pinUnlockedState(base) {
+    return {
+      enabled: true,
+      salt: base.salt,
+      hash: base.hash,
+      iterations: Number(base.iterations) || PIN_ITERATIONS,
+      failures: 0,
+      lockUntil: 0
+    };
+  }
+
+  /** App.setPin(pin)：设置/覆盖 PIN；空字符串表示关闭 */
+  function setPin(pin) {
+    var raw = String(pin === null || pin === undefined ? '' : pin).replace(/\s/g, '');
+    if (!raw) {
+      savePinState({ enabled: false, salt: '', hash: '', iterations: PIN_ITERATIONS, failures: 0, lockUntil: 0 });
+      toast('已关闭应用 PIN');
+      return Promise.resolve(true);
+    }
+    if (!/^\d{4,6}$/.test(raw)) { toast('PIN 需为 4-6 位数字', true); return Promise.resolve(false); }
+    if (!subtleCrypto() || !cryptoTextEncoder()) { toast('当前环境不支持 WebCrypto，无法设置 PIN', true); return Promise.resolve(false); }
+    if (state.pinBusy) return Promise.resolve(false);
+    state.pinBusy = true;
+    var salt = b64FromBytes(randomBytesArr(16));
+    return derivePinHash(raw, salt, PIN_ITERATIONS).then(function (hash) {
+      state.pinBusy = false;
+      if (!hash) { toast('PIN 设置失败（加密不可用）', true); return false; }
+      savePinState({ enabled: true, salt: salt, hash: hash, iterations: PIN_ITERATIONS, failures: 0, lockUntil: 0 });
+      toast('应用 PIN 已设置', true);
+      return true;
+    }, function () {
+      state.pinBusy = false;
+      toast('PIN 设置失败', true);
+      return false;
+    });
+  }
+
+  function disablePin() {
+    return setPin('');
+  }
+
+  /** App.verifyPin(pin)：校验 PIN；连错 5 次锁 5 分钟 */
+  function verifyPin(pin) {
+    var current = getPinState();
+    if (!hasPin()) return Promise.resolve(true);
+    if (isPinLocked()) {
+      toast('PIN 已锁定，请 ' + Math.ceil(pinLockRemainingSec() / 60) + ' 分钟后再试', true);
+      return Promise.resolve(false);
+    }
+    var raw = String(pin === null || pin === undefined ? '' : pin).replace(/\s/g, '');
+    if (!/^\d{4,6}$/.test(raw)) return Promise.resolve(false);
+    return derivePinHash(raw, current.salt, current.iterations).then(function (hash) {
+      if (!hash || hash !== current.hash) {
+        var failures = (Number(current.failures) || 0) + 1;
+        if (failures >= PIN_MAX_FAILURES) {
+          savePinState({ enabled: true, salt: current.salt, hash: current.hash, iterations: current.iterations, failures: 0, lockUntil: Date.now() + PIN_LOCK_MS });
+          toast('PIN 连续错误 ' + PIN_MAX_FAILURES + ' 次，已锁定 5 分钟', true);
+        } else {
+          savePinState({ enabled: true, salt: current.salt, hash: current.hash, iterations: current.iterations, failures: failures, lockUntil: 0 });
+          toast('PIN 不正确（还可尝试 ' + (PIN_MAX_FAILURES - failures) + ' 次）', true);
+        }
+        return false;
+      }
+      if (current.failures || current.lockUntil) savePinState(pinUnlockedState(current));
+      return true;
+    });
+  }
+
+  /** 敏感操作前置：有 PIN 时验证（UI.requirePin 优先） */
+  function requirePin(title) {
+    if (!hasPin()) return Promise.resolve(true);
+    if (isPinLocked()) {
+      toast('PIN 已锁定，请 ' + Math.ceil(pinLockRemainingSec() / 60) + ' 分钟后再试', true);
+      return Promise.resolve(false);
+    }
+    var U = getUI();
+    if (U && typeof U.requirePin === 'function') {
+      try {
+        return Promise.resolve(U.requirePin(String(title || '请输入 PIN'))).then(function (ok) { return !!ok; }, function () { return false; });
+      } catch (e) { warn('UI.requirePin 异常：' + errText(e)); }
+    }
+    return promptAsync(title || '请输入 PIN', '', '4-6 位数字').then(function (value) {
+      if (value === null || value === undefined) return false;
+      return verifyPin(String(value));
+    });
+  }
+
+  /* ---------------- 工作区快照 ---------------- */
+
+  function isWriteToolName(name) {
+    var raw = String(name === null || name === undefined ? '' : name);
+    return !!(WRITE_TOOL_NAMES[raw] || WRITE_TOOL_NAMES[mcpBaseName(raw)]);
+  }
+
+  /** 本会话首次写工作区前创建快照；返回快照对象（失败/无需快照返回 null） */
+  function maybeSnapshotBeforeWrite(chat, name) {
+    if (!chat || !isWriteToolName(name)) return null;
+    var key = String(chat.id);
+    if (state.chatSnapshotTaken[key]) return state.lastSnapshotByChat[key] || null;
+    state.chatSnapshotTaken[key] = true;
+    var snap = null;
+    try {
+      if (global.Bridge && typeof global.Bridge.snapshotCreate === 'function') {
+        snap = global.Bridge.snapshotCreate('AI 修改前：' + String(name || 'tool'));
+      }
+    } catch (e) { warn('创建快照失败：' + errText(e)); snap = null; }
+    if (!snap || !snap.id) {
+      delete state.chatSnapshotTaken[key];
+      return null;
+    }
+    state.lastSnapshotByChat[key] = snap;
+    try { Store.updateChat(chat.id, { lastSnapshotId: String(snap.id), lastSnapshotCount: Number(snap.count) || 0 }); } catch (e2) { /* ignore */ }
+    toast('已创建快照（' + (snap.count || 0) + ' 个文件），可回滚', true);
+    return snap;
+  }
+
+  function attachSnapshotToToolMessage(chat, msg, snap) {
+    if (!chat || !msg || !snap || !snap.id) return msg;
+    var patch = { snapshotId: String(snap.id), snapshotCount: Number(snap.count) || 0 };
+    try { Store.updateMessage(chat.id, msg.id, patch); } catch (e) { /* ignore */ }
+    try { ui('updateMessage', msg.id, patch); } catch (e2) { /* ignore */ }
+    return msg;
+  }
+
+  /** App.listSnapshots() */
+  function listSnapshots() {
+    var raw = [];
+    try { if (global.Bridge && typeof global.Bridge.snapshotList === 'function') raw = global.Bridge.snapshotList(); } catch (e) { warn('读取快照失败：' + errText(e)); }
+    if (!Array.isArray(raw)) raw = [];
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var item = raw[i] || {};
+      out.push({
+        id: String(item.id || ''),
+        label: item.label || item.reason || '工作区快照',
+        ts: Number(item.ts !== undefined ? item.ts : item.createdAt) || 0,
+        createdAt: Number(item.createdAt !== undefined ? item.createdAt : item.ts) || 0,
+        count: Math.max(0, parseInt(item.count !== undefined ? item.count : item.fileCount, 10) || 0),
+        fileCount: Math.max(0, parseInt(item.fileCount !== undefined ? item.fileCount : item.count, 10) || 0),
+        size: Math.max(0, Number(item.size) || 0)
+      });
+    }
+    return out;
+  }
+
+  /** App.getSnapshotDiff(id) */
+  function getSnapshotDiff(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return { id: '', changes: [], count: 0 };
+    var diff = null;
+    try { if (global.Bridge && typeof global.Bridge.snapshotDiff === 'function') diff = global.Bridge.snapshotDiff(key); } catch (e) { warn('读取快照差异失败：' + errText(e)); }
+    if (!diff || typeof diff !== 'object') return { id: key, changes: [], count: 0 };
+    if (!diff.id) diff.id = key;
+    if (!diff.label) {
+      var list = listSnapshots();
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === key) { diff.label = list[i].label; diff.ts = list[i].ts; break; }
+      }
+    }
+    return diff;
+  }
+
+  function renderSnapshotDiff(diff) {
+    var U = getUI();
+    if (!U) return;
+    if (typeof U.renderSnapshotDiff === 'function') { try { U.renderSnapshotDiff(diff); } catch (e) { warn('UI.renderSnapshotDiff 异常：' + errText(e)); } }
+    else if (typeof U.renderSnapshotDiffs === 'function') { try { U.renderSnapshotDiffs(diff.id, diff.changes || []); } catch (e2) { /* ignore */ } }
+  }
+
+  /** App.createSnapshot(reason) */
+  function createSnapshot(reason) {
+    var snap = null;
+    try {
+      if (global.Bridge && typeof global.Bridge.snapshotCreate === 'function') snap = global.Bridge.snapshotCreate(String(reason || '手动快照'));
+    } catch (e) { warn('创建快照失败：' + errText(e)); }
+    if (!snap || !snap.id) { toast('创建快照失败', true); return false; }
+    var chat = Store.getActiveChat();
+    if (chat) {
+      try { Store.updateChat(chat.id, { lastSnapshotId: String(snap.id), lastSnapshotCount: Number(snap.count) || 0 }); } catch (e2) { /* ignore */ }
+      state.lastSnapshotByChat[String(chat.id)] = snap;
+    }
+    toast('已创建快照（' + (snap.count || 0) + ' 个文件，' + Math.max(0, Math.round((Number(snap.size) || 0) / 1024)) + ' KB）', true);
+    return snap;
+  }
+
+  /** App.restoreSnapshot(id)：PIN → 确认 → Bridge.snapshotRestore → 刷新工作区 */
+  function restoreSnapshot(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) { toast('快照 id 无效', true); return Promise.resolve(false); }
+    return requirePin('恢复工作区快照').then(function (allow) {
+      if (!allow) return false;
+      return confirmAsync('恢复快照', '将把工作区恢复到该快照状态（不会删除快照之后新增的文件）。继续？').then(function (ok) {
+        if (!ok) return false;
+        var res = null;
+        try { if (global.Bridge && typeof global.Bridge.snapshotRestore === 'function') res = global.Bridge.snapshotRestore(key); } catch (e) { warn('回滚快照失败：' + errText(e)); res = null; }
+        if (!res) { toast('回滚失败', true); return false; }
+        if (res.ok === false) {
+          toast('回滚失败：' + (res.error || res.warning || '未知错误'), true);
+          return false;
+        }
+        try { refreshWorkspaceInfo(); loadWorkspaceDir(''); } catch (e2) { warn('刷新工作区失败：' + errText(e2)); }
+        toast('已恢复快照' + (res.restored !== undefined ? '（' + res.restored + ' 个文件）' : '') +
+          (res.safetySnapshotId ? '；回滚前状态已另存为安全快照' : ''), true);
+        return res;
+      });
+    });
+  }
+
+  function deleteSnapshotById(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    var ok = false;
+    try { if (global.Bridge && typeof global.Bridge.snapshotDelete === 'function') ok = global.Bridge.snapshotDelete(key) !== false; } catch (e) { warn('删除快照失败：' + errText(e)); }
+    if (!ok) { toast('当前原生版本暂不支持删除单个快照', true); return false; }
+    toast('快照已删除');
+    return true;
+  }
+
+  function openSnapshotsPage() {
+    if (state.snapshotOpening) return listSnapshots();
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    var opener = U && (typeof U.openSnapshotsPage === 'function' ? U.openSnapshotsPage : (typeof U.openSnapshotPage === 'function' ? U.openSnapshotPage : null));
+    if (screen !== 'snapshots' && opener) {
+      state.snapshotOpening = true;
+      try { opener.call(U); } catch (e) { warn('UI.openSnapshotsPage 异常：' + errText(e)); } finally { state.snapshotOpening = false; }
+    }
+    var list = listSnapshots();
+    if (U && typeof U.renderSnapshots === 'function') {
+      var activeChat = null;
+      try { activeChat = Store.getActiveChat(); } catch (e2) { activeChat = null; }
+      try {
+        U.renderSnapshots({
+          snapshots: list,
+          currentId: activeChat && activeChat.lastSnapshotId ? String(activeChat.lastSnapshotId) : '',
+          currentSize: Number((state.workspace && state.workspace.root) ? 0 : 0)
+        });
+      } catch (e3) { warn('UI.renderSnapshots 异常：' + errText(e3)); }
+    }
+    return list;
+  }
+
+  /** handlers.onDiffSnapshot(id)：计算差异 → UI.renderSnapshotDiff */
+  function onSnapshotDiffRequest(id) {
+    var diff = getSnapshotDiff(id);
+    renderSnapshotDiff(diff);
+    return diff;
+  }
+
+  /* ---------------- 工具失败诊断 ---------------- */
+
+  function tailLines(text, maxLines) {
+    var str = String(text === null || text === undefined ? '' : text);
+    var lines = str.split('\n');
+    if (lines.length > maxLines) lines = lines.slice(lines.length - maxLines);
+    var out = lines.join('\n');
+    return out.length > 4000 ? out.slice(out.length - 4000) : out;
+  }
+
+  /** 从 tool-result/结果文本提取失败诊断 {exitCode,stderrTail,hint,hints,path,command,durationMs} */
+  function buildToolDiagnostics(name, args, resultText, evt, durationMs) {
+    var a = args && typeof args === 'object' ? args : {};
+    var text = String(resultText === null || resultText === undefined ? '' : resultText);
+    var diag = {};
+    var exitCode = null;
+    if (evt && evt.exitCode !== undefined && evt.exitCode !== null) exitCode = Number(evt.exitCode);
+    if (exitCode === null && evt && evt.diagnostics && evt.diagnostics.exitCode !== undefined) exitCode = Number(evt.diagnostics.exitCode);
+    if (exitCode === null) {
+      var m = /\[exit\s+(-?\d+)\]/i.exec(text);
+      if (m) exitCode = parseInt(m[1], 10);
+    }
+    if (exitCode !== null && isFinite(exitCode)) diag.exitCode = exitCode;
+    var timedOut = /\[超时\]|timed?\s*out|超时/i.test(text);
+    if (evt && evt.timedOut === true) timedOut = true;
+    var stderrSource = '';
+    if (evt) {
+      if (evt.stderrTail !== undefined && evt.stderrTail !== null) stderrSource = String(evt.stderrTail);
+      else if (evt.stderr !== undefined && evt.stderr !== null) stderrSource = String(evt.stderr);
+      else if (evt.diagnostics && (evt.diagnostics.tail !== undefined || evt.diagnostics.stderrTail !== undefined)) {
+        stderrSource = String(evt.diagnostics.tail !== undefined ? evt.diagnostics.tail : evt.diagnostics.stderrTail);
+      }
+    }
+    if (!stderrSource) stderrSource = text;
+    var tail = tailLines(stderrSource, 20);
+    if (tail.replace(/\s+/g, '') !== '') diag.stderrTail = tail;
+    var path = a.path || a.project_dir || a.dir || a.apk_path || a.out_apk || a.out_dir || '';
+    if (path) diag.path = String(path).slice(0, 500);
+    if (a.command) diag.command = String(a.command).slice(0, 400);
+    if (typeof durationMs === 'number' && durationMs >= 0) diag.durationMs = Math.round(durationMs);
+    var hints = [];
+    if (timedOut) hints.push('命令超时：拆分任务 / 检查死循环 / 提高超时设置');
+    if (exitCode === 127) hints.push('命令不存在（exit 127）：检查 PATH 或先安装对应工具');
+    if (exitCode === 126) hints.push('无法执行（exit 126）：检查文件执行权限');
+    if (exitCode !== null && exitCode !== 0 && exitCode !== 126 && exitCode !== 127) hints.push('命令返回非零退出码（' + exitCode + '）：查看 stderr 尾部定位原因');
+    if (/权限|permission|denied|EACCES|EPERM/i.test(text)) hints.push('权限不足：检查工作区 All-Files-Access / 文件权限');
+    if (/不存在|not found|no such file|ENOENT/i.test(text)) hints.push('路径不存在：确认工作区路径后重试');
+    if (/路径越出|穿越|越界|\.\./i.test(text)) hints.push('路径越界：仅允许工作区内路径，避免 .. 穿越');
+    if (/过大|上限|截断|too large/i.test(text)) hints.push('文件/输出过大：精简内容或分块处理');
+    if (/HTTP\s*40[13]|未连接|MCP\s*(调用失败|工具错误)/i.test(text)) hints.push('服务/网络问题：检查 MCP 连接或凭证');
+    if (/签名|校验|sha|hmac/i.test(text)) hints.push('校验失败：确认插件/工具签名或参数');
+    if (!hints.length) hints.push('可查看 stderr/日志后重试，或换用其他工具');
+    diag.hint = hints[0];
+    diag.hints = hints.slice(0, 4);
+    return diag;
+  }
+
+  function attachDiagnosticsToMessage(chat, msg, diag) {
+    if (!chat || !msg || !diag) return msg;
+    try { Store.updateMessage(chat.id, msg.id, { diagnostics: diag }); } catch (e) { /* ignore */ }
+    try { ui('updateMessage', msg.id, { diagnostics: diag }); } catch (e2) { /* ignore */ }
+    return msg;
+  }
+
+  /* ---------------- 加密备份（PBKDF2 + AES-GCM） ---------------- */
+
+  function isEncryptedBackupObject(obj) {
+    return !!(obj && typeof obj === 'object' && !Array.isArray(obj) &&
+      obj.v === BACKUP_ENC_VERSION && obj.kind === 'dsh-backup-enc' &&
+      obj.salt && obj.iv && obj.data);
+  }
+
+  function encryptBackupPayload(payload, password) {
+    var subtle = subtleCrypto();
+    var enc = cryptoTextEncoder();
+    if (!subtle || !enc) return Promise.reject(new Error('WebCrypto 不可用，无法加密备份'));
+    if (!password) return Promise.reject(new Error('备份密码不能为空'));
+    var salt = b64FromBytes(randomBytesArr(16));
+    var iterations = PIN_ITERATIONS;
+    return deriveAesKey(password, salt, iterations).then(function (key) {
+      var iv = randomBytesArr(12);
+      return subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, enc.encode(JSON.stringify(payload))).then(function (buffer) {
+        return {
+          v: BACKUP_ENC_VERSION,
+          kind: 'dsh-backup-enc',
+          createdAt: new Date().toISOString(),
+          iterations: iterations,
+          salt: salt,
+          iv: b64FromBytes(iv),
+          data: b64FromBytes(new Uint8Array(buffer))
+        };
+      });
+    });
+  }
+
+  function decryptBackupPayload(payload, password) {
+    if (!isEncryptedBackupObject(payload)) return Promise.reject(new Error('不是加密备份文件'));
+    var subtle = subtleCrypto();
+    var dec = cryptoTextDecoder();
+    if (!subtle || !dec) return Promise.reject(new Error('WebCrypto 不可用，无法解密备份'));
+    return deriveAesKey(password, payload.salt, payload.iterations).then(function (key) {
+      return subtle.decrypt({ name: 'AES-GCM', iv: bytesFromB64(payload.iv) }, key, bytesFromB64(payload.data));
+    }).then(function (buffer) {
+      return JSON.parse(dec.decode(new Uint8Array(buffer)));
+    });
+  }
+
+  /** 导入加密备份时询问密码：UI.requirePassword/promptPassword 优先，否则 promptAsync */
+  function promptBackupPassword(title) {
+    var U = getUI();
+    if (U) {
+      if (typeof U.requirePassword === 'function') {
+        try {
+          return Promise.resolve(U.requirePassword(title || '输入备份密码')).then(function (v) {
+            return v === null || v === undefined ? null : String(v);
+          }, function () { return null; });
+        } catch (e) { /* fall through */ }
+      }
+      if (typeof U.promptPassword === 'function') {
+        try {
+          return Promise.resolve(U.promptPassword(title || '输入备份密码')).then(function (v) {
+            return v === null || v === undefined ? null : String(v);
+          }, function () { return null; });
+        } catch (e2) { /* fall through */ }
+      }
+    }
+    return promptAsync(title || '输入备份密码', '', '备份密码').then(function (value) {
+      return value === null || value === undefined ? null : String(value);
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -6347,8 +6944,8 @@
   App.resolveSystemPrompt = function (chat) { return resolveSystemPrompt(chat); };
   App.archiveChat = safe(function (id, archived) { return archiveChat(id, archived); }, 'App.archiveChat');
   App.forkMessage = safe(function (msgId) { return forkMessage(msgId); }, 'App.forkMessage');
-  App.exportBackup = safe(function () { return exportBackup(); }, 'App.exportBackup');
-  App.importBackup = safe(function () { return importBackup(); }, 'App.importBackup');
+  App.exportBackup = safe(function (opts) { return exportBackup(opts); }, 'App.exportBackup');
+  App.importBackup = safe(function (opts) { return importBackup(opts); }, 'App.importBackup');
   App.buildBackupObject = function () { return buildBackupObject(); };
   App.applyBackup = safe(function (data) { return applyBackup(data); }, 'App.applyBackup');
   App.onFileImported = safe(function (evt) { return onFileImported(evt); }, 'App.onFileImported');
@@ -6508,6 +7105,41 @@
   App.saveToolPolicy = safe(function (tool, mode) { return saveToolPolicy(tool, mode); }, 'App.saveToolPolicy');
   App.openToolPoliciesPage = safe(function () { return openToolPoliciesPage(); }, 'App.openToolPoliciesPage');
   App.exportAudit = safe(function (format) { return exportAudit(format); }, 'App.exportAudit');
+
+  /* ARCH v2.7.0 批次2 对外接口：快照 / PIN / 加密备份 / 诊断 */
+  App.listSnapshots = function () { return listSnapshots(); };
+  App.getSnapshotDiff = function (id) { return getSnapshotDiff(id); };
+  App.diffSnapshot = function (id) { return getSnapshotDiff(id); };
+  App.createSnapshot = safe(function (reason) { return createSnapshot(reason); }, 'App.createSnapshot');
+  App.restoreSnapshot = safe(function (id) { return restoreSnapshot(id); }, 'App.restoreSnapshot');
+  App.deleteSnapshot = safe(function (id) { return deleteSnapshotById(id); }, 'App.deleteSnapshot');
+  App.clearSnapshots = safe(function () {
+    try {
+      if (global.Bridge && typeof global.Bridge.snapshotClear === 'function') {
+        var res = global.Bridge.snapshotClear();
+        if (res && res.ok !== false) { toast('已清空快照（' + (res.removed || 0) + ' 个）', true); return true; }
+      }
+    } catch (e) { warn('清空快照失败：' + errText(e)); }
+    toast('清空快照失败', true);
+    return false;
+  }, 'App.clearSnapshots');
+  App.openSnapshotsPage = safe(function () { return openSnapshotsPage(); }, 'App.openSnapshotsPage');
+  App.hasPin = function () { return hasPin(); };
+  App.isPinLocked = function () { return isPinLocked(); };
+  App.getPinState = function () {
+    var p = getPinState();
+    return { enabled: !!p.enabled, hasPin: hasPin(), locked: isPinLocked(), lockRemainingSec: pinLockRemainingSec(), failures: Number(p.failures) || 0 };
+  };
+  App.setPin = safe(function (pin) { return setPin(pin); }, 'App.setPin');
+  App.verifyPin = safe(function (pin) { return verifyPin(pin); }, 'App.verifyPin');
+  App.disablePin = safe(function () { return disablePin(); }, 'App.disablePin');
+  App.requirePin = safe(function (title) { return requirePin(title); }, 'App.requirePin');
+  App.isEncryptedBackup = function (obj) { return isEncryptedBackupObject(obj); };
+  App.encryptBackupPayload = safe(function (payload, password) { return encryptBackupPayload(payload, password); }, 'App.encryptBackupPayload');
+  App.decryptBackupPayload = safe(function (payload, password) { return decryptBackupPayload(payload, password); }, 'App.decryptBackupPayload');
+  App.buildToolDiagnostics = function (name, args, resultText, evt, durationMs) {
+    return buildToolDiagnostics(name, args, resultText, evt, durationMs);
+  };
   App.getFilePreview = function () { return state.filePreview; };
   App.confirmTool = safe(function (allow) {
     if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }

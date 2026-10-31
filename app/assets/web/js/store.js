@@ -81,7 +81,9 @@
     /* 批次1 v2.6.0：成本预算 / 自定义价格 / 工具权限策略 */
     costBudget: { daily: 0, monthly: 0 },
     costPrice: {},
-    toolPolicies: {}
+    toolPolicies: {},
+    /* 批次2 v2.7.0：安全 PIN（PBKDF2-SHA256 派生，仅存 salt/hash） */
+    appPin: { enabled: false, salt: '', hash: '', iterations: 100000, failures: 0, lockUntil: 0 }
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -178,7 +180,8 @@
       appLock: DEFAULT_PREFS.appLock,
       costBudget: { daily: DEFAULT_PREFS.costBudget.daily, monthly: DEFAULT_PREFS.costBudget.monthly },
       costPrice: {},
-      toolPolicies: {}
+      toolPolicies: {},
+      appPin: normalizeAppPin(DEFAULT_PREFS.appPin)
     };
   }
 
@@ -252,6 +255,21 @@
     return out;
   }
 
+  /** 批次2：PIN 归一化（PBKDF2 参数/失败次数/锁定时间） */
+  function normalizeAppPin(raw) {
+    var out = { enabled: false, salt: '', hash: '', iterations: 100000, failures: 0, lockUntil: 0 };
+    if (!raw || typeof raw !== 'object') return out;
+    out.enabled = !!raw.enabled;
+    out.salt = raw.salt ? String(raw.salt).slice(0, 300) : '';
+    out.hash = raw.hash ? String(raw.hash).slice(0, 300) : '';
+    var iterations = Number(raw.iterations);
+    out.iterations = iterations >= 1000 && iterations <= 1000000 ? Math.round(iterations) : 100000;
+    out.failures = Math.max(0, parseInt(raw.failures, 10) || 0);
+    out.lockUntil = Math.max(0, Number(raw.lockUntil) || 0);
+    if (!out.salt || !out.hash) out.enabled = false;
+    return out;
+  }
+
   function normalizePrefs(raw) {
     var p = defaultPrefs();
     if (!raw || typeof raw !== 'object') return p;
@@ -291,6 +309,7 @@
       }
       p.costPrice = prices;
     }
+    if (raw.appPin !== undefined) p.appPin = normalizeAppPin(raw.appPin);
     if (raw.toolPolicies && typeof raw.toolPolicies === 'object') {
       var policies = {};
       var policyKeys = Object.keys(raw.toolPolicies);
@@ -330,6 +349,19 @@
     if (raw.progress !== undefined && raw.progress !== null) {
       msg.progress = typeof raw.progress === 'object' ? clone(raw.progress) : (Number(raw.progress) || 0);
     }
+    /* 批次2 v2.7.0：工具失败诊断 + 快照标记 */
+    if (raw.diagnostics && typeof raw.diagnostics === 'object') {
+      var diag = {};
+      if (raw.diagnostics.exitCode !== undefined && raw.diagnostics.exitCode !== null) diag.exitCode = raw.diagnostics.exitCode;
+      if (raw.diagnostics.stderrTail !== undefined && raw.diagnostics.stderrTail !== null) diag.stderrTail = String(raw.diagnostics.stderrTail).slice(0, 1200);
+      if (raw.diagnostics.stderr !== undefined && raw.diagnostics.stderr !== null && diag.stderrTail === undefined) diag.stderrTail = String(raw.diagnostics.stderr).slice(0, 1200);
+      if (raw.diagnostics.path !== undefined && raw.diagnostics.path !== null) diag.path = String(raw.diagnostics.path).slice(0, 500);
+      if (raw.diagnostics.hint !== undefined && raw.diagnostics.hint !== null) diag.hint = String(raw.diagnostics.hint).slice(0, 500);
+      if (Array.isArray(raw.diagnostics.hints)) diag.hints = raw.diagnostics.hints.slice(0, 6).map(function (h) { return String(h).slice(0, 300); });
+      if (Object.keys(diag).length) msg.diagnostics = diag;
+    }
+    if (raw.snapshotId) msg.snapshotId = String(raw.snapshotId).slice(0, 120);
+    if (raw.snapshotCount !== undefined && raw.snapshotCount !== null) msg.snapshotCount = Math.max(0, parseInt(raw.snapshotCount, 10) || 0);
     if (raw.percent !== undefined && raw.percent !== null) {
       var pct = Number(raw.percent);
       if (isFinite(pct)) msg.percent = Math.max(0, Math.min(100, Math.round(pct)));
@@ -514,6 +546,8 @@
     if (raw.presetId) chat.presetId = String(raw.presetId).slice(0, 80);
     if (raw.systemPrompt) chat.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
     if (Array.isArray(raw.trace)) chat.trace = normalizeTrace(raw.trace);
+    if (raw.lastSnapshotId) chat.lastSnapshotId = String(raw.lastSnapshotId).slice(0, 120);
+    if (raw.lastSnapshotCount !== undefined && raw.lastSnapshotCount !== null) chat.lastSnapshotCount = Math.max(0, parseInt(raw.lastSnapshotCount, 10) || 0);
     return chat;
   }
 
@@ -926,6 +960,7 @@
       }
       state.prefs.costPrice = nextPrices;
     }
+    if (patch.appPin !== undefined) state.prefs.appPin = normalizeAppPin(patch.appPin);
     if (patch.toolPolicies !== undefined && patch.toolPolicies && typeof patch.toolPolicies === 'object') {
       var nextPolicies = {};
       var npKeys2 = Object.keys(patch.toolPolicies);
@@ -1096,6 +1131,8 @@
     if (patch.archived !== undefined) chat.archived = !!patch.archived;
     if (patch.presetId !== undefined) chat.presetId = patch.presetId ? String(patch.presetId).slice(0, 80) : '';
     if (patch.systemPrompt !== undefined) chat.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
+    if (patch.lastSnapshotId !== undefined) chat.lastSnapshotId = patch.lastSnapshotId ? String(patch.lastSnapshotId).slice(0, 120) : '';
+    if (patch.lastSnapshotCount !== undefined) chat.lastSnapshotCount = Math.max(0, parseInt(patch.lastSnapshotCount, 10) || 0);
     if (patch.updatedAt !== undefined) chat.updatedAt = Number(patch.updatedAt) || now();
     save();
     return chat;
@@ -1565,6 +1602,8 @@
     var keys = Object.keys(state.prefs || {});
     for (var i = 0; i < keys.length; i++) prefs[keys[i]] = state.prefs[keys[i]];
     delete prefs.apiKey;
+    /* 批次2：PIN 凭据不进入备份（防止迁移后锁定/泄露） */
+    delete prefs.appPin;
     var enabled = {};
     var source = state.plugins && state.plugins.enabled ? state.plugins.enabled : {};
     var ekeys = Object.keys(source);

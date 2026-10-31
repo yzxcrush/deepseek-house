@@ -1117,6 +1117,228 @@
     return true;
   }
 
+  /* ------------------------------------------------------------------ *
+   * ARCH v2.7.0 批次2：工作区快照 —— mock 实现
+   * 内存快照（复制 mockFileContents + 目录树），支持 create/list/diff/restore/clear。
+   * ------------------------------------------------------------------ */
+
+  var mockSnapshots = [];
+  var mockSnapshotSeq = 0;
+
+  function mockSnapshotCopyFiles() {
+    var out = {};
+    var keys = Object.keys(mockFileContents);
+    for (var i = 0; i < keys.length; i++) out[keys[i]] = mockFileContents[keys[i]];
+    return out;
+  }
+
+  function mockSnapshotFileList(files) {
+    var out = [];
+    var keys = Object.keys(files || {});
+    for (var i = 0; i < keys.length; i++) {
+      out.push({ path: keys[i], size: String(files[keys[i]] === null || files[keys[i]] === undefined ? '' : files[keys[i]]).length });
+    }
+    return out;
+  }
+
+  function mockRebuildTreeFromFiles() {
+    mockTree = {};
+    mockTree[mockWorkspace.root] = [];
+    var keys = Object.keys(mockFileContents);
+    for (var i = 0; i < keys.length; i++) {
+      var path = keys[i];
+      if (path.indexOf(mockWorkspace.root + '/') !== 0) continue;
+      var rel = path.slice(mockWorkspace.root.length + 1);
+      var parts = rel.split('/');
+      var parent = mockWorkspace.root;
+      for (var p = 0; p < parts.length - 1; p++) {
+        var dirPath = parent + '/' + parts[p];
+        if (!mockTree[parent]) mockTree[parent] = [];
+        var exists = false;
+        for (var t = 0; t < mockTree[parent].length; t++) {
+          if (mockTree[parent][t].path === dirPath) { exists = true; break; }
+        }
+        if (!exists) mockTree[parent].push({ name: parts[p], path: dirPath, isDir: true, size: 0 });
+        parent = dirPath;
+      }
+      if (!mockTree[parent]) mockTree[parent] = [];
+      var size = String(mockFileContents[path] === null || mockFileContents[path] === undefined ? '' : mockFileContents[path]).length;
+      var node = { name: parts[parts.length - 1], path: path, isDir: false, size: size };
+      var replaced = false;
+      for (var q = 0; q < mockTree[parent].length; q++) {
+        if (mockTree[parent][q].path === path) { mockTree[parent][q] = node; replaced = true; break; }
+      }
+      if (!replaced) mockTree[parent].push(node);
+    }
+  }
+
+  function mockSnapshotPublic(snap) {
+    var files = mockSnapshotFileList(snap.files);
+    var size = 0;
+    for (var i = 0; i < files.length; i++) size += files[i].size || 0;
+    return { id: snap.id, label: snap.label, ts: snap.ts, createdAt: snap.ts, count: files.length, fileCount: files.length, size: size, files: files.slice(0, 50) };
+  }
+
+  function mockSnapshotCreate(label) {
+    mockSnapshotSeq++;
+    var files = mockSnapshotCopyFiles();
+    var snap = {
+      id: 'snap_' + Date.now().toString(36) + '_' + mockSnapshotSeq,
+      label: String(label === null || label === undefined ? 'AI 修改前' : label).slice(0, 120),
+      ts: Date.now(),
+      files: files
+    };
+    mockSnapshots.unshift(snap);
+    if (mockSnapshots.length > 10) mockSnapshots.length = 10;
+    return mockSnapshotPublic(snap);
+  }
+
+  function mockSnapshotList() {
+    var out = [];
+    for (var i = 0; i < mockSnapshots.length; i++) out.push(mockSnapshotPublic(mockSnapshots[i]));
+    return out;
+  }
+
+  function mockSnapshotFind(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    for (var i = 0; i < mockSnapshots.length; i++) if (mockSnapshots[i].id === key) return mockSnapshots[i];
+    return null;
+  }
+
+  function mockSnapshotDiff(id) {
+    var snap = mockSnapshotFind(id);
+    if (!snap) return { id: String(id === null || id === undefined ? '' : id), error: '快照不存在', changes: [], count: 0 };
+    var current = mockSnapshotCopyFiles();
+    var paths = {};
+    var key;
+    for (key in snap.files) if (Object.prototype.hasOwnProperty.call(snap.files, key)) paths[key] = true;
+    for (key in current) if (Object.prototype.hasOwnProperty.call(current, key)) paths[key] = true;
+    var changes = [];
+    var keys = Object.keys(paths);
+    for (var i = 0; i < keys.length; i++) {
+      var path = keys[i];
+      var before = Object.prototype.hasOwnProperty.call(snap.files, path) ? String(snap.files[path]) : null;
+      var after = Object.prototype.hasOwnProperty.call(current, path) ? String(current[path]) : null;
+      if (before === after) continue;
+      var status = before === null ? 'added' : (after === null ? 'deleted' : 'modified');
+      changes.push({
+        path: path,
+        status: status,
+        sizeBefore: before === null ? 0 : before.length,
+        sizeAfter: after === null ? 0 : after.length
+      });
+    }
+    return { id: snap.id, label: snap.label, ts: snap.ts, changes: changes, count: changes.length };
+  }
+
+  function mockSnapshotRestore(id) {
+    var snap = mockSnapshotFind(id);
+    if (!snap) return { ok: false, restored: 0, error: '快照不存在' };
+    mockFileContents = {};
+    var keys = Object.keys(snap.files);
+    for (var i = 0; i < keys.length; i++) mockFileContents[keys[i]] = snap.files[keys[i]];
+    mockRebuildTreeFromFiles();
+    return { ok: true, restored: keys.length, failed: 0, files: mockSnapshotFileList(snap.files).slice(0, 50) };
+  }
+
+  function mockSnapshotClear() {
+    var removed = mockSnapshots.length;
+    mockSnapshots = [];
+    mockSnapshotSeq = 0;
+    return { ok: true, removed: removed };
+  }
+
+  function normalizeSnapshot(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var id = raw.id === undefined || raw.id === null ? '' : String(raw.id);
+    if (!id) return null;
+    var ts = Number(raw.ts !== undefined ? raw.ts : (raw.createdAt !== undefined ? raw.createdAt : raw.at)) || 0;
+    var mode = raw.label !== undefined && raw.label !== null ? raw.label : raw.reason;
+    var out = {
+      id: id,
+      label: mode === undefined || mode === null ? '工作区快照' : String(mode),
+      ts: ts,
+      createdAt: ts,
+      count: Math.max(0, parseInt(raw.count !== undefined ? raw.count : (raw.fileCount !== undefined ? raw.fileCount : 0), 10) || 0),
+      size: Math.max(0, Number(raw.size !== undefined ? raw.size : (raw.bytes !== undefined ? raw.bytes : 0)) || 0)
+    };
+    if (raw.folder) out.folder = String(raw.folder);
+    if (raw.skipped !== undefined) out.skipped = Math.max(0, parseInt(raw.skipped, 10) || 0);
+    if (Array.isArray(raw.files)) {
+      out.files = [];
+      for (var i = 0; i < raw.files.length && i < 200; i++) {
+        var item = raw.files[i];
+        if (typeof item === 'string') { out.files.push({ path: item, size: 0 }); continue; }
+        if (!item || typeof item !== 'object') continue;
+        out.files.push({
+          path: item.path === undefined || item.path === null ? '' : String(item.path),
+          size: Number(item.size) || 0
+        });
+      }
+    }
+    return out;
+  }
+
+  function normalizeSnapshotDiff(raw, id) {
+    var out = { id: String(id === null || id === undefined ? '' : id), changes: [], count: 0 };
+    if (!raw) return out;
+    if (Array.isArray(raw)) {
+      for (var i = 0; i < raw.length && i < 500; i++) {
+        var item = raw[i];
+        if (!item || typeof item !== 'object') continue;
+        var status = String(item.status || 'modified').toLowerCase();
+        if (status !== 'added' && status !== 'modified' && status !== 'deleted') status = 'modified';
+        out.changes.push({
+          path: item.path === undefined || item.path === null ? '' : String(item.path),
+          status: status,
+          oldSize: Math.max(0, Number(item.oldSize !== undefined ? item.oldSize : item.sizeBefore) || 0),
+          newSize: Math.max(0, Number(item.newSize !== undefined ? item.newSize : item.sizeAfter) || 0),
+          sizeBefore: Math.max(0, Number(item.sizeBefore !== undefined ? item.sizeBefore : item.oldSize) || 0),
+          sizeAfter: Math.max(0, Number(item.sizeAfter !== undefined ? item.sizeAfter : item.newSize) || 0)
+        });
+      }
+      out.count = out.changes.length;
+      return out;
+    }
+    if (typeof raw !== 'object') return out;
+    if (raw.id) out.id = String(raw.id);
+    if (raw.label || raw.reason) out.label = String(raw.label || raw.reason);
+    if (raw.ts) out.ts = Number(raw.ts) || 0;
+    if (raw.error) out.error = String(raw.error);
+    var changes = Array.isArray(raw.changes) ? raw.changes : (Array.isArray(raw.files) ? raw.files : []);
+    for (var j = 0; j < changes.length && j < 500; j++) {
+      var delta = changes[j];
+      if (!delta || typeof delta !== 'object') continue;
+      var st = String(delta.status || 'modified').toLowerCase();
+      if (st !== 'added' && st !== 'modified' && st !== 'deleted') st = 'modified';
+      out.changes.push({
+        path: delta.path === undefined || delta.path === null ? '' : String(delta.path),
+        status: st,
+        oldSize: Math.max(0, Number(delta.oldSize !== undefined ? delta.oldSize : delta.sizeBefore) || 0),
+        newSize: Math.max(0, Number(delta.newSize !== undefined ? delta.newSize : delta.sizeAfter) || 0),
+        sizeBefore: Math.max(0, Number(delta.sizeBefore !== undefined ? delta.sizeBefore : delta.oldSize) || 0),
+        sizeAfter: Math.max(0, Number(delta.sizeAfter !== undefined ? delta.sizeAfter : delta.newSize) || 0)
+      });
+    }
+    out.count = Math.max(0, parseInt(raw.count, 10) || out.changes.length);
+    return out;
+  }
+
+  function normalizeSnapshotRestore(raw) {
+    if (raw === true) return { ok: true, restored: 0, failed: 0 };
+    if (!raw || typeof raw !== 'object') return { ok: false, restored: 0, failed: 0, error: '回滚失败' };
+    var out = {
+      ok: raw.ok !== false,
+      restored: Math.max(0, parseInt(raw.restored, 10) || 0),
+      failed: Math.max(0, parseInt(raw.failed, 10) || 0)
+    };
+    if (raw.id) out.id = String(raw.id);
+    if (raw.safetySnapshotId) out.safetySnapshotId = String(raw.safetySnapshotId);
+    if (raw.error) out.error = String(raw.error);
+    if (raw.warning) out.warning = String(raw.warning);
+    return out;
+  }
+
   /** mock 下模拟「同一 requestId 的 execTool → tool-confirm → tool-result」完整事件流 */
   function mockExecToolFlow(requestId, name, argsJson) {
     var rid = String(requestId);
@@ -1348,6 +1570,29 @@
     memoryKvDelete: ['memoryKvDelete'],
     memoryAll: ['memoryAll']
   };
+
+  /* ARCH v2.7.0 批次2：工作区快照原生方法名探测（旧原生缺方法时回落 mock） */
+  var B2_NATIVE_METHODS = {
+    snapshotCreate: ['snapshotCreate', 'workspaceSnapshotCreate', 'snapshotTake'],
+    snapshotList: ['snapshotList', 'workspaceSnapshotList', 'snapshotRecent'],
+    snapshotDiff: ['snapshotDiff', 'workspaceSnapshotDiff'],
+    snapshotRestore: ['snapshotRestore', 'workspaceSnapshotRestore', 'snapshotRollback'],
+    snapshotDelete: ['snapshotDelete', 'workspaceSnapshotDelete'],
+    snapshotClear: ['snapshotClear', 'workspaceSnapshotClear']
+  };
+
+  function b2NativeName(op) {
+    if (!hasNative) return '';
+    var names = B2_NATIVE_METHODS[op] || [];
+    for (var i = 0; i < names.length; i++) {
+      if (hasNativeMethod(names[i])) return names[i];
+    }
+    return '';
+  }
+
+  function b2HasMethod(op) {
+    return !!b2NativeName(op);
+  }
 
   function p3NativeName(op) {
     if (!hasNative) return '';
@@ -2485,6 +2730,106 @@
       warn('mock 模式：插件目录位于内存（无系统文件管理器）');
       return true;
     },
+    /* ------------------------------------------------------------------ *
+     * ARCH v2.7.0 批次2：工作区快照（原生未就绪时用内存 mock）
+     * 原生：snapshotCreate(reason)->JSON / snapshotList()->JSON 数组 /
+     *       snapshotDiff(id)->JSON 数组 / snapshotRestore(id)->JSON / snapshotClear()->JSON
+     * ------------------------------------------------------------------ */
+    snapshotCreate: function (reason) {
+      var text = String(reason === null || reason === undefined ? 'AI 修改前' : reason).slice(0, 120);
+      var name = b2NativeName('snapshotCreate');
+      if (name) {
+        var raw = callNative(name, [text], false);
+        var parsed = parseJSON(raw, null);
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.ok === false) return null;
+          return normalizeSnapshot(parsed);
+        }
+        if (raw !== null && raw !== undefined && String(raw).replace(/^\s+|\s+$/g, '') !== '') {
+          var str = String(raw).replace(/^\s+|\s+$/g, '');
+          if (str.charAt(0) === '{') {
+            var obj = parseJSON(str, null);
+            if (obj && obj.ok === false) return null;
+            return normalizeSnapshot(obj);
+          }
+          return normalizeSnapshot({ id: str, label: text, ts: Date.now() });
+        }
+        return null;
+      }
+      return normalizeSnapshot(mockSnapshotCreate(text));
+    },
+
+    snapshotList: function () {
+      var name = b2NativeName('snapshotList');
+      if (name) {
+        var raw = callNative(name, [], true);
+        var list = [];
+        if (Array.isArray(raw)) {
+          for (var i = 0; i < raw.length; i++) {
+            var item = normalizeSnapshot(raw[i]);
+            if (item) list.push(item);
+          }
+        }
+        return list;
+      }
+      return mockSnapshotList();
+    },
+
+    snapshotDiff: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return normalizeSnapshotDiff(null, '');
+      var name = b2NativeName('snapshotDiff');
+      if (name) {
+        var raw = callNative(name, [key], true);
+        return normalizeSnapshotDiff(raw, key);
+      }
+      return normalizeSnapshotDiff(mockSnapshotDiff(key), key);
+    },
+
+    snapshotRestore: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return { ok: false, restored: 0, failed: 0, error: '快照 id 无效' };
+      var name = b2NativeName('snapshotRestore');
+      if (name) {
+        var raw = callNative(name, [key], false);
+        var parsed = parseJSON(raw, null);
+        return normalizeSnapshotRestore(parsed !== null ? parsed : raw);
+      }
+      return normalizeSnapshotRestore(mockSnapshotRestore(key));
+    },
+
+    /** 删除单个快照（原生当前无该方法：存在才调，否则 mock/降级 false） */
+    snapshotDelete: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = b2NativeName('snapshotDelete');
+      if (name) {
+        try { return callNative(name, [key], false) !== false; } catch (e) { warn('snapshotDelete 失败：' + (e && e.message)); return false; }
+      }
+      if (b2HasMethod('snapshotClear') || hasNative) {
+        /* 原生不支持按 id 删除：不误删全部 */
+        warn('原生未提供 snapshotDelete(id)，忽略单条删除');
+        return false;
+      }
+      var snap = mockSnapshotFind(key);
+      if (!snap) return false;
+      var idx = mockSnapshots.indexOf(snap);
+      if (idx >= 0) mockSnapshots.splice(idx, 1);
+      return true;
+    },
+
+    /** 清空全部快照（原生 snapshotClear()） */
+    snapshotClear: function () {
+      var name = b2NativeName('snapshotClear');
+      if (name) {
+        var raw = callNative(name, [], false);
+        var parsed = parseJSON(raw, null);
+        if (parsed && typeof parsed === 'object') return { ok: parsed.ok !== false, removed: Math.max(0, parseInt(parsed.removed, 10) || 0) };
+        return { ok: raw !== false, removed: 0 };
+      }
+      var cleared = mockSnapshotClear();
+      return { ok: !!cleared.ok, removed: cleared.removed };
+    },
 
     /* ------------------------------------------------------------------ *
      * ARCH v2 P3：记忆（session_summary + memory_kv）
@@ -2774,6 +3119,8 @@
       mockWorkspace = { root: MOCK_WORKSPACE_ROOT, writable: true, allFilesAccess: false };
       mockSeedMcp();
       mockSeedPluginMemory();
+      mockSnapshots = [];
+      mockSnapshotSeq = 0;
       return true;
     }
   };
@@ -2801,6 +3148,23 @@
     save: function (server) { return mockMcpSave(server); },
     remove: function (id) { return mockMcpDelete(id); },
     reset: function () { mockSeedMcp(); return true; }
+  };
+
+  /* ARCH v2.7.0 批次2：快照 mock 调试入口（仅测试使用） */
+  Bridge.__mockB2 = {
+    list: function () { return mockSnapshotList(); },
+    diff: function (id) { return normalizeSnapshotDiff(mockSnapshotDiff(id), id); },
+    create: function (label) { return normalizeSnapshot(mockSnapshotCreate(label)); },
+    restore: function (id) { return normalizeSnapshotRestore(mockSnapshotRestore(id)); },
+    remove: function (id) {
+      var snap = mockSnapshotFind(id);
+      if (!snap) return false;
+      var idx = mockSnapshots.indexOf(snap);
+      if (idx >= 0) mockSnapshots.splice(idx, 1);
+      return true;
+    },
+    clear: function () { return normalizeSnapshotRestore(mockSnapshotClear()); },
+    reset: function () { mockSnapshots = []; mockSnapshotSeq = 0; return true; }
   };
 
   /* ARCH v2 P4：图片/通知/应用锁/分享 mock 调试入口（仅测试使用） */

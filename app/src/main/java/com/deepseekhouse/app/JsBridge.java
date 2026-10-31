@@ -22,6 +22,7 @@ import com.deepseekhouse.app.agent.RootManager;
 import com.deepseekhouse.app.agent.ToolExecutor;
 import com.deepseekhouse.app.agent.ToolRegistry;
 import com.deepseekhouse.app.agent.Workspace;
+import com.deepseekhouse.app.agent.WorkspaceSnapshot;
 import com.deepseekhouse.app.mcp.McpManager;
 import com.deepseekhouse.app.memory.MemoryDb;
 import com.deepseekhouse.app.plugin.PluginRepository;
@@ -68,6 +69,10 @@ import java.util.regex.Pattern;
  * {@link #mcpRefreshTools(String)}（mcp-status / mcp-tools / mcp-progress）；MCP 工具注册进
  * {@link ToolRegistry} 后由 {@link #execTool(String, String, String)} 按 {@code ToolDef.remote}
  * 转发为 tools/call，结果复用 tool-result。</p>
+ *
+ * <p>批次2 v2.7.0 追加：工作区快照 {@link #snapshotCreate(String)} / {@link #snapshotList()} /
+ * {@link #snapshotDiff(String)} / {@link #snapshotRestore(String)} / {@link #snapshotClear()}
+ * （文件 IO 在 {@code WorkspaceSnapshot} 后台线程执行，方法阻塞 WebView JS 桥线程同步返回 JSON）。</p>
  */
 public final class JsBridge {
 
@@ -95,6 +100,8 @@ public final class JsBridge {
     private final MemoryDb memoryDb;
     /** 记忆写操作单线程队列（保持调用顺序，异常静默）。 */
     private final ExecutorService memoryPool;
+    /** 批次2 v2.7.0：工作区快照/差异/恢复（filesDir/snapshots）。 */
+    private final WorkspaceSnapshot snapshots;
     private final ExecutorService toolPool;
     /** requestId → 等待确认的工具调用（confirmTool 消费）。 */
     private final Map<String, PendingTool> pendingTools = new ConcurrentHashMap<>();
@@ -172,6 +179,8 @@ public final class JsBridge {
                 return t;
             }
         });
+        // 批次2 v2.7.0：工作区快照（文件 IO 在快照内部后台线程执行，调用处同步等待）
+        this.snapshots = new WorkspaceSnapshot(activity, this.workspace);
     }
 
     /** Activity 销毁时释放网络线程池与事件通道。 */
@@ -190,6 +199,11 @@ public final class JsBridge {
         }
         try {
             memoryDb.close();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        try {
+            snapshots.close();
         } catch (Throwable ignored) {
             // 忽略
         }
@@ -1029,6 +1043,69 @@ public final class JsBridge {
         } catch (Throwable ignored) {
             // 线程池已关闭（App 退出）时丢弃
         }
+    }
+
+    // ============================================================ 批次2 v2.7.0 工作区快照
+
+    /** 创建当前工作区快照；返回 {"ok":true,"id","createdAt","reason","fileCount","size","skipped"}。 */
+    @JavascriptInterface
+    public String snapshotCreate(String reason) {
+        try {
+            return snapshots.create(reason);
+        } catch (Throwable t) {
+            return snapshotError("创建快照失败：" + describe(t));
+        }
+    }
+
+    /** 快照列表 JSON 数组：[{id,createdAt,reason,fileCount,size}]（新→旧）。 */
+    @JavascriptInterface
+    public String snapshotList() {
+        try {
+            return snapshots.list();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** 与当前工作区比较：JSON 数组 [{path,status,sizeBefore,sizeAfter}]。 */
+    @JavascriptInterface
+    public String snapshotDiff(String id) {
+        try {
+            return snapshots.diff(id);
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** 恢复快照（自动先建 safety 快照）；同步返回 {"ok","id","restored","failed","safetySnapshotId"}。 */
+    @JavascriptInterface
+    public String snapshotRestore(String id) {
+        try {
+            return snapshots.restore(id);
+        } catch (Throwable t) {
+            return snapshotError("恢复快照失败：" + describe(t));
+        }
+    }
+
+    /** 删除全部快照；返回 {"ok":true,"removed":N}。 */
+    @JavascriptInterface
+    public String snapshotClear() {
+        try {
+            return snapshots.clear();
+        } catch (Throwable t) {
+            return snapshotError("清理快照失败：" + describe(t));
+        }
+    }
+
+    private static String snapshotError(String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("ok", false);
+            o.put("error", message == null ? "快照操作失败" : message);
+        } catch (JSONException ignored) {
+            return "{\"ok\":false,\"error\":\"快照操作失败\"}";
+        }
+        return o.toString();
     }
 
     // ------------------------------------------------------------ P1 内部工具

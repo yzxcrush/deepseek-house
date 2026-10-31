@@ -304,7 +304,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.6.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.7.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -697,6 +697,36 @@
           </button>
           <div class="form-row form-row--col">
             <span class="form-hint">轨迹记录当前会话的思考、工具调用与结果；工具权限可按工具设置确认策略。</span>
+          </div>
+        </div>
+
+        <!-- 批次2 v2.7.0：安全 PIN / 快照管理 -->
+        <div class="section-label">安全与快照</div>
+        <div class="section">
+          <div class="form-row">
+            <span class="form-label">安全 PIN</span>
+            <span class="form-control">
+              <label class="switch">
+                <input type="checkbox" id="set-pin" data-pin-toggle aria-label="安全 PIN">
+                <span class="switch-track"></span>
+              </label>
+            </span>
+          </div>
+          <div class="form-row">
+            <span class="form-label">PIN 状态</span>
+            <span class="form-control form-control--hint" id="set-pin-status">未设置</span>
+          </div>
+          <button class="form-row form-row--button" id="set-snapshots-row" type="button" data-action="open-snapshots" aria-label="快照管理">
+            <span class="form-label">快照管理</span>
+            <span class="form-control form-control--value">
+              <span class="form-value" id="set-snapshots-label">未创建</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+          <div class="form-row form-row--col">
+            <span class="form-hint">AI 修改工作区前会自动创建快照；可查看文件差异并一键回滚。PIN 用于恢复快照等敏感操作。</span>
           </div>
         </div>
 
@@ -1166,6 +1196,47 @@
         </div>
       </div>
     </section>
+
+    <!-- ============================ 快照与回滚（批次2 v2.7.0） ============================ -->
+    <section class="screen screen--page screen--snapshots" id="screen-snapshots" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title">快照与回滚</div>
+          <div class="subtitle" id="snapshots-count">工作区改动前的备份</div>
+        </div>
+        <button class="icon-btn" id="snapshot-create" type="button" data-action="create-snapshot" aria-label="为当前状态创建快照">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"></path>
+          </svg>
+        </button>
+      </header>
+
+      <div class="page-scroll snapshots-scroll">
+        <div class="snapshots-actions">
+          <button class="btn btn--primary snapshots-create-btn" type="button" data-action="create-snapshot">为当前状态创建快照</button>
+        </div>
+
+        <div class="snapshot-list" id="snapshots-list"></div>
+        <div class="plugins-empty snapshots-empty" id="snapshots-empty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h5l2 2.5h4A2.5 2.5 0 0 1 20 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-10Z"></path>
+            <path d="M12 10v5M9.5 12.5h5"></path>
+          </svg>
+          <p>还没有工作区快照</p>
+          <small>当 AI 修改工作区文件前会自动创建快照；也可以点上方按钮为当前状态手动创建。</small>
+        </div>
+
+        <div class="plugins-tip">
+          <b>关于快照</b>
+          <p>快照记录工作区文件的改动前状态，可查看新增 / 修改 / 删除的文件差异并回滚。恢复快照需要安全 PIN（若已设置）。</p>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- ============================ 底部导航（聊天 / 联系人 / 个人资料） ============================ -->
@@ -1272,7 +1343,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v2.6.0</span>
+      <span class="drawer-version">v2.7.0</span>
     </div>
   </aside>
 
@@ -1388,10 +1459,69 @@
       <div class="modal-title" id="backup-title">备份与恢复</div>
       <div class="modal-body">
         <p class="modal-hint">导出会生成包含全部会话与设置的 JSON 文件；导入会整体替换本机数据，请谨慎操作。</p>
+        <label class="backup-encrypt-row" for="backup-encrypt">
+          <span class="switch"><input type="checkbox" id="backup-encrypt"><span class="switch-track"></span></span>
+          <span class="backup-encrypt-text">使用密码加密导出</span>
+        </label>
+        <div class="form-row form-row--col backup-password-row" id="backup-password-row">
+          <span class="form-label">备份密码</span>
+          <input class="input" id="backup-password" type="password" placeholder="加密备份需要密码（可留空用于明文导入）" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <span class="form-hint">加密导出时必填；导入加密备份时填写同一密码。</span>
+        </div>
+        <div class="modal-error" id="backup-error" role="alert" hidden></div>
       </div>
       <div class="modal-actions">
         <button class="btn btn--ghost" type="button" id="backup-export" data-action="export-backup">导出备份</button>
         <button class="btn btn--primary" type="button" id="backup-import" data-action="import-backup">导入备份</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ PIN 验证弹窗（批次2 v2.7.0） ============================ -->
+  <div class="modal modal--center" id="pin-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="pin-title">
+    <div class="modal-panel modal-panel--small">
+      <div class="modal-title" id="pin-title">验证安全 PIN</div>
+      <div class="modal-body">
+        <p class="modal-hint" id="pin-message">请输入 4-6 位安全 PIN 以继续。</p>
+        <input class="input pin-input" id="pin-input" type="password" inputmode="numeric" maxlength="6" placeholder="••••" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <div class="modal-error" id="pin-error" role="alert" hidden></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="pin-cancel">取消</button>
+        <button class="btn btn--primary" type="button" data-action="pin-confirm">验证</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ PIN 设置弹窗（批次2 v2.7.0） ============================ -->
+  <div class="modal modal--center" id="pin-setup-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="pin-setup-title">
+    <div class="modal-panel modal-panel--small">
+      <div class="modal-title" id="pin-setup-title">设置安全 PIN</div>
+      <div class="modal-body">
+        <p class="modal-hint">PIN 用于恢复快照等敏感操作，只保存在本机。请输入 4-6 位数字并再次确认。</p>
+        <input class="input pin-input" id="pin-setup-new" type="password" inputmode="numeric" maxlength="6" placeholder="新的 PIN（4-6 位数字）" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input class="input pin-input" id="pin-setup-confirm" type="password" inputmode="numeric" maxlength="6" placeholder="再次输入 PIN" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <div class="modal-error" id="pin-setup-error" role="alert" hidden></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="pin-setup-cancel">取消</button>
+        <button class="btn btn--primary" type="button" data-action="pin-setup-save">保存 PIN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 密码输入弹窗（加密备份 / 通用） ============================ -->
+  <div class="modal modal--center" id="password-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="password-title">
+    <div class="modal-panel modal-panel--small">
+      <div class="modal-title" id="password-title">输入密码</div>
+      <div class="modal-body">
+        <p class="modal-hint" id="password-message">请输入密码以继续。</p>
+        <input class="input" id="password-input" type="password" placeholder="密码" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <div class="modal-error" id="password-error" role="alert" hidden></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="password-cancel">取消</button>
+        <button class="btn btn--primary" type="button" data-action="password-confirm">确定</button>
       </div>
     </div>
   </div>

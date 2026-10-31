@@ -49,7 +49,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.6.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.7.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -69,7 +69,7 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.6.0.apk`
+产物：`dist/DeepSeekHouse-2.7.0.apk`
 
 ### 云端构建（GitHub Actions）
 

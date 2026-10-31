@@ -7006,3 +7006,422 @@ html.glass-frost .trace-card {
   backdrop-filter: blur(18px) saturate(1.5);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
+
+/* ==========================================================================
+   批次 2 · v2.7.0：快照回滚 / 安全 PIN / 加密备份 / 失败诊断
+   深色 Telegram + 液态玻璃
+   ========================================================================== */
+
+/* ---------- 快照页 ---------- */
+.screen--snapshots {
+  z-index: 20;
+}
+
+.snapshots-scroll {
+  padding-bottom: calc(24px + var(--safe-bottom));
+}
+
+.snapshots-actions {
+  display: flex;
+  margin: 2px 12px 10px;
+}
+
+.snapshots-create-btn {
+  flex: 1 1 auto;
+  height: 42px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.snapshot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 12px 4px;
+}
+
+.snapshot-card {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 15px;
+  background-color: rgba(31, 31, 31, 0.9);
+}
+
+.snapshot-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 11px 12px;
+  text-align: left;
+}
+
+.snapshot-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background-color: rgba(81, 122, 246, 0.14);
+  color: var(--accent-2);
+}
+
+.snapshot-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.snapshot-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.snapshot-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.snapshot-reason {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.snapshot-time {
+  flex: none;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+
+.snapshot-meta {
+  margin-top: 2px;
+  color: #8b8b8b;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.snapshot-caret {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: #8b8b8b;
+  transition: transform 180ms var(--ease);
+}
+
+.snapshot-card.is-open .snapshot-caret {
+  transform: rotate(180deg);
+}
+
+.snapshot-body {
+  display: none;
+  padding: 0 12px 11px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.snapshot-card.is-open .snapshot-body {
+  display: block;
+}
+
+.snapshot-diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.snapshot-diff {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 9px;
+  background-color: rgba(0, 0, 0, 0.2);
+}
+
+.snapshot-diff-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.snapshot-diff--added .snapshot-diff-icon {
+  background-color: rgba(79, 208, 91, 0.16);
+  color: #8fe897;
+}
+
+.snapshot-diff--modified .snapshot-diff-icon {
+  background-color: rgba(240, 178, 86, 0.16);
+  color: #f0b256;
+}
+
+.snapshot-diff--deleted .snapshot-diff-icon {
+  background-color: rgba(224, 93, 93, 0.16);
+  color: #f08c8c;
+}
+
+.snapshot-diff-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #c7c7c7;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.snapshot-diff-size {
+  flex: none;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.snapshot-diff-size b {
+  color: #9db6ff;
+  font-weight: 600;
+}
+
+.snapshot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.snapshot-act {
+  padding: 7px 12px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #d6d6d6;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.snapshot-act:active {
+  background-color: rgba(255, 255, 255, 0.13);
+}
+
+.snapshot-act--primary {
+  background-color: rgba(224, 93, 93, 0.16);
+  color: #f08c8c;
+}
+
+.snapshot-act--ghost {
+  color: #8b8b8b;
+}
+
+.snapshot-loading {
+  padding: 10px 4px 2px;
+  color: #8b8b8b;
+  font-size: 12px;
+}
+
+.snapshot-diff-empty {
+  padding: 10px 4px 2px;
+  color: #8b8b8b;
+  font-size: 12px;
+}
+
+.snapshots-empty {
+  position: static;
+  padding: 38px 24px;
+}
+
+/* ---------- 安全 PIN / 密码输入 ---------- */
+.pin-input {
+  margin-top: 8px;
+  letter-spacing: 6px;
+  text-align: center;
+  font-size: 18px;
+  font-family: var(--mono);
+}
+
+.pin-input + .pin-input {
+  margin-top: 8px;
+}
+
+#pin-error,
+#pin-setup-error {
+  margin-top: 8px;
+}
+
+#set-pin-status.is-on {
+  color: #8fe897;
+}
+
+#set-pin-status.is-warn {
+  color: #f0b256;
+}
+
+#set-pin-status.is-locked {
+  color: #f08c8c;
+}
+
+/* ---------- 备份加密 ---------- */
+.backup-encrypt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 8px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.backup-encrypt-text {
+  color: var(--text);
+  font-size: 14px;
+}
+
+#backup-password-row {
+  padding-top: 0;
+}
+
+#backup-error {
+  margin-top: 6px;
+}
+
+/* ---------- 工具失败诊断卡 ---------- */
+.tool-diag {
+  margin-top: 6px;
+  border: 1px solid rgba(224, 93, 93, 0.26);
+  border-radius: 10px;
+  background-color: rgba(224, 93, 93, 0.07);
+  overflow: hidden;
+}
+
+.tool-diag[hidden] {
+  display: none;
+}
+
+.tool-diag > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  color: #f08c8c;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  list-style: none;
+  cursor: pointer;
+}
+
+.tool-diag > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-diag-caret {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  transition: transform 180ms var(--ease);
+}
+
+.tool-diag[open] .tool-diag-caret {
+  transform: rotate(180deg);
+}
+
+.tool-diag-body {
+  padding: 0 9px 9px;
+}
+
+.tool-diag-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 5px;
+  color: #c7c7c7;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.tool-diag-label {
+  flex: none;
+  min-width: 46px;
+  color: #8b8b8b;
+}
+
+.tool-diag-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-diag-code {
+  margin: 4px 0 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background-color: #181818;
+  color: #e2b7b7;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-diag-hints {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: #f0b256;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.tool-diag-hints li {
+  margin: 2px 0;
+}
+
+/* 工具卡「已备份」chip */
+.tool-snapshot-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: rgba(240, 178, 86, 0.16);
+  color: #f0b256;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+/* 液态玻璃 */
+html.glass-liquid .snapshot-card,
+html.glass-frost .snapshot-card,
+html.glass-liquid .tool-diag,
+html.glass-frost .tool-diag,
+html.glass-liquid .backup-encrypt-row,
+html.glass-frost .backup-encrypt-row {
+  background-color: rgba(31, 31, 31, 0.72);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}

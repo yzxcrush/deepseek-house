@@ -189,7 +189,9 @@
       appLock: false,
       encrypted: false,
       rootMode: false,
-      rootMessage: ''
+      rootMessage: '',
+      pin: false,
+      pinLocked: false
     },
     /* 批次 1 v2.6.0：轨迹 / 成本 / 工具权限 / 斜杠命令 */
     trace: {
@@ -215,6 +217,19 @@
       index: 0,
       query: '',
       custom: null
+    },
+    /* 批次 2 · v2.7.0：快照 / PIN / 密码输入 */
+    snapshots: {
+      list: [],
+      diffs: {},
+      openId: null,
+      loadingId: null,
+      loaded: false
+    },
+    pin: {
+      resolve: null,
+      passwordResolve: null,
+      setupForToggle: false
     }
   };
 
@@ -310,6 +325,18 @@
       console.warn('[UI] 回调 ' + name + ' 执行出错:', err);
     }
     return true;
+  }
+
+  /* 需要回调返回值（Promise/boolean）时使用；不存在返回 undefined */
+  function callHandler(name) {
+    var fn = state.cb ? state.cb[name] : null;
+    if (typeof fn !== 'function') return undefined;
+    try {
+      return fn.apply(null, Array.prototype.slice.call(arguments, 1));
+    } catch (err) {
+      console.warn('[UI] 回调 ' + name + ' 执行出错:', err);
+      return undefined;
+    }
   }
 
   function modelLabel(model) {
@@ -1222,7 +1249,7 @@
     else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents' ||
              state.screen === 'audit' || state.screen === 'mcp' || state.screen === 'market' ||
              state.screen === 'memory' || state.screen === 'trace' || state.screen === 'cost' ||
-             state.screen === 'tool-policy') base = 2;
+             state.screen === 'tool-policy' || state.screen === 'snapshots') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen || state.buildPanelOpen ||
@@ -1230,7 +1257,8 @@
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) ||
       isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal')) ||
       isModalOpen(r('mcp-form-modal')) || isModalOpen(r('memory-item-modal')) ||
-      isModalOpen(r('attachment-sheet')) || isModalOpen(r('image-viewer'));
+      isModalOpen(r('attachment-sheet')) || isModalOpen(r('image-viewer')) ||
+      isModalOpen(r('pin-modal')) || isModalOpen(r('pin-setup-modal')) || isModalOpen(r('password-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1262,8 +1290,11 @@
     if (isModalOpen(r('confirm-modal'))) resolveConfirm(false);
     if (isModalOpen(r('rename-modal'))) resolveRename(null);
     if (isModalOpen(r('risk-modal'))) resolveRisk(false);
+    if (isModalOpen(r('pin-modal'))) resolvePin(false);
+    if (isModalOpen(r('pin-setup-modal'))) closePinSetup();
+    if (isModalOpen(r('password-modal'))) resolvePassword(null);
     ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal',
-      'mcp-form-modal', 'memory-item-modal'].forEach(function (id) {
+      'mcp-form-modal', 'memory-item-modal', 'pin-modal', 'pin-setup-modal', 'password-modal'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -1927,6 +1958,10 @@
 
     /* ARCH v2 P2：构建类工具进度条 + 日志流 */
     applyToolBuildFields(msg, refs);
+
+    /* 批次2 v2.7.0：快照徽标 + 失败诊断卡 */
+    applyToolSnapshotBadge(msg, refs);
+    applyToolDiagnostics(msg, refs);
   }
 
   /* ================================================================== *
@@ -3846,6 +3881,9 @@
     if (Object.prototype.hasOwnProperty.call(data, 'encrypted')) state.security.encrypted = !!data.encrypted;
     if (Object.prototype.hasOwnProperty.call(data, 'rootMode')) state.security.rootMode = !!data.rootMode;
     if (Object.prototype.hasOwnProperty.call(data, 'rootMessage')) state.security.rootMessage = String(data.rootMessage || '');
+    if (Object.prototype.hasOwnProperty.call(data, 'pin')) state.security.pin = !!data.pin;
+    if (Object.prototype.hasOwnProperty.call(data, 'pinSet')) state.security.pin = !!data.pinSet;
+    if (Object.prototype.hasOwnProperty.call(data, 'pinLocked')) state.security.pinLocked = !!data.pinLocked;
     var rootToggle = r('set-rootmode');
     if (rootToggle) rootToggle.checked = !!state.security.rootMode;
     var rootStatus = r('set-root-status');
@@ -3859,6 +3897,7 @@
         rootStatus.classList.add('is-warn');
       }
     }
+    updatePinStatusDom();
     var toggle = r('set-applock');
     if (toggle) toggle.checked = !!state.security.appLock;
     var status = r('set-encryption-status');
@@ -3878,7 +3917,9 @@
     return {
       appLock: !!state.security.appLock,
       encrypted: !!state.security.encrypted,
-      rootMode: !!state.security.rootMode
+      rootMode: !!state.security.rootMode,
+      pin: !!state.security.pin,
+      pinLocked: !!state.security.pinLocked
     };
   }
 
@@ -4713,6 +4754,699 @@
     return state.slash.custom;
   }
 
+  /* ================================================================== *
+   * 批次 2 · v2.7.0：快照与回滚
+   * data: [{id,label?,reason?,ts|createdAt,count|fileCount,files?,size?,changes?/diffs?}]
+   * diff: {id,changes:[{path,status:'added'|'modified'|'deleted',oldSize,newSize}]}
+   * ================================================================== */
+  function formatByteSize(value) {
+    var size = Number(value);
+    if (!isFinite(size) || size <= 0) return '0 B';
+    if (size < 1024) return Math.round(size) + ' B';
+    if (size < 1024 * 1024) return (size / 1024).toFixed(size < 10240 ? 1 : 0) + ' KB';
+    if (size < 1024 * 1024 * 1024) return (size / (1024 * 1024)).toFixed(1) + ' MB';
+    return (size / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  }
+
+  function snapshotTimeText(value) {
+    var date = toDate(value);
+    if (!date) return '';
+    var now = new Date();
+    var sameDay = date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    var time = pad2(date.getHours()) + ':' + pad2(date.getMinutes());
+    if (sameDay) return '今天 ' + time;
+    return (date.getMonth() + 1) + '月' + date.getDate() + '日 ' + time;
+  }
+
+  function normalizeSnapshotChange(change) {
+    if (!change || typeof change !== 'object') return null;
+    var path = change.path != null ? String(change.path)
+      : (change.file != null ? String(change.file) : '');
+    if (!path) return null;
+    var status = String(change.status == null ? '' : change.status).toLowerCase();
+    if (status === 'add' || status === 'added' || status === 'create' || status === 'created' || status === 'new') status = 'added';
+    else if (status === 'delete' || status === 'deleted' || status === 'remove' || status === 'removed') status = 'deleted';
+    else status = 'modified';
+    var before = change.oldSize != null ? change.oldSize : change.sizeBefore;
+    var after = change.newSize != null ? change.newSize : change.sizeAfter;
+    if (before == null && change.before != null) before = change.before;
+    if (after == null && change.after != null) after = change.after;
+    return {
+      path: path,
+      status: status,
+      oldSize: before == null ? null : Number(before),
+      newSize: after == null ? null : Number(after)
+    };
+  }
+
+  function normalizeSnapshotChanges(value) {
+    var out = [];
+    (Array.isArray(value) ? value : []).forEach(function (change) {
+      var normalized = normalizeSnapshotChange(change);
+      if (normalized) out.push(normalized);
+    });
+    return out;
+  }
+
+  function normalizeSnapshotList(data) {
+    var list = [];
+    var source = data;
+    if (data && typeof data === 'object' && !Array.isArray(data)) source = data.snapshots || data.list || [];
+    (Array.isArray(source) ? source : []).forEach(function (item, index) {
+      if (!item || typeof item !== 'object') return;
+      var id = item.id != null ? String(item.id) : ('snapshot_' + index);
+      var changes = normalizeSnapshotChanges(item.changes != null ? item.changes : item.diffs);
+      var count = item.count != null ? item.count : (item.fileCount != null ? item.fileCount : (Array.isArray(item.files) ? item.files.length : changes.length));
+      list.push({
+        id: id,
+        label: item.label != null ? String(item.label) : '',
+        reason: item.reason != null ? String(item.reason) : (item.label != null ? String(item.label) : '工作区快照'),
+        ts: item.ts != null ? item.ts : (item.createdAt != null ? item.createdAt : item.at),
+        count: Number(count) || 0,
+        size: item.size != null ? item.size : item.totalSize,
+        changes: changes
+      });
+    });
+    return list;
+  }
+
+  function snapshotDiffText(change) {
+    var before = change.oldSize;
+    var after = change.newSize;
+    if (change.status === 'added') return after != null ? '新增 ' + formatByteSize(after) : '新增';
+    if (change.status === 'deleted') return before != null ? '删除 ' + formatByteSize(before) : '删除';
+    if (before != null && after != null) return formatByteSize(before) + ' → ' + formatByteSize(after);
+    if (after != null) return formatByteSize(after);
+    if (before != null) return formatByteSize(before);
+    return '修改';
+  }
+
+  function snapshotStatusText(status) {
+    if (status === 'added') return 'A';
+    if (status === 'deleted') return 'D';
+    return 'M';
+  }
+
+  function findSnapshot(id) {
+    var key = String(id == null ? '' : id);
+    var found = null;
+    (state.snapshots.list || []).forEach(function (item) {
+      if (item.id === key) found = item;
+    });
+    return found;
+  }
+
+  function snapshotChangesFor(snapshot) {
+    var id = snapshot.id;
+    var cached = state.snapshots.diffs[id];
+    if (Array.isArray(cached)) return cached;
+    if (Array.isArray(snapshot.changes) && snapshot.changes.length) {
+      state.snapshots.diffs[id] = snapshot.changes.slice();
+      return state.snapshots.diffs[id];
+    }
+    return null;
+  }
+
+  function renderSnapshotDiffList(container, changes) {
+    if (!container) return;
+    container.textContent = '';
+    if (!changes || !changes.length) {
+      container.appendChild(makeText('div', 'snapshot-diff-empty', '没有文件差异'));
+      return;
+    }
+    changes.forEach(function (change) {
+      var row = el('div', 'snapshot-diff snapshot-diff--' + change.status);
+      row.appendChild(makeText('span', 'snapshot-diff-icon', snapshotStatusText(change.status)));
+      row.appendChild(makeText('span', 'snapshot-diff-path', change.path));
+      row.appendChild(makeText('span', 'snapshot-diff-size', snapshotDiffText(change)));
+      container.appendChild(row);
+    });
+  }
+
+  function snapshotCardNode(snapshot) {
+    var open = state.snapshots.openId === snapshot.id;
+    var card = el('div', 'snapshot-card' + (open ? ' is-open' : ''));
+    card.setAttribute('data-snapshot-id', snapshot.id);
+
+    var head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'snapshot-head';
+    head.setAttribute('data-action', 'snapshot-toggle');
+    head.setAttribute('data-id', snapshot.id);
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    var icon = el('span', 'snapshot-icon');
+    icon.innerHTML = ICON.folder;
+    head.appendChild(icon);
+    var main = el('div', 'snapshot-main');
+    var titleRow = el('div', 'snapshot-title-row');
+    titleRow.appendChild(makeText('span', 'snapshot-reason', snapshot.reason || '工作区快照'));
+    titleRow.appendChild(makeText('span', 'snapshot-time', snapshotTimeText(snapshot.ts)));
+    main.appendChild(titleRow);
+    var metaText = snapshot.count + ' 个文件';
+    if (snapshot.size != null) metaText += ' · ' + formatByteSize(snapshot.size);
+    main.appendChild(makeText('div', 'snapshot-meta', metaText));
+    head.appendChild(main);
+    var caret = el('span', 'snapshot-caret');
+    caret.innerHTML = ICON.chevronDown;
+    head.appendChild(caret);
+    card.appendChild(head);
+
+    var body = el('div', 'snapshot-body');
+    var diffList = el('div', 'snapshot-diff-list');
+    if (state.snapshots.loadingId === snapshot.id) {
+      body.appendChild(makeText('div', 'snapshot-loading', '正在加载差异…'));
+    } else {
+      var changes = snapshotChangesFor(snapshot);
+      if (changes) renderSnapshotDiffList(diffList, changes);
+      else {
+        body.appendChild(makeText('div', 'snapshot-diff-empty', '展开后加载文件差异'));
+      }
+      body.appendChild(diffList);
+    }
+    var actions = el('div', 'snapshot-actions');
+    var restore = document.createElement('button');
+    restore.type = 'button';
+    restore.className = 'snapshot-act snapshot-act--primary';
+    restore.setAttribute('data-action', 'restore-snapshot');
+    restore.setAttribute('data-id', snapshot.id);
+    restore.textContent = '恢复此快照';
+    actions.appendChild(restore);
+    var diffBtn = document.createElement('button');
+    diffBtn.type = 'button';
+    diffBtn.className = 'snapshot-act';
+    diffBtn.setAttribute('data-action', 'snapshot-diff');
+    diffBtn.setAttribute('data-id', snapshot.id);
+    diffBtn.textContent = '查看差异';
+    actions.appendChild(diffBtn);
+    var del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'snapshot-act snapshot-act--ghost';
+    del.setAttribute('data-action', 'delete-snapshot');
+    del.setAttribute('data-id', snapshot.id);
+    del.textContent = '删除';
+    actions.appendChild(del);
+    body.appendChild(actions);
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderSnapshotList() {
+    var box = r('snapshots-list');
+    if (box) {
+      box.textContent = '';
+      (state.snapshots.list || []).forEach(function (snapshot) {
+        box.appendChild(snapshotCardNode(snapshot));
+      });
+    }
+    var empty = r('snapshots-empty');
+    if (empty) empty.hidden = (state.snapshots.list || []).length > 0;
+    var count = r('snapshots-count');
+    if (count) count.textContent = state.snapshots.list.length
+      ? (state.snapshots.list.length + ' 个快照 · 点击展开差异')
+      : '工作区改动前的备份';
+    var label = r('set-snapshots-label');
+    if (label) label.textContent = state.snapshots.list.length ? (state.snapshots.list.length + ' 个快照') : '未创建';
+  }
+
+  function renderSnapshots(data) {
+    state.snapshots.list = normalizeSnapshotList(data);
+    state.snapshots.loaded = true;
+    if (state.snapshots.openId && !findSnapshot(state.snapshots.openId)) state.snapshots.openId = null;
+    renderSnapshotList();
+    return state.snapshots.list;
+  }
+
+  function renderSnapshotDiff(diff) {
+    var id = '';
+    var changes = [];
+    if (Array.isArray(diff)) {
+      id = state.snapshots.openId || '';
+      changes = normalizeSnapshotChanges(diff);
+    } else if (diff && typeof diff === 'object') {
+      id = diff.id != null ? String(diff.id) : (state.snapshots.openId || '');
+      changes = normalizeSnapshotChanges(diff.changes != null ? diff.changes : diff.diffs);
+    }
+    if (!id) return [];
+    state.snapshots.diffs[id] = changes;
+    state.snapshots.loadingId = null;
+    state.snapshots.openId = id;
+    var snapshot = findSnapshot(id);
+    if (snapshot) snapshot.changes = changes;
+    renderSnapshotList();
+    return changes;
+  }
+
+  function renderSnapshotDiffs(id, changes) {
+    return renderSnapshotDiff({ id: id, changes: changes });
+  }
+
+  function toggleSnapshot(snapshotId) {
+    var id = String(snapshotId == null ? '' : snapshotId);
+    if (!id) return;
+    if (state.snapshots.openId === id) {
+      state.snapshots.openId = null;
+      renderSnapshotList();
+      return;
+    }
+    state.snapshots.openId = id;
+    var snapshot = findSnapshot(id);
+    var cached = snapshot ? snapshotChangesFor(snapshot) : null;
+    if (!cached && typeof state.cb.onDiffSnapshot === 'function') {
+      state.snapshots.loadingId = id;
+      renderSnapshotList();
+      invoke('onDiffSnapshot', id);
+    } else {
+      state.snapshots.loadingId = null;
+      renderSnapshotList();
+    }
+  }
+
+  function loadSnapshotDiff(snapshotId) {
+    var id = String(snapshotId == null ? '' : snapshotId);
+    if (!id) return;
+    state.snapshots.openId = id;
+    var snapshot = findSnapshot(id);
+    var cached = snapshot ? snapshotChangesFor(snapshot) : null;
+    if (cached) {
+      renderSnapshotList();
+      return;
+    }
+    if (typeof state.cb.onDiffSnapshot === 'function') {
+      state.snapshots.loadingId = id;
+      renderSnapshotList();
+      invoke('onDiffSnapshot', id);
+    } else {
+      state.snapshots.loadingId = null;
+      renderSnapshotList();
+      UI.toast('暂无可用的差异数据');
+    }
+  }
+
+  function refreshSnapshotsAfterAction() {
+    if (state.screen !== 'snapshots') return;
+    if (!invoke('onOpenSnapshots')) renderSnapshotList();
+  }
+
+  function openSnapshotsPage() {
+    showScreenImpl('snapshots');
+    if (!invoke('onOpenSnapshots')) renderSnapshotList();
+  }
+
+  function createSnapshot() {
+    var result = callHandler('onCreateSnapshot');
+    if (result === undefined) {
+      UI.toast('快照服务尚未就绪');
+      return;
+    }
+    if (typeof result.then === 'function') result.then(refreshSnapshotsAfterAction, function () { /* 静默 */ });
+    else refreshSnapshotsAfterAction();
+  }
+
+  function restoreSnapshot(snapshotId) {
+    if (!snapshotId) return;
+    var result = callHandler('onRestoreSnapshot', snapshotId);
+    if (result === undefined) {
+      UI.toast('快照回滚服务尚未就绪');
+      return;
+    }
+    if (result && typeof result.then === 'function') result.then(refreshSnapshotsAfterAction, function () { /* 静默 */ });
+    else refreshSnapshotsAfterAction();
+  }
+
+  function deleteSnapshot(snapshotId) {
+    if (!snapshotId) return;
+    var snapshot = findSnapshot(snapshotId);
+    var label = snapshot && snapshot.reason ? '「' + snapshot.reason + '」' : '该快照';
+    confirmDialog('删除快照', '确定删除' + label + '吗？删除后无法再回滚到该状态。').then(function (ok) {
+      if (!ok) return;
+      if (!invoke('onDeleteSnapshot', snapshotId)) UI.toast('快照服务尚未就绪');
+      else refreshSnapshotsAfterAction();
+    });
+  }
+
+  /* ================================================================== *
+   * 批次 2 · v2.7.0：安全 PIN / 密码输入
+   * ================================================================== */
+  function isPinDigits(value) {
+    return /^\d{4,6}$/.test(String(value == null ? '' : value));
+  }
+
+  function setPinError(elementId, text) {
+    var el = r(elementId);
+    var message = text == null ? '' : String(text);
+    if (el) {
+      el.textContent = message;
+      el.hidden = !message;
+    }
+  }
+
+  function updatePinStatusDom() {
+    var toggle = r('set-pin');
+    if (toggle) toggle.checked = !!state.security.pin;
+    var status = r('set-pin-status');
+    if (!status) return;
+    status.classList.remove('is-on', 'is-warn', 'is-locked');
+    if (state.security.pinLocked) {
+      status.textContent = '已锁定，请稍后重试';
+      status.classList.add('is-locked');
+    } else if (state.security.pin) {
+      status.textContent = '已设置';
+      status.classList.add('is-on');
+    } else {
+      status.textContent = '未设置';
+      status.classList.add('is-warn');
+    }
+  }
+
+  function resolvePin(value) {
+    closeModal(r('pin-modal'));
+    var resolve = state.pin.resolve;
+    state.pin.resolve = null;
+    if (typeof resolve === 'function') resolve(!!value);
+  }
+
+  function requirePin(title) {
+    if (state.pin.resolve) resolvePin(false);
+    var titleEl = r('pin-title');
+    if (titleEl) titleEl.textContent = title == null || title === '' ? '验证安全 PIN' : String(title);
+    var messageEl = r('pin-message');
+    if (messageEl) messageEl.textContent = '请输入 4-6 位安全 PIN 以继续。';
+    var input = r('pin-input');
+    if (input) input.value = '';
+    setPinError('pin-error', '');
+    openModal(r('pin-modal'));
+    setTimeout(function () {
+      var field = r('pin-input');
+      if (!field) return;
+      try { field.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+    return new Promise(function (resolve) {
+      state.pin.resolve = resolve;
+    });
+  }
+
+  function submitPin() {
+    var input = r('pin-input');
+    var pin = input ? String(input.value || '').replace(/\s/g, '') : '';
+    if (!isPinDigits(pin)) {
+      setPinError('pin-error', '请输入 4-6 位数字 PIN');
+      return;
+    }
+    var result = callHandler('onVerifyPin', pin);
+    if (result === undefined) {
+      setPinError('pin-error', 'PIN 服务尚未就绪');
+      resolvePin(false);
+      return;
+    }
+    Promise.resolve(result).then(function (ok) {
+      if (ok) {
+        setPinError('pin-error', '');
+        resolvePin(true);
+        return;
+      }
+      setPinError('pin-error', 'PIN 不正确或已锁定');
+      setTimeout(function () {
+        if (state.pin.resolve) resolvePin(false);
+        else closeModal(r('pin-modal'));
+      }, 700);
+      if (state.pin.resolve) {
+        var resolve = state.pin.resolve;
+        state.pin.resolve = null;
+        resolve(false);
+      }
+    }, function () {
+      setPinError('pin-error', 'PIN 校验失败');
+      resolvePin(false);
+    });
+  }
+
+  function openPinSetup() {
+    setVal('pin-setup-new', '');
+    setVal('pin-setup-confirm', '');
+    setPinError('pin-setup-error', '');
+    openModal(r('pin-setup-modal'));
+    setTimeout(function () {
+      var input = r('pin-setup-new');
+      if (!input) return;
+      try { input.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function closePinSetup() {
+    closeModal(r('pin-setup-modal'));
+    setPinError('pin-setup-error', '');
+    if (state.pin.setupForToggle) {
+      state.pin.setupForToggle = false;
+      var toggle = r('set-pin');
+      if (toggle) toggle.checked = !!state.security.pin;
+    }
+  }
+
+  function submitPinSetup() {
+    var newInput = r('pin-setup-new');
+    var confirmInput = r('pin-setup-confirm');
+    var pin = newInput ? String(newInput.value || '').replace(/\s/g, '') : '';
+    var confirm = confirmInput ? String(confirmInput.value || '').replace(/\s/g, '') : '';
+    if (!isPinDigits(pin)) {
+      setPinError('pin-setup-error', '请输入 4-6 位数字 PIN');
+      return;
+    }
+    if (pin !== confirm) {
+      setPinError('pin-setup-error', '两次输入的 PIN 不一致');
+      return;
+    }
+    var result = callHandler('onSetPin', pin);
+    if (result === undefined) {
+      setPinError('pin-setup-error', 'PIN 服务尚未就绪');
+      return;
+    }
+    Promise.resolve(result).then(function (ok) {
+      if (ok === false) {
+        setPinError('pin-setup-error', '设置 PIN 失败');
+        return;
+      }
+      state.security.pin = true;
+      state.pin.setupForToggle = false;
+      closeModal(r('pin-setup-modal'));
+      setPinError('pin-setup-error', '');
+      updatePinStatusDom();
+      UI.toast('安全 PIN 已设置');
+    }, function () {
+      setPinError('pin-setup-error', '设置 PIN 失败');
+    });
+  }
+
+  function setPinEnabled(enabled) {
+    var toggle = r('set-pin');
+    if (enabled) {
+      state.pin.setupForToggle = true;
+      openPinSetup();
+      return;
+    }
+    confirmDialog('关闭安全 PIN', '关闭后恢复快照等敏感操作将不再需要 PIN。确定关闭吗？').then(function (ok) {
+      if (!ok) {
+        if (toggle) toggle.checked = true;
+        return;
+      }
+      var result = typeof state.cb.onDisablePin === 'function'
+        ? callHandler('onDisablePin')
+        : callHandler('onSetPin', '');
+      if (result === undefined) {
+        UI.toast('PIN 服务尚未就绪');
+        if (toggle) toggle.checked = true;
+        return;
+      }
+      Promise.resolve(result).then(function (done) {
+        if (done === false) {
+          UI.toast('关闭 PIN 失败');
+          if (toggle) toggle.checked = true;
+          return;
+        }
+        state.security.pin = false;
+        updatePinStatusDom();
+        UI.toast('安全 PIN 已关闭');
+      }, function () {
+        if (toggle) toggle.checked = true;
+      });
+    });
+  }
+
+  function setPasswordError(text) {
+    setPinError('password-error', text);
+  }
+
+  function resolvePassword(value) {
+    closeModal(r('password-modal'));
+    var resolve = state.pin.passwordResolve;
+    state.pin.passwordResolve = null;
+    if (typeof resolve === 'function') resolve(value == null ? null : String(value));
+  }
+
+  function requirePassword(titleOrOptions) {
+    if (state.pin.passwordResolve) resolvePassword(null);
+    var options = typeof titleOrOptions === 'string' ? { title: titleOrOptions }
+      : (titleOrOptions && typeof titleOrOptions === 'object' ? titleOrOptions : {});
+    var titleEl = r('password-title');
+    if (titleEl) titleEl.textContent = options.title ? String(options.title) : '输入密码';
+    var messageEl = r('password-message');
+    if (messageEl) messageEl.textContent = options.message ? String(options.message) : '请输入密码以继续。';
+    var input = r('password-input');
+    if (input) input.value = '';
+    setPasswordError('');
+    openModal(r('password-modal'));
+    setTimeout(function () {
+      var field = r('password-input');
+      if (!field) return;
+      try { field.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+    return new Promise(function (resolve) {
+      state.pin.passwordResolve = resolve;
+    });
+  }
+
+  function submitPassword() {
+    var input = r('password-input');
+    var value = input ? String(input.value || '') : '';
+    if (!value) {
+      setPasswordError('请输入密码');
+      return;
+    }
+    setPasswordError('');
+    resolvePassword(value);
+  }
+
+  /* ================================================================== *
+   * 批次 2 · v2.7.0：加密备份
+   * ================================================================== */
+  function setBackupError(text) {
+    var error = r('backup-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function readBackupForm() {
+    var encryptInput = r('backup-encrypt');
+    var passwordInput = r('backup-password');
+    return {
+      encrypt: !!(encryptInput && encryptInput.checked),
+      password: passwordInput ? String(passwordInput.value || '') : ''
+    };
+  }
+
+  function doExportBackup() {
+    var form = readBackupForm();
+    if (form.encrypt && !form.password) {
+      setBackupError('勾选「使用密码加密」后请输入密码');
+      return;
+    }
+    setBackupError('');
+    closeModal(r('backup-modal'));
+    if (!invoke('onExportBackup', { encrypt: form.encrypt, password: form.password })) {
+      UI.toast('备份服务尚未就绪');
+    }
+  }
+
+  function doImportBackup() {
+    var form = readBackupForm();
+    setBackupError('');
+    closeModal(r('backup-modal'));
+    if (!invoke('onImportBackup', { password: form.password })) {
+      UI.toast('备份服务尚未就绪');
+    }
+  }
+
+  /* ================================================================== *
+   * 批次 2 · v2.7.0：失败诊断卡 / 工具卡快照徽标
+   * ================================================================== */
+  function toolDiagnosticsOf(msg) {
+    var source = msg || {};
+    var diag = source.diagnostics && typeof source.diagnostics === 'object' ? source.diagnostics : {};
+    var exitCode = diag.exitCode != null ? diag.exitCode : (source.exitCode != null ? source.exitCode : null);
+    var stderr = diag.stderrTail != null ? diag.stderrTail
+      : (diag.stderr != null ? diag.stderr : (source.stderr != null ? source.stderr : ''));
+    var hint = diag.hint != null ? diag.hint : (diag.suggestion != null ? diag.suggestion : (source.suggestion != null ? source.suggestion : ''));
+    var hints = [];
+    if (Array.isArray(diag.hints)) hints = diag.hints.map(function (item) { return String(item); });
+    else if (Array.isArray(source.hints)) hints = source.hints.map(function (item) { return String(item); });
+    return {
+      exitCode: exitCode,
+      stderr: stderr == null ? '' : String(stderr),
+      hint: hint == null ? '' : String(hint),
+      hints: hints,
+      path: diag.path != null ? String(diag.path) : '',
+      command: diag.command != null ? String(diag.command) : '',
+      durationMs: diag.durationMs
+    };
+  }
+
+  function applyToolDiagnostics(msg, refs) {
+    var diag = refs.toolDiag;
+    if (!diag) return;
+    var info = toolDiagnosticsOf(msg);
+    var hasAny = info.exitCode != null || info.stderr !== '' || info.hint !== '' ||
+      info.hints.length > 0 || info.path !== '' || info.command !== '';
+    diag.root.hidden = !hasAny;
+    if (!hasAny) return;
+
+    var key = [info.exitCode, info.stderr.length, info.hint, info.hints.join('|'), info.path, info.command].join('~');
+    if (refs.diagKey !== key) {
+      refs.diagKey = key;
+      diag.body.textContent = '';
+
+      function addRow(label, value) {
+        if (value == null || String(value) === '') return;
+        var row = el('div', 'tool-diag-row');
+        row.appendChild(makeText('span', 'tool-diag-label', label));
+        row.appendChild(makeText('span', 'tool-diag-value', String(value)));
+        diag.body.appendChild(row);
+      }
+      if (info.exitCode != null) addRow('退出码', String(info.exitCode));
+      if (info.command) addRow('命令', info.command);
+      if (info.path) addRow('路径', info.path);
+      if (info.durationMs != null) addRow('耗时', traceDurationText(info.durationMs));
+      if (info.stderr) {
+        var stderrRow = el('div', 'tool-diag-row');
+        stderrRow.appendChild(makeText('span', 'tool-diag-label', 'stderr'));
+        stderrRow.appendChild(makeText('span', 'tool-diag-value', '错误输出（尾部）'));
+        diag.body.appendChild(stderrRow);
+        var pre = el('pre', 'tool-diag-code');
+        var stderrText = info.stderr.length > 4000 ? info.stderr.slice(-4000) : info.stderr;
+        pre.textContent = stderrText;
+        diag.body.appendChild(pre);
+      }
+      if (info.hint) {
+        var hintRow = el('div', 'tool-diag-row');
+        hintRow.appendChild(makeText('span', 'tool-diag-label', '建议'));
+        hintRow.appendChild(makeText('span', 'tool-diag-value', info.hint));
+        diag.body.appendChild(hintRow);
+      }
+      if (info.hints.length) {
+        var list = el('ul', 'tool-diag-hints');
+        info.hints.forEach(function (item) { list.appendChild(makeText('li', '', item)); });
+        diag.body.appendChild(list);
+      }
+      if (msg.ok === false && !refs.diagUserToggled) diag.root.open = true;
+    }
+  }
+
+  function applyToolSnapshotBadge(msg, refs) {
+    var badge = refs.snapshotBadge;
+    if (!badge) return;
+    var snapshotId = msg.snapshotId != null ? msg.snapshotId : msg.lastSnapshotId;
+    if (snapshotId == null || snapshotId === '') {
+      badge.hidden = true;
+      return;
+    }
+    var count = Number(msg.snapshotCount);
+    badge.hidden = false;
+    badge.textContent = isFinite(count) && count > 1 ? ('已备份 · ' + count) : '已备份';
+    badge.title = '快照：' + String(snapshotId);
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -4731,7 +5465,8 @@
     memory: 'screen-memory',
     trace: 'screen-trace',
     cost: 'screen-cost',
-    'tool-policy': 'screen-tool-policy'
+    'tool-policy': 'screen-tool-policy',
+    snapshots: 'screen-snapshots'
   };
 
   function syncBottomNav(name) {
@@ -5283,8 +6018,11 @@
       cardIcon.innerHTML = ICON.wrench;
       var cardName = makeText('span', 'tool-card-name', 'tool');
       var cardBadge = makeText('span', 'tool-badge tool-badge--running', '运行中');
+      var snapshotBadge = makeText('span', 'tool-snapshot-badge', '已备份');
+      snapshotBadge.hidden = true;
       cardHead.appendChild(cardIcon);
       cardHead.appendChild(cardName);
+      cardHead.appendChild(snapshotBadge);
       cardHead.appendChild(cardBadge);
 
       var argsDetails = document.createElement('details');
@@ -5314,9 +6052,24 @@
       resultDetails.appendChild(resultSummary);
       resultDetails.appendChild(resultBody);
 
+      /* 批次2：失败诊断折叠卡（退出码 / stderr / 建议） */
+      var diagRoot = document.createElement('details');
+      diagRoot.className = 'tool-diag';
+      diagRoot.hidden = true;
+      var diagSummary = document.createElement('summary');
+      diagSummary.appendChild(makeText('span', 'tool-details-label', '失败诊断'));
+      var diagCaret = el('span', 'tool-diag-caret');
+      diagCaret.innerHTML = ICON.chevronDown;
+      diagSummary.appendChild(diagCaret);
+      var diagBody = el('div', 'tool-diag-body');
+      diagRoot.appendChild(diagSummary);
+      diagRoot.appendChild(diagBody);
+      diagSummary.addEventListener('click', function () { refs.diagUserToggled = true; });
+
       toolCard.appendChild(cardHead);
       toolCard.appendChild(argsDetails);
       toolCard.appendChild(resultDetails);
+      toolCard.appendChild(diagRoot);
       bubble.appendChild(toolCard);
 
       refs.toolCard = {
@@ -5330,6 +6083,8 @@
         resultSummary: resultTextEl,
         resultBody: resultBody
       };
+      refs.snapshotBadge = snapshotBadge;
+      refs.toolDiag = { root: diagRoot, body: diagBody };
       refs.lastToolStatus = '';
       refs.lastToolArgs = null;
       refs.lastToolResult = null;
@@ -6398,10 +7153,11 @@
       if (typeof state.cb.onCloseTrace === 'function') invoke('onCloseTrace');
       return;
     }
-    if (state.screen === 'cost' || state.screen === 'tool-policy') {
+    if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') {
+      var closeSnapKey = state.screen === 'snapshots' ? 'onCloseSnapshots' : (state.screen === 'cost' ? 'onCloseCost' : 'onCloseToolPolicies');
+      var snapScreen = state.screen;
       showScreenImpl('settings');
-      if (state.screen === 'cost' && typeof state.cb.onCloseCost === 'function') invoke('onCloseCost');
-      if (state.screen === 'tool-policy' && typeof state.cb.onCloseToolPolicies === 'function') invoke('onCloseToolPolicies');
+      if (typeof state.cb[closeSnapKey] === 'function') invoke(closeSnapKey);
       return;
     }
     /* ARCH v2 P3：插件市场 / 记忆返回设置页 */
@@ -6432,6 +7188,9 @@
     if (isModalOpen(r('image-viewer'))) { closeImageViewer(); return true; }
     if (isModalOpen(r('attachment-sheet'))) { closeAttachmentSheet(); return true; }
     if (state.buildPanelOpen) { closeBuildPanel(); return true; }
+    if (isModalOpen(r('pin-modal'))) { resolvePin(false); return true; }
+    if (isModalOpen(r('pin-setup-modal'))) { closePinSetup(); return true; }
+    if (isModalOpen(r('password-modal'))) { resolvePassword(null); return true; }
     if (state.pluginPanelOpen) { closePluginPanel(); return true; }
     if (state.fileDrawer.open) { closeFileDrawer(); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
@@ -6443,7 +7202,7 @@
     if (state.screen === 'mcp') { showScreenImpl('settings'); return true; }
     if (state.screen === 'market' || state.screen === 'memory') { showScreenImpl('settings'); return true; }
     if (state.screen === 'trace') { showScreenImpl('chat'); return true; }
-    if (state.screen === 'cost' || state.screen === 'tool-policy') { showScreenImpl('settings'); return true; }
+    if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') { showScreenImpl('settings'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -6741,6 +7500,43 @@
       case 'open-tool-policies':
         openToolPolicyPage();
         break;
+      /* -------- 批次2 v2.7.0：快照 / PIN / 加密备份 -------- */
+      case 'open-snapshots':
+        openSnapshotsPage();
+        break;
+      case 'create-snapshot':
+        createSnapshot();
+        break;
+      case 'snapshot-toggle':
+        toggleSnapshot(node.getAttribute('data-id'));
+        break;
+      case 'snapshot-diff':
+        loadSnapshotDiff(node.getAttribute('data-id'));
+        break;
+      case 'restore-snapshot':
+        restoreSnapshot(node.getAttribute('data-id'));
+        break;
+      case 'delete-snapshot':
+        deleteSnapshot(node.getAttribute('data-id'));
+        break;
+      case 'pin-confirm':
+        submitPin();
+        break;
+      case 'pin-cancel':
+        resolvePin(false);
+        break;
+      case 'pin-setup-save':
+        submitPinSetup();
+        break;
+      case 'pin-setup-cancel':
+        closePinSetup();
+        break;
+      case 'password-confirm':
+        submitPassword();
+        break;
+      case 'password-cancel':
+        resolvePassword(null);
+        break;
       case 'tool-policy':
         setToolPolicyMode(node.getAttribute('data-tool'), node.getAttribute('data-mode'));
         break;
@@ -6754,18 +7550,17 @@
         pickSlashCommand(node.getAttribute('data-index'));
         break;
       case 'open-backup':
+        setBackupError('');
         openModal(r('backup-modal'));
         break;
       case 'close-backup':
         closeModal(r('backup-modal'));
         break;
       case 'export-backup':
-        closeModal(r('backup-modal'));
-        if (!invoke('onExportBackup')) UI.toast('备份服务尚未就绪');
+        doExportBackup();
         break;
       case 'import-backup':
-        closeModal(r('backup-modal'));
-        if (!invoke('onImportBackup')) UI.toast('备份服务尚未就绪');
+        doImportBackup();
         break;
       case 'close-file-preview':
         closeFilePreview();
@@ -7026,6 +7821,11 @@
     /* ARCH v2 P4：应用锁开关 */
     if (target.id === 'set-applock') {
       toggleAppLock(!!target.checked);
+      return;
+    }
+    /* 批次2：安全 PIN 开关 */
+    if (target.id === 'set-pin') {
+      setPinEnabled(!!target.checked);
     }
     /* Root 模式开关 */
     if (target.id === 'set-rootmode') {
@@ -7098,6 +7898,27 @@
       if (key === 'Enter') {
         event.preventDefault();
         submitMcpForm();
+      }
+      return;
+    }
+    if (target.id === 'pin-input') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        submitPin();
+      }
+      return;
+    }
+    if (target.id === 'pin-setup-new' || target.id === 'pin-setup-confirm') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        submitPinSetup();
+      }
+      return;
+    }
+    if (target.id === 'password-input') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        submitPassword();
       }
       return;
     }
@@ -7178,6 +7999,9 @@
     bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
     bindModalBackdrop(r('mcp-form-modal'), function () { closeMcpForm(); });
     bindModalBackdrop(r('memory-item-modal'), function () { closeMemoryItemForm(); });
+    bindModalBackdrop(r('pin-modal'), function () { resolvePin(false); });
+    bindModalBackdrop(r('pin-setup-modal'), function () { closePinSetup(); });
+    bindModalBackdrop(r('password-modal'), function () { resolvePassword(null); });
     var pluginPanel = r('plugin-panel');
     if (pluginPanel) {
       pluginPanel.addEventListener('click', function (event) {
@@ -7279,7 +8103,15 @@
       'screen-tool-policy', 'tool-policy-count', 'tool-policy-list', 'tool-policy-mcp-list',
       'tool-policy-mcp-label', 'tool-policy-empty', 'set-tool-policy-row', 'set-tool-policy-label',
       'audit-export-json', 'audit-export-csv',
-      'slash-menu', 'slash-list'
+      'slash-menu', 'slash-list',
+      /* 批次2 v2.7.0：快照 / PIN / 密码 / 加密备份 / 失败诊断 */
+      'screen-snapshots', 'snapshots-count', 'snapshot-create', 'snapshots-list', 'snapshots-empty',
+      'set-snapshots-row', 'set-snapshots-label',
+      'set-pin', 'set-pin-status',
+      'pin-modal', 'pin-title', 'pin-message', 'pin-input', 'pin-error',
+      'pin-setup-modal', 'pin-setup-new', 'pin-setup-confirm', 'pin-setup-error',
+      'password-modal', 'password-title', 'password-message', 'password-input', 'password-error',
+      'backup-modal', 'backup-encrypt', 'backup-password', 'backup-error'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -7909,10 +8741,23 @@
   UI.getSlashCommands = function () { return (state.slash.custom || slashCommandSource()).slice(); };
   UI.pickSlashCommand = pickSlashCommand;
 
+  /* 批次 2 · v2.7.0：快照 / 安全 PIN / 加密密码 */
+  UI.renderSnapshots = function (data) { return renderSnapshots(data); };
+  UI.openSnapshotsPage = openSnapshotsPage;
+  UI.openSnapshotPage = openSnapshotsPage;
+  UI.renderSnapshotDiff = function (diff) { return renderSnapshotDiff(diff); };
+  UI.renderSnapshotDiffs = function (id, changes) { return renderSnapshotDiffs(id, changes); };
+  UI.getSnapshots = function () { return (state.snapshots.list || []).slice(); };
+  UI.requirePin = requirePin;
+  UI.openPinSetup = openPinSetup;
+  UI.setPinEnabled = setPinEnabled;
+  UI.requirePassword = requirePassword;
+  UI.promptPassword = requirePassword;
+
   /* 液态玻璃 / 毛玻璃 */
   UI.setGlassMode = function (mode) { return applyGlassMode(mode); };
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '2.6.0';
+  UI.version = '2.7.0';
 })();
