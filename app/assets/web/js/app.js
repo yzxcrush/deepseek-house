@@ -90,6 +90,11 @@
   var SUMMARY_ENTRY_CHARS = 160;
   var SUMMARY_MAX_ENTRIES = 20;
   var MARKET_URL_KEY = 'dsh.marketUrl';
+  /* 批次4 v2.9.0：官方插件市场默认源 / 缓存 */
+  var DEFAULT_MARKET_URL = 'https://raw.githubusercontent.com/yzxcrush/deepseek-house/main/market/index.json';
+  var MARKET_CACHE_KEY = 'dsh.marketCache';
+  var MARKET_CACHE_TTL = 30 * 60 * 1000; /* 30 分钟 */
+  var MARKET_CATEGORIES = ['全部', '语言', '生活', '网络', '效率', '其它'];
   var MEMORY_SCOPES = { 'long_term': true, 'project': true };
   /* ARCH v2 P4（F6–F9 / 工作台 / 构建任务） */
   var MAX_PENDING_IMAGES = 4;
@@ -233,7 +238,13 @@
     mcpProgressByMsg: {}, /* msgId -> {percent,line} */
     /* ARCH v2 P3：插件面板 / 市场 / 记忆 / 上下文压缩 */
     pluginSlots: [],
-    market: { url: '', items: [], statusMap: {}, fetchedAt: 0, loading: false, error: '' },
+    market: {
+      source: 'official', /* official | custom */
+      url: '', name: '', updatedAt: 0,
+      allItems: [], items: [], statusMap: {},
+      fetchedAt: 0, loading: false, error: '',
+      query: '', category: '全部', sort: 'recommended'
+    },
     memory: { loaded: false, long_term: {}, project: {}, summaries: [] },
     memoryOpening: false,
     marketOpening: false,
@@ -505,6 +516,14 @@
     } else {
       enterChats();
     }
+
+    /* v2.9.0：默认市场源标签（官方市场） */
+    try {
+      var U0 = getUI();
+      if (U0 && typeof U0.setMarketSourceLabel === 'function') {
+        U0.setMarketSourceLabel({ type: 'official', label: '官方市场', url: DEFAULT_MARKET_URL, updatedAt: 0 });
+      }
+    } catch (eMkt) { /* ignore */ }
 
     loadPlugins(false);
     /* ARCH v2 P3：HousePlugin 宿主加载 + uiSlots 渲染（plugins.js 未实现时安全跳过） */
@@ -805,7 +824,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.8.0' }
+      { label: '版本', value: '2.9.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -1204,6 +1223,15 @@
       onMarketFetch: safe(function (url) { return fetchMarketIndex(url); }, 'onMarketFetch'),
       onMarketInstall: safe(function (item) { return installMarketItem(item); }, 'onMarketInstall'),
       onMarketRemove: safe(function (id) { return removeMarketItem(id); }, 'onMarketRemove'),
+      /* ARCH v2.9.0：市场搜索/分类/详情/自由安装 */
+      onFetchMarket: safe(function (opts) { return fetchMarket(opts); }, 'onFetchMarket'),
+      onSearchMarket: safe(function (opts) { return searchMarket(opts || {}); }, 'onSearchMarket'),
+      onInstallMarket: safe(function (item) { return installMarketPlugin(item); }, 'onInstallMarket'),
+      onInstallMarketFromUrl: safe(function (url) { return installPluginFromUrl(url); }, 'onInstallMarketFromUrl'),
+      onInstallMarketSource: safe(function (source) { return installPluginSource(source); }, 'onInstallMarketSource'),
+      onSetMarketSource: safe(function (source, url) { return setMarketSource(source, url); }, 'onSetMarketSource'),
+      onGetMarketState: safe(function () { return getMarketState(); }, 'onGetMarketState'),
+      onGetMarketUpdates: safe(function () { return getMarketUpdates(); }, 'onGetMarketUpdates'),
       onCloseMarket: safe(function () { return true; }, 'onCloseMarket'),
       onOpenMemory: safe(function () { return refreshMemoryPage(); }, 'onOpenMemory'),
       onMemorySave: safe(function (scope, key, value) { return saveMemoryItem(scope, key, value); }, 'onMemorySave'),
@@ -5000,7 +5028,12 @@
         url: item.url === null || item.url === undefined ? '' : String(item.url),
         sha256: item.sha256 === null || item.sha256 === undefined ? '' : String(item.sha256),
         hmac: item.hmac === null || item.hmac === undefined ? '' : String(item.hmac),
-        tags: Array.isArray(item.tags) ? item.tags.map(function (t) { return String(t); }) : []
+        tags: Array.isArray(item.tags) ? item.tags.map(function (t) { return String(t); }) : [],
+        category: item.category === null || item.category === undefined || String(item.category).replace(/\s+/g, '') === ''
+          ? '其它' : String(item.category).slice(0, 20),
+        size: Math.max(0, Number(item.size) || 0),
+        updatedAt: Math.max(0, Number(item.updatedAt !== undefined ? item.updatedAt : item.updatedAtMs) || 0),
+        installed: undefined /* 由状态图决定 */
       });
     }
     return out;
@@ -5062,27 +5095,200 @@
     return map;
   }
 
+  /* ------------------- v2.9.0 市场源 / 缓存 / 搜索 ------------------- */
+
+  function readMarketCache() {
+    try {
+      var raw = global.localStorage.getItem(MARKET_CACHE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.items)) return null;
+      if (!parsed.url || !parsed.fetchedAt) return null;
+      parsed.items = normalizeMarketItems(parsed.items);
+      return parsed;
+    } catch (e) { return null; }
+  }
+
+  function writeMarketCache(data) {
+    try {
+      global.localStorage.setItem(MARKET_CACHE_KEY, JSON.stringify({
+        url: String(data.url || ''),
+        source: String(data.source || 'official'),
+        name: String(data.name || ''),
+        updatedAt: Number(data.updatedAt) || 0,
+        items: normalizeMarketItems(data.items || []),
+        fetchedAt: Number(data.fetchedAt) || Date.now()
+      }));
+    } catch (e) { /* 容量/隐私模式：缓存失败不影响主流程 */ }
+  }
+
+  function clearMarketCache() {
+    try { global.localStorage.removeItem(MARKET_CACHE_KEY); } catch (e) { /* ignore */ }
+  }
+
+  function marketSourceLabel(source) {
+    return String(source) === 'custom' ? '自定义源' : '官方市场';
+  }
+
+  function marketSourceDescriptor(source, url, updatedAt) {
+    var src = String(source) === 'custom' ? 'custom' : 'official';
+    return {
+      type: src,
+      label: marketSourceLabel(src),
+      url: String(url || ''),
+      updatedAt: Number(updatedAt) || 0
+    };
+  }
+
+  /** 当前生效的市场源：自定义源（prefs.marketUrl 或旧 dsh.marketUrl）优先，否则官方默认源 */
+  function activeMarketSource() {
+    var custom = '';
+    try {
+      if (state.prefs && state.prefs.marketSource === 'custom' && state.prefs.marketUrl) custom = String(state.prefs.marketUrl);
+    } catch (e) { /* ignore */ }
+    if (!custom) custom = marketUrlSaved();
+    var useCustom = !!(state.prefs && state.prefs.marketSource === 'custom' && custom);
+    return {
+      source: useCustom ? 'custom' : 'official',
+      url: useCustom ? custom : DEFAULT_MARKET_URL,
+      customUrl: custom
+    };
+  }
+
+  function persistMarketCustom(url) {
+    var target = String(url || '').replace(/^\s+|\s+$/g, '');
+    if (!target) return false;
+    if (state.prefs) {
+      state.prefs.marketSource = 'custom';
+      state.prefs.marketUrl = target;
+    }
+    try { Store.setPrefs({ marketSource: 'custom', marketUrl: target }); } catch (e) { warn('保存市场源失败：' + errText(e)); }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ marketSource: 'custom', marketUrl: target }); } catch (e2) { /* ignore */ }
+    saveMarketUrl(target);
+    return true;
+  }
+
+  function persistMarketOfficial() {
+    if (state.prefs) {
+      state.prefs.marketSource = 'official';
+      state.prefs.marketUrl = '';
+    }
+    try { Store.setPrefs({ marketSource: 'official', marketUrl: '' }); } catch (e) { warn('保存市场源失败：' + errText(e)); }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ marketSource: 'official', marketUrl: '' }); } catch (e2) { /* ignore */ }
+    saveMarketUrl('');
+    return true;
+  }
+
+  function marketSortValue(sort) {
+    var value = String(sort === null || sort === undefined ? '' : sort);
+    if (value === 'updated' || value === 'name') return value;
+    return 'recommended';
+  }
+
+  /** 按 query/category/sort 过滤排序 allItems → market.items */
+  function applyMarketFilter() {
+    var market = state.market;
+    var all = Array.isArray(market.allItems) ? market.allItems : [];
+    var query = String(market.query || '').replace(/^\s+|\s+$/g, '').toLowerCase();
+    var category = String(market.category || '全部');
+    var filtered = [];
+    for (var i = 0; i < all.length; i++) {
+      var item = all[i];
+      if (!item) continue;
+      if (category && category !== '全部' && category !== 'all' && String(item.category || '其它') !== category) continue;
+      if (query) {
+        var hay = [item.name, item.description, item.id, item.author, (item.tags || []).join(' ')].join(' ').toLowerCase();
+        if (hay.indexOf(query) === -1) continue;
+      }
+      filtered.push(item);
+    }
+    if (market.sort === 'updated') {
+      filtered = filtered.slice().sort(function (a, b) { return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0); });
+    } else if (market.sort === 'name') {
+      filtered = filtered.slice().sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'); });
+    }
+    market.items = filtered;
+    return filtered;
+  }
+
   function renderMarketPage() {
-    ui('renderMarket', state.market.items, state.market.statusMap);
-    if (state.market.url) ui('setMarketUrl', state.market.url);
+    var market = state.market;
+    var source = marketSourceDescriptor(market.source, market.url, market.updatedAt);
+    var U = getUI();
+    var rendered = false;
+    if (U && typeof U.renderMarketPage === 'function') {
+      try {
+        U.renderMarketPage({
+          items: market.items,
+          status: market.statusMap,
+          source: source,
+          state: {
+            loading: !!market.loading,
+            error: market.error || '',
+            query: market.query || '',
+            category: market.category || '全部',
+            sort: market.sort || 'recommended',
+            updatedAt: Number(market.updatedAt) || 0
+          }
+        });
+        rendered = true;
+      } catch (e) { warn('UI.renderMarketPage 异常：' + errText(e)); }
+    }
+    if (!rendered) ui('renderMarket', market.items, market.statusMap);
+    if (U && typeof U.setMarketSourceLabel === 'function') {
+      try { U.setMarketSourceLabel(source); } catch (e2) { /* ignore */ }
+    }
+    if (market.url) ui('setMarketUrl', market.url);
   }
 
-  function refreshMarketStatusSoon() {
-    setTimeout(function () {
-      if (!state.market || !state.market.items.length) return;
-      state.market.statusMap = computeMarketStatusMap(state.market.items);
-      renderMarketPage();
-    }, 80);
-  }
-
-  /** handlers.onOpenMarket：读取已保存索引 URL → 有则拉取，无则渲染空列表（含已装状态） */
-  function loadMarketData() {
-    var saved = marketUrlSaved();
-    if (saved) state.market.url = saved;
-    state.market.statusMap = computeMarketStatusMap(state.market.items);
+  /** 把缓存/网络结果同步到 state → 状态图 → 过滤渲染 */
+  function applyMarketResult(data) {
+    var market = state.market;
+    market.url = String(data.url || market.url || '');
+    market.source = String(data.source || market.source || 'official');
+    market.name = String(data.name || market.name || '');
+    market.updatedAt = Number(data.updatedAt) || market.updatedAt || 0;
+    market.allItems = normalizeMarketItems(data.items || []);
+    market.fetchedAt = Number(data.fetchedAt) || Date.now();
+    market.error = '';
+    market.loading = false;
+    market.statusMap = computeMarketStatusMap(market.allItems);
+    applyMarketFilter();
     renderMarketPage();
-    if (state.market.url) return fetchMarketIndex(state.market.url);
-    return Promise.resolve(false);
+    return market.allItems.length;
+  }
+
+  /** handlers.onOpenMarket / showMarketPage：读取缓存（TTL 内）→ 否则按当前源拉取 */
+  function loadMarketData() {
+    var src = activeMarketSource();
+    state.market.source = src.source;
+    state.market.url = src.url;
+    var cache = readMarketCache();
+    var fresh = cache && cache.url === src.url && (Date.now() - Number(cache.fetchedAt)) < MARKET_CACHE_TTL;
+    if (fresh) {
+      applyMarketResult({
+        url: cache.url, source: cache.source, name: cache.name, updatedAt: cache.updatedAt,
+        items: cache.items, fetchedAt: cache.fetchedAt
+      });
+      return Promise.resolve(true);
+    }
+    if (cache && cache.url === src.url) {
+      /* 过期缓存先渲染（避免空白），随后 force 刷新 */
+      applyMarketResult({ url: cache.url, source: cache.source, name: cache.name, updatedAt: cache.updatedAt, items: cache.items, fetchedAt: cache.fetchedAt });
+    } else {
+      marketResetView();
+    }
+    return fetchMarket({ force: true });
+  }
+
+  function marketResetView() {
+    state.market.allItems = [];
+    state.market.items = [];
+    state.market.statusMap = {};
+    state.market.error = '';
+    state.market.loading = false;
+    applyMarketFilter();
+    renderMarketPage();
   }
 
   function showMarketPage() {
@@ -5096,19 +5302,54 @@
     return loadMarketData();
   }
 
-  /** handlers.onMarketFetch(url)：Bridge.httpFetch（Api.fetchUrl 封装）拉索引 → 解析 → renderMarket */
-  function fetchMarketIndex(url) {
-    var target = String(url === null || url === undefined ? '' : url).replace(/^\s+|\s+$/g, '');
+  function normalizeMarketFetchInput(input) {
+    if (typeof input === 'string') return { url: input, force: true, persist: true };
+    if (input && typeof input === 'object') {
+      return {
+        url: input.url === undefined || input.url === null ? '' : String(input.url),
+        force: !!input.force,
+        persist: input.persist !== false
+      };
+    }
+    return { url: '', force: false, persist: false };
+  }
+
+  /**
+   * App.fetchMarket({url?,force?})：拉取市场索引（官方默认源/自定义源）。
+   * 结果解析 {version,name,updatedAt,plugins[]} → 缓存 dsh.marketCache（TTL 30 分钟，force 跳过）→ 渲染。
+   * 返回 Promise<boolean>。
+   */
+  function fetchMarket(input) {
+    var opts = normalizeMarketFetchInput(input);
+    var src = activeMarketSource();
+    var target = opts.url ? opts.url.replace(/^\s+|\s+$/g, '') : src.url;
+    var sourceType = opts.url ? (target === DEFAULT_MARKET_URL ? 'official' : 'custom') : src.source;
     if (!target) { toast('请输入市场索引 URL', true); renderMarketPage(); return Promise.resolve(false); }
     var isLocal = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(target);
     if (!/^https:\/\//i.test(target) && !isLocal) {
-      toast('市场索引仅支持 https://（本地 http://127.0.0.1 例外）', true);
+      state.market.loading = false;
+      state.market.error = '市场索引仅支持 https://';
       renderMarketPage();
+      toast('市场索引仅支持 https://（本地 http://127.0.0.1 例外）', true);
       return Promise.resolve(false);
     }
-    saveMarketUrl(target);
+    if (opts.persist && sourceType === 'custom') persistMarketCustom(target);
+    state.market.source = sourceType;
     state.market.url = target;
+
+    var cache = readMarketCache();
+    var cacheFresh = cache && cache.url === target && (Date.now() - Number(cache.fetchedAt)) < MARKET_CACHE_TTL;
+    if (cacheFresh && !opts.force) {
+      applyMarketResult({
+        url: target, source: sourceType, name: cache.name, updatedAt: cache.updatedAt,
+        items: cache.items, fetchedAt: cache.fetchedAt
+      });
+      return Promise.resolve(true);
+    }
+
     state.market.loading = true;
+    state.market.error = '';
+    renderMarketPage();
     var P = dsPlugins();
     var work;
     if (P && typeof P.fetchMarketIndex === 'function') {
@@ -5117,38 +5358,105 @@
       work = httpGetText(target, 15000).then(function (res) {
         if (!res || !res.ok) return { ok: false, error: (res && res.error) ? String(res.error) : ('HTTP ' + ((res && res.status) || 0)) };
         var index = null;
-        try { index = JSON.parse(String(res.body || '')); } catch (e) { index = null; }
+        try { index = JSON.parse(String(res.body || '')); } catch (e2) { index = null; }
         if (!index || !Array.isArray(index.plugins)) return { ok: false, error: '索引格式不正确（缺少 plugins 数组）' };
         return { ok: true, index: index, items: index.plugins, fetchedAt: Date.now() };
       });
     }
     return Promise.resolve(work).then(function (res) {
-      state.market.loading = false;
       if (!res || res.ok === false) {
-        var msg = res && res.error ? String(res.error) : '拉取失败';
-        state.market.error = msg;
-        state.market.items = [];
-        state.market.statusMap = {};
+        state.market.loading = false;
+        state.market.error = res && res.error ? String(res.error) : '拉取失败';
         renderMarketPage();
-        toast('市场索引拉取失败：' + msg, true);
+        toast('市场索引拉取失败：' + state.market.error, true);
         return false;
       }
-      var items = normalizeMarketItems(res.items || res.index);
-      state.market.items = items;
-      state.market.fetchedAt = Number(res.fetchedAt) || Date.now();
-      state.market.error = '';
-      state.market.statusMap = computeMarketStatusMap(items);
-      renderMarketPage();
-      if (!items.length) toast('市场索引为空（0 个插件）');
-      else toast('市场索引已加载：' + items.length + ' 个插件', true);
+      var index = res.index && typeof res.index === 'object' ? res.index : {};
+      var fetchedAt = Number(res.fetchedAt) || Date.now();
+      var data = {
+        url: target,
+        source: sourceType,
+        name: String(index.name || (sourceType === 'custom' ? '自定义插件源' : 'DeepSeek House 官方插件市场')),
+        updatedAt: Number(index.updatedAt) || 0,
+        items: res.items || index.plugins || [],
+        fetchedAt: fetchedAt
+      };
+      var count = applyMarketResult(data);
+      writeMarketCache({ url: target, source: sourceType, name: data.name, updatedAt: data.updatedAt, items: data.items, fetchedAt: fetchedAt });
+      if (!count) toast('市场索引为空（0 个插件）');
+      else toast('市场索引已加载：' + count + ' 个插件', true);
       return true;
     }, function (err) {
       state.market.loading = false;
       state.market.error = errText(err);
       renderMarketPage();
-      toast('市场索引拉取失败：' + errText(err), true);
+      toast('市场索引拉取失败：' + state.market.error, true);
       return false;
     });
+  }
+
+  /** 兼容旧接口：handlers.onMarketFetch(url) / onFetchMarket({url,force}) */
+  function fetchMarketIndex(url, force) {
+    return fetchMarket({ url: url, force: force !== false, persist: true });
+  }
+
+  /** App.searchMarket({query,category,sort})：本地过滤/排序并渲染；返回结果摘要 */
+  function searchMarket(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    if (opts.query !== undefined) state.market.query = String(opts.query === null ? '' : opts.query);
+    if (opts.category !== undefined) state.market.category = String(opts.category === null || opts.category === '' ? '全部' : opts.category);
+    if (opts.sort !== undefined) state.market.sort = marketSortValue(opts.sort);
+    applyMarketFilter();
+    renderMarketPage();
+    return {
+      items: state.market.items.slice(),
+      count: state.market.items.length,
+      total: state.market.allItems.length,
+      query: state.market.query,
+      category: state.market.category,
+      sort: state.market.sort
+    };
+  }
+
+  function getMarketState() {
+    var market = state.market;
+    return {
+      source: market.source,
+      url: market.url,
+      name: market.name,
+      updatedAt: Number(market.updatedAt) || 0,
+      count: Array.isArray(market.allItems) ? market.allItems.length : 0,
+      visible: Array.isArray(market.items) ? market.items.length : 0,
+      error: market.error || '',
+      loading: !!market.loading,
+      fetchedAt: Number(market.fetchedAt) || 0,
+      query: market.query || '',
+      category: market.category || '全部',
+      sort: market.sort || 'recommended'
+    };
+  }
+
+  function setMarketSource(source, url) {
+    var src = String(source === null || source === undefined ? '' : source) === 'custom' ? 'custom' : 'official';
+    if (src === 'official') {
+      persistMarketOfficial();
+      state.market.source = 'official';
+      state.market.url = DEFAULT_MARKET_URL;
+      renderMarketPage();
+      return fetchMarket({ force: true });
+    }
+    var target = String(url === null || url === undefined ? '' : url).replace(/^\s+|\s+$/g, '');
+    var isLocal = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(target);
+    if (!target || (!/^https:\/\//i.test(target) && !isLocal)) {
+      toast('自定义市场源需为 https:// 地址', true);
+      renderMarketPage();
+      return Promise.resolve(false);
+    }
+    persistMarketCustom(target);
+    state.market.source = 'custom';
+    state.market.url = target;
+    renderMarketPage();
+    return fetchMarket({ force: true });
   }
 
   function findMarketItem(ref) {
@@ -5255,26 +5563,176 @@
     });
   }
 
-  /** handlers.onMarketInstall(item)：优先 DSPlugins.installMarketPlugin，否则回退实现 */
-  function installMarketItem(ref) {
+  /* ------------------- v2.9.0 安装 / 更新 / 自由安装 ------------------- */
+
+  function marketInstallProgress(id, percent, message) {
+    var key = String(id || '');
+    if (!key) return;
+    var U = getUI();
+    if (U && typeof U.renderInstallProgress === 'function') {
+      try { U.renderInstallProgress(key, { percent: Math.max(0, Math.min(100, Math.round(percent))), message: String(message || '') }); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function marketIsUnsigned(item) {
+    if (!item) return true;
+    return !item.hmac;
+  }
+
+  /** 未签名插件风险确认（签名条目无需确认） */
+  function confirmUnsignedMarketInstall(item) {
+    return confirmAsync('安装未签名插件',
+      '「' + String((item && (item.name || item.id)) || '该插件') + '」没有官方签名，安装后可能不安全。\n确定仍要安装吗？').then(function (ok) {
+      return !!ok;
+    });
+  }
+
+  /**
+   * App.installMarketPlugin(item)：安装/更新市场插件。
+   * 有 sha256+hmac → DSPlugins.installMarketPlugin（强校验）；
+   * 无 hmac → 视为 unsigned，UI 确认后走宽松安装（仍有 sha256 时校验 sha256）。
+   * 返回 Promise<{ok,...}|false>。
+   */
+  function installMarketPlugin(ref) {
     var item = findMarketItem(ref);
     if (!item) { toast('市场条目不存在', true); return Promise.resolve(false); }
     var id = String(item.id || '');
     if (!id) { toast('插件条目缺少 id', true); return Promise.resolve(false); }
-    updateMarketStatus(id, 'installing', '安装中…');
-    var P = dsPlugins();
-    if (P && typeof P.installMarketPlugin === 'function') {
-      return Promise.resolve().then(function () { return P.installMarketPlugin(item); }).then(function (res) {
-        return afterMarketInstall(item, res);
-      }, function (err) {
-        return afterMarketInstall(item, { ok: false, error: errText(err) });
-      });
+    if (item.hmac && !/^[0-9a-f]{64}$/i.test(String(item.sha256 || ''))) {
+      updateMarketStatus(id, 'invalid', '市场条目缺少合法 sha256');
+      toast('插件校验失败：市场条目缺少合法 sha256', true);
+      return Promise.resolve(false);
     }
-    return installMarketPluginFallback(item).then(function (res) {
-      return afterMarketInstall(item, res);
-    }, function (err) {
-      return afterMarketInstall(item, { ok: false, error: errText(err) });
+    updateMarketStatus(id, 'installing', '安装中…');
+    marketInstallProgress(id, 5, '准备安装…');
+    var unsigned = marketIsUnsigned(item);
+    var confirmedWork = unsigned ? confirmUnsignedMarketInstall(item) : Promise.resolve(true);
+    return confirmedWork.then(function (confirmed) {
+      if (!confirmed) {
+        updateMarketStatus(id, 'not_installed', '已取消安装未签名插件');
+        marketInstallProgress(id, 0, '已取消');
+        toast('已取消安装未签名插件');
+        return { ok: false, cancelled: true, error: '已取消安装未签名插件' };
+      }
+      marketInstallProgress(id, 20, '下载插件源码…');
+      var P = dsPlugins();
+      var useStrict = !unsigned && P && typeof P.installMarketPlugin === 'function';
+      var work;
+      if (useStrict) {
+        work = Promise.resolve().then(function () { return P.installMarketPlugin(item); });
+      } else {
+        work = installMarketPluginFallback(item);
+      }
+      return Promise.resolve(work).then(function (res) {
+        marketInstallProgress(id, 90, '写入并校验…');
+        var out = afterMarketInstall(item, res);
+        marketInstallProgress(id, out ? 100 : 0, out ? '安装完成' : '安装失败');
+        return out;
+      }, function (err) {
+        var out = afterMarketInstall(item, { ok: false, error: errText(err) });
+        marketInstallProgress(id, 0, '安装失败');
+        return out;
+      });
     });
+  }
+
+  /** 兼容旧接口 handlers.onMarketInstall(item) */
+  function installMarketItem(ref) {
+    return installMarketPlugin(ref);
+  }
+
+  function sanitizeFreePluginFileName(prefix) {
+    var stamp = '';
+    try { stamp = backupDateStamp(); } catch (e) { stamp = String(Date.now()); }
+    return sanitizePluginFilePart(prefix + '-' + stamp) + '.js';
+  }
+
+  function refreshAfterPluginInstall() {
+    try { refreshPlugins(); } catch (e1) { /* ignore */ }
+    try { loadHousePluginsAndSlots(); } catch (e2) { /* ignore */ }
+    try { refreshPluginSlots(); } catch (e3) { /* ignore */ }
+  }
+
+  /**
+   * App.installPluginFromUrl(url)：任意 https 插件源码 URL 安装（无市场索引条目，风险确认由 UI 负责）。
+   * 返回 Promise<{ok,...}|false>。
+   */
+  function installPluginFromUrl(url) {
+    var target = String(url === null || url === undefined ? '' : url).replace(/^\s+|\s+$/g, '');
+    if (!/^https:\/\//i.test(target)) { toast('插件地址需为 https://', true); return Promise.resolve(false); }
+    marketInstallProgress('url-install', 10, '下载插件源码…');
+    return httpGetText(target, 30000).then(function (res) {
+      if (!res || !res.ok) {
+        toast('下载插件失败：' + ((res && res.error) || ('HTTP ' + ((res && res.status) || 0))), true);
+        marketInstallProgress('url-install', 0, '下载失败');
+        return false;
+      }
+      var source = res.body === null || res.body === undefined ? '' : String(res.body);
+      if (!source) { toast('插件源码为空', true); marketInstallProgress('url-install', 0, '源码为空'); return false; }
+      if (source.length > 512 * 1024) { toast('插件源码超过 512KB', true); marketInstallProgress('url-install', 0, '源码过大'); return false; }
+      marketInstallProgress('url-install', 55, '校验并安装…');
+      return installPluginSourceInternal(source, { fromUrl: target, fileName: sanitizeFreePluginFileName('url-install') });
+    }, function (err) {
+      toast('下载插件失败：' + errText(err), true);
+      marketInstallProgress('url-install', 0, '下载失败');
+      return false;
+    });
+  }
+
+  /** App.installPluginSource(source)：粘贴代码/文件内容安装（风险确认由 UI 负责） */
+  function installPluginSource(source) {
+    var text = String(source === null || source === undefined ? '' : source);
+    if (!text.replace(/\s+/g, '')) { toast('插件代码不能为空', true); return Promise.resolve(false); }
+    if (text.length > 512 * 1024) { toast('插件代码超过 512KB', true); return Promise.resolve(false); }
+    return installPluginSourceInternal(text, { fileName: sanitizeFreePluginFileName('pasted-install') });
+  }
+
+  function installPluginSourceInternal(source, options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var P = dsPlugins();
+    marketInstallProgress('url-install', 70, '校验并安装…');
+    if (!P || typeof P.installFromCode !== 'function') {
+      toast('当前环境不支持代码安装（DSPlugins.installFromCode 不可用）', true);
+      marketInstallProgress('url-install', 0, '安装失败');
+      return Promise.resolve(false);
+    }
+    return Promise.resolve().then(function () {
+      return P.installFromCode(source, {
+        fileName: opts.fileName || sanitizeFreePluginFileName('plugin'),
+        source: opts.fromUrl ? String(opts.fromUrl) : 'pasted'
+      });
+    }).then(function (res) {
+      if (!res || res.ok === false) {
+        toast('插件安装失败：' + ((res && res.error) || '未知错误'), true);
+        marketInstallProgress('url-install', 0, '安装失败');
+        return res || false;
+      }
+      refreshAfterPluginInstall();
+      marketInstallProgress('url-install', 100, '安装完成');
+      toast('插件已安装：' + (res.id || ''), true);
+      return res;
+    }, function (err) {
+      toast('插件安装失败：' + errText(err), true);
+      marketInstallProgress('url-install', 0, '安装失败');
+      return false;
+    });
+  }
+
+  /** 更新检测：返回可更新的市场条目 [{id,currentVersion,version,item}] */
+  function getMarketUpdates() {
+    var map = computeMarketStatusMap(state.market.allItems.length ? state.market.allItems : state.market.items);
+    var installed = installedPluginMap().map;
+    var out = [];
+    var items = state.market.allItems.length ? state.market.allItems : state.market.items;
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      var st = map[String(item.id)];
+      var status = st && typeof st === 'object' ? st.status : st;
+      if (status !== 'update') continue;
+      var inst = installed[String(item.id)];
+      out.push({ id: item.id, currentVersion: inst ? inst.version : '', version: item.version, item: item });
+    }
+    return out;
   }
 
   /** handlers.onMarketRemove(id)：优先 DSPlugins.removeMarketPlugin，否则按 pluginList 删文件 */
@@ -7728,7 +8186,18 @@
   App.getPluginSlots = function () { return state.pluginSlots.slice(); };
   App.showPluginPanel = safe(function () { return showPluginPanel(); }, 'App.showPluginPanel');
   App.runSlotAction = safe(function (slotId, action, payload) { return runPluginSlotAction(slotId, action, payload); }, 'App.runSlotAction');
-  App.openMarketPage = safe(function () { return loadMarketData(); }, 'App.openMarketPage');
+  App.openMarketPage = safe(function () { return showMarketPage(); }, 'App.openMarketPage');
+  /* ARCH v2.9.0 市场逻辑对外接口 */
+  App.fetchMarket = safe(function (opts) { return fetchMarket(opts); }, 'App.fetchMarket');
+  App.searchMarket = function (opts) { return searchMarket(opts || {}); };
+  App.getMarketState = function () { return getMarketState(); };
+  App.installMarketPlugin = safe(function (item) { return installMarketPlugin(item); }, 'App.installMarketPlugin');
+  App.installPluginFromUrl = safe(function (url) { return installPluginFromUrl(url); }, 'App.installPluginFromUrl');
+  App.installPluginSource = safe(function (source) { return installPluginSource(source); }, 'App.installPluginSource');
+  App.removeMarketPlugin = safe(function (id) { return removeMarketItem(id); }, 'App.removeMarketPlugin');
+  App.getMarketUpdates = function () { return getMarketUpdates(); };
+  App.setMarketSource = safe(function (source, url) { return setMarketSource(source, url); }, 'App.setMarketSource');
+  App.getMarketUrl = function () { return getMarketState().url; };
   App.showMarketPage = safe(function () { return showMarketPage(); }, 'App.showMarketPage');
   App.fetchMarketIndex = safe(function (url) { return fetchMarketIndex(url); }, 'App.fetchMarketIndex');
   App.installMarketItem = safe(function (item) { return installMarketItem(item); }, 'App.installMarketItem');

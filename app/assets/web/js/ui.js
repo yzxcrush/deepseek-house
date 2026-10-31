@@ -165,7 +165,17 @@
       items: [],
       statusMap: {},
       url: '',
-      loaded: false
+      loaded: false,
+      source: null,
+      query: '',
+      category: 'all',
+      sort: 'recommended',
+      loading: false,
+      error: '',
+      installProgress: {},
+      detailId: null,
+      searchTimer: 0,
+      filteredCount: 0
     },
     memory: {
       longTerm: [],
@@ -1271,7 +1281,8 @@
       isModalOpen(r('mcp-form-modal')) || isModalOpen(r('memory-item-modal')) ||
       isModalOpen(r('attachment-sheet')) || isModalOpen(r('image-viewer')) ||
       isModalOpen(r('pin-modal')) || isModalOpen(r('pin-setup-modal')) || isModalOpen(r('password-modal')) ||
-      isModalOpen(r('edit-message-modal'));
+      isModalOpen(r('edit-message-modal')) || isModalOpen(r('market-detail-modal')) ||
+      isModalOpen(r('market-url-install-modal')) || isModalOpen(r('market-code-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1309,7 +1320,7 @@
     if (isModalOpen(r('edit-message-modal'))) closeEditMessage();
     ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal',
       'mcp-form-modal', 'memory-item-modal', 'pin-modal', 'pin-setup-modal', 'password-modal',
-      'edit-message-modal'].forEach(function (id) {
+      'edit-message-modal', 'market-detail-modal', 'market-url-install-modal', 'market-code-modal'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -2683,11 +2694,17 @@
   }
 
   /* ================================================================== *
-   * ARCH v2 P3：插件市场
-   * items: [{id,name,version,author,description,url,sha256?,hmac?,tags?}]
-   * statusMap: { id: 'not_installed'|'installed'|'update'|'invalid' } 或
-   *            { id: {status,message?,version?} }
+   * 插件市场（v2.9.0：搜索 / 分类 / 排序 / 详情 / URL 安装 / 代码安装）
+   * renderMarketPage({items,status,source,state}) 为主要入口，旧 renderMarket 保留兼容
    * ================================================================== */
+  var MARKET_DEFAULT_CATEGORIES = ['语言', '生活', '网络', '效率', '其它'];
+
+  function normalizeMarketCategory(value) {
+    var text = value == null ? '' : String(value).trim();
+    if (!text || text === '全部' || text.toLowerCase() === 'all' || text === '*') return 'all';
+    return text;
+  }
+
   function normalizeMarketStatus(value) {
     var status = '';
     var message = '';
@@ -2718,6 +2735,7 @@
       if (Array.isArray(item.tags)) {
         item.tags.forEach(function (tag) { if (tag != null && String(tag) !== '') tags.push(String(tag)); });
       }
+      var size = Number(item.size);
       out.push({
         id: id,
         name: item.name ? String(item.name) : id,
@@ -2729,6 +2747,9 @@
         sha256: item.sha256 ? String(item.sha256) : '',
         hmac: item.hmac ? String(item.hmac) : '',
         tags: tags,
+        category: item.category ? String(item.category) : '',
+        size: isFinite(size) && size > 0 ? size : 0,
+        updatedAt: item.updatedAt != null ? item.updatedAt : (item.updated_at != null ? item.updated_at : 0),
         installed: item.installed === true,
         status: item.status,
         message: item.lastMessage || item.message || ''
@@ -2750,7 +2771,70 @@
     if (key === 'update') return '可更新';
     if (key === 'invalid') return '校验失败';
     if (key === 'installing') return '安装中…';
+    if (key === 'error') return '安装失败';
     return '未安装';
+  }
+
+  function marketSignatureOf(item, status) {
+    var st = status || marketStatusFor(item);
+    if (st.status === 'invalid') return { key: 'invalid', label: '校验失败' };
+    if (item.hmac && item.sha256) return { key: 'signed', label: '已签名' };
+    return { key: 'unsigned', label: '未签名' };
+  }
+
+  function marketSizeText(size) {
+    var value = Number(size);
+    if (!isFinite(value) || value <= 0) return '';
+    if (value < 1024) return value + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10240 ? 1 : 0) + ' KB';
+    return (value / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function marketTimeText(value) {
+    if (value == null || value === '') return '';
+    var date = toDate(value);
+    if (!date) return '';
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()) +
+      ' ' + pad2(date.getHours()) + ':' + pad2(date.getMinutes());
+  }
+
+  function normalizeMarketSource(source) {
+    var data = source;
+    if (typeof data === 'string') {
+      var key = String(data).toLowerCase();
+      return {
+        type: key === 'custom' ? 'custom' : 'official',
+        label: key === 'custom' ? '自定义源' : '官方市场',
+        url: '',
+        updatedAt: state.market.source ? state.market.source.updatedAt : 0
+      };
+    }
+    data = data && typeof data === 'object' ? data : {};
+    var type = String(data.type || data.source || '').toLowerCase() === 'custom' ? 'custom' : 'official';
+    return {
+      type: type,
+      label: data.label ? String(data.label) : (type === 'custom' ? '自定义源' : '官方市场'),
+      url: data.url ? String(data.url) : '',
+      updatedAt: data.updatedAt != null ? data.updatedAt : (data.updated_at != null ? data.updated_at : 0)
+    };
+  }
+
+  function setMarketSourceLabel(source) {
+    var normalized = normalizeMarketSource(source);
+    var previous = state.market.source || {};
+    normalized.updatedAt = normalized.updatedAt || previous.updatedAt || 0;
+    state.market.source = normalized;
+    if (normalized.url) state.market.url = normalized.url;
+    var label = r('market-source-label');
+    if (label) label.textContent = normalized.label;
+    var setLabel = r('set-market-label');
+    if (setLabel) setLabel.textContent = normalized.label;
+    var updated = r('market-updated');
+    if (updated) {
+      var timeText = marketTimeText(normalized.updatedAt);
+      updated.textContent = timeText ? ('更新于 ' + timeText) : '';
+    }
+    return normalized;
   }
 
   function updateMarketLabels() {
@@ -2763,20 +2847,96 @@
     var label = r('set-market-label');
     if (label) {
       if (state.market.url) label.textContent = items.length ? (items.length + ' 个可用') : '已配置索引';
-      else label.textContent = items.length ? (items.length + ' 个可用') : '未配置索引';
+      else label.textContent = items.length ? (items.length + ' 个可用') : '官方市场（点击加载）';
     }
     var count = r('market-count');
     if (count) {
-      count.textContent = items.length
-        ? (items.length + ' 个插件 · ' + installed + ' 已安装')
-        : '从 https 索引安装插件';
+      var filtered = state.market.filteredCount;
+      if (items.length && typeof filtered === 'number' && filtered !== items.length) {
+        count.textContent = filtered + '/' + items.length + ' 个插件 · ' + installed + ' 已安装';
+      } else {
+        count.textContent = items.length
+          ? (items.length + ' 个插件 · ' + installed + ' 已安装')
+          : '从 https 索引安装插件';
+      }
     }
-    var empty = r('market-empty');
-    if (empty) empty.hidden = items.length > 0;
+  }
+
+  function marketCategories() {
+    var seen = {};
+    var out = [];
+    MARKET_DEFAULT_CATEGORIES.forEach(function (category) {
+      seen[category] = true;
+      out.push(category);
+    });
+    (state.market.items || []).forEach(function (item) {
+      var category = item.category || '其它';
+      if (!seen[category]) {
+        seen[category] = true;
+        out.push(category);
+      }
+    });
+    return out;
+  }
+
+  function renderMarketCategories() {
+    var box = r('market-categories');
+    if (!box) return;
+    box.textContent = '';
+    var current = state.market.category || 'all';
+    var all = document.createElement('button');
+    all.type = 'button';
+    all.className = 'market-cat' + (current === 'all' ? ' is-active' : '');
+    all.setAttribute('data-action', 'market-category');
+    all.setAttribute('data-category', 'all');
+    all.textContent = '全部';
+    box.appendChild(all);
+    marketCategories().forEach(function (category) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'market-cat' + (current === category ? ' is-active' : '');
+      btn.setAttribute('data-action', 'market-category');
+      btn.setAttribute('data-category', category);
+      btn.textContent = category;
+      box.appendChild(btn);
+    });
+  }
+
+  function syncMarketToolbar() {
+    var searchInput = r('market-search');
+    if (searchInput && searchInput.value !== state.market.query) searchInput.value = state.market.query || '';
+    var clear = r('market-search-clear');
+    if (clear) clear.hidden = !state.market.query;
+    var sortInput = r('market-sort');
+    if (sortInput) sortInput.value = state.market.sort || 'recommended';
+    renderMarketCategories();
+  }
+
+  function filteredMarketItems() {
+    var query = String(state.market.query || '').trim().toLowerCase();
+    var category = normalizeMarketCategory(state.market.category);
+    var sort = state.market.sort || 'recommended';
+    var list = (state.market.items || []).filter(function (item) {
+      if (category !== 'all') {
+        var itemCategory = item.category || '其它';
+        if (itemCategory !== category) return false;
+      }
+      if (!query) return true;
+      var hay = (item.name + ' ' + item.description + ' ' + item.author + ' ' + item.tags.join(' ') + ' ' + item.id).toLowerCase();
+      return hay.indexOf(query) >= 0;
+    });
+    if (sort === 'name') {
+      list.sort(function (a, b) { return String(a.name).localeCompare(String(b.name), 'zh-Hans-CN'); });
+    } else if (sort === 'updated') {
+      list.sort(function (a, b) { return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0); });
+    }
+    return list;
   }
 
   function buildMarketCard(item) {
     var status = marketStatusFor(item);
+    var signature = marketSignatureOf(item, status);
+    var progress = state.market.installProgress[item.id];
     var card = el('div', 'market-card');
     card.setAttribute('data-market-id', item.id);
 
@@ -2787,6 +2947,7 @@
     head.appendChild(titleWrap);
     head.appendChild(makeText('span', 'market-badge market-badge--' + status.status, marketStatusLabel(status)));
     card.appendChild(head);
+    if (status.status === 'update') card.appendChild(el('span', 'market-update-dot'));
 
     if (item.author) card.appendChild(makeText('div', 'market-author', '作者 ' + item.author));
     if (item.description) card.appendChild(makeText('div', 'market-desc', item.description));
@@ -2796,10 +2957,38 @@
       item.tags.forEach(function (tag) { tags.appendChild(makeText('span', 'market-tag', tag)); });
       card.appendChild(tags);
     }
+
+    var metaRow = el('div', 'market-card-meta');
+    var sizeText = marketSizeText(item.size);
+    if (sizeText) metaRow.appendChild(makeText('span', 'market-size', sizeText));
+    metaRow.appendChild(makeText('span', 'market-signature market-signature--' + signature.key, signature.label));
+    if (item.category) metaRow.appendChild(makeText('span', 'market-size', item.category));
+    if (item.installedVersion && item.installedVersion !== item.version) {
+      metaRow.appendChild(makeText('span', 'market-size', '已装 v' + item.installedVersion));
+    }
+    card.appendChild(metaRow);
+
     if (status.status === 'invalid' && status.message) {
       card.appendChild(makeText('div', 'market-error', '校验失败：' + status.message));
-    } else if (status.message && (status.status === 'invalid' || status.status === 'not-installed')) {
+    } else if (status.message && (status.status === 'invalid' || status.status === 'not-installed' || status.status === 'error')) {
       card.appendChild(makeText('div', 'market-error', status.message));
+    }
+
+    if (progress) {
+      var progressBox = el('div', 'market-card-progress');
+      var progressEl = el('div', 'tool-progress');
+      if ((Number(progress.percent) || 0) >= 100) progressEl.classList.add('is-done');
+      var progressHead = el('div', 'tool-progress-head');
+      progressHead.appendChild(makeText('span', 'tool-progress-label', progress.message || '安装中…'));
+      progressHead.appendChild(makeText('span', 'tool-progress-percent', Math.round(Number(progress.percent) || 0) + '%'));
+      var track = el('div', 'tool-progress-track');
+      var fill = el('div', 'tool-progress-fill');
+      fill.style.width = Math.max(0, Math.min(100, Math.round(Number(progress.percent) || 0))) + '%';
+      track.appendChild(fill);
+      progressEl.appendChild(progressHead);
+      progressEl.appendChild(track);
+      progressBox.appendChild(progressEl);
+      card.appendChild(progressBox);
     }
 
     var actions = el('div', 'market-actions');
@@ -2823,23 +3012,88 @@
       addAction('market-install', '安装中…', 'market-act--primary', true);
     } else if (status.status === 'invalid') {
       addAction('market-install', '重新安装', 'market-act--primary');
+    } else if (status.status === 'error') {
+      addAction('market-install', '重试安装', 'market-act--primary');
     } else {
       addAction('market-install', '安装', 'market-act--primary');
       addAction('market-remove', '卸载', 'market-act--danger');
     }
+    var detailBtn = document.createElement('button');
+    detailBtn.type = 'button';
+    detailBtn.className = 'market-detail-btn';
+    detailBtn.setAttribute('data-action', 'market-detail');
+    detailBtn.setAttribute('data-id', item.id);
+    detailBtn.textContent = '详情';
+    actions.appendChild(detailBtn);
     card.appendChild(actions);
     return card;
   }
 
   function renderMarketRows() {
     var list = r('market-list');
+    var items = filteredMarketItems();
+    state.market.filteredCount = items.length;
     if (list) {
       list.textContent = '';
-      (state.market.items || []).forEach(function (item) {
+      items.forEach(function (item) {
         list.appendChild(buildMarketCard(item));
       });
     }
     updateMarketLabels();
+    syncMarketToolbar();
+    var loading = r('market-loading');
+    if (loading) loading.hidden = !state.market.loading;
+    var error = r('market-error');
+    if (error) error.hidden = !state.market.error;
+    var errorText = r('market-error-text');
+    if (errorText && state.market.error) errorText.textContent = state.market.error;
+    var empty = r('market-empty');
+    if (empty) {
+      var hasFilter = !!(state.market.query || (state.market.category && state.market.category !== 'all'));
+      empty.hidden = items.length > 0 || !!state.market.loading || !!state.market.error;
+      var emptyTitle = empty.querySelector('p');
+      var emptySmall = empty.querySelector('small');
+      if (hasFilter && emptyTitle) emptyTitle.textContent = '没有匹配的插件';
+      else if (emptyTitle) emptyTitle.textContent = '还没有市场插件';
+      if (emptySmall) emptySmall.textContent = hasFilter
+        ? '试试清空搜索或切换分类。'
+        : '可刷新官方市场、切换自定义索引，或从 URL / 粘贴代码安装插件。';
+    }
+    return items;
+  }
+
+  function renderMarketPage(data) {
+    var info = data && typeof data === 'object' ? data : {};
+    if (Array.isArray(info.items) || Array.isArray(info.plugins)) {
+      state.market.items = normalizeMarketItems(info.items || info.plugins);
+    }
+    var statusSource = info.status != null ? info.status : info.statusMap;
+    if (statusSource && typeof statusSource === 'object' && !Array.isArray(statusSource)) {
+      var next = {};
+      Object.keys(statusSource).forEach(function (key) {
+        next[String(key)] = normalizeMarketStatus(statusSource[key]);
+      });
+      state.market.statusMap = next;
+    }
+    if (info.source != null) setMarketSourceLabel(info.source);
+    var pageState = info.state && typeof info.state === 'object' ? info.state : {};
+    if (pageState.loading != null) state.market.loading = !!pageState.loading;
+    if (pageState.error != null) state.market.error = pageState.error ? String(pageState.error) : '';
+    if (pageState.query != null) state.market.query = String(pageState.query);
+    if (pageState.category != null) state.market.category = normalizeMarketCategory(pageState.category);
+    if (pageState.sort != null) state.market.sort = String(pageState.sort);
+    if (pageState.updatedAt != null) {
+      state.market.source = state.market.source || normalizeMarketSource('official');
+      state.market.source.updatedAt = pageState.updatedAt;
+      setMarketSourceLabel(state.market.source);
+    }
+    state.market.loaded = true;
+    if (info.items != null || info.state != null || info.status != null) {
+      state.market.loading = false;
+      state.market.error = '';
+    }
+    renderMarketRows();
+    return state.market.items;
   }
 
   function renderMarket(items, statusMap) {
@@ -2852,6 +3106,8 @@
       state.market.statusMap = next;
     }
     state.market.loaded = true;
+    state.market.loading = false;
+    state.market.error = '';
     renderMarketRows();
     return state.market.items;
   }
@@ -2876,22 +3132,100 @@
 
   function openMarketPage() {
     showScreenImpl('market');
-    if (invoke('onOpenMarket')) return true;
-    renderMarketRows();
-    return false;
+    if (!invoke('onOpenMarket')) renderMarketRows();
   }
 
-  function fetchMarketIndex() {
+  function marketFetchUrl() {
     var input = r('market-url');
-    var url = input ? String(input.value || '').trim() : '';
+    var inputValue = input ? String(input.value || '').trim() : '';
+    if (inputValue) return inputValue;
+    return (state.market.source && state.market.source.url) || state.market.url || '';
+  }
+
+  function fetchMarketIndex(force) {
+    var url = marketFetchUrl();
     if (url && !/^https:\/\//i.test(url)) {
       UI.toast('索引地址需以 https:// 开头');
+      var input = r('market-url');
       if (input) { try { input.focus(); } catch (err) { /* 静默 */ } }
       return;
     }
+    if (!url) {
+      UI.toast('请填写市场索引 URL');
+      return;
+    }
     state.market.url = url;
-    updateMarketLabels();
-    if (!invoke('onMarketFetch', url)) UI.toast('市场服务尚未就绪');
+    state.market.loading = true;
+    state.market.error = '';
+    renderMarketRows();
+    var result = callHandler('onFetchMarket', { url: url, force: !!force });
+    if (result === undefined) result = callHandler('onMarketFetch', url);
+    if (result === undefined) {
+      state.market.loading = false;
+      state.market.error = '市场服务尚未就绪';
+      UI.toast('市场服务尚未就绪');
+      renderMarketRows();
+      return;
+    }
+    if (result && typeof result.then === 'function') {
+      result.then(function (res) {
+        if (res === false && state.market.loading) {
+          state.market.loading = false;
+          state.market.error = state.market.error || '市场加载失败，请重试';
+          renderMarketRows();
+        }
+      }, function () {
+        state.market.loading = false;
+        state.market.error = '市场加载失败，请重试';
+        renderMarketRows();
+      });
+    } else if (result === false) {
+      state.market.loading = false;
+      state.market.error = '市场加载失败，请重试';
+      renderMarketRows();
+    }
+  }
+
+  function setMarketQuery(query) {
+    state.market.query = query == null ? '' : String(query);
+    var clear = r('market-search-clear');
+    if (clear) clear.hidden = !state.market.query;
+    renderMarketRows();
+    clearTimeout(state.market.searchTimer);
+    state.market.searchTimer = setTimeout(function () {
+      if (typeof state.cb.onSearchMarket === 'function') {
+        invoke('onSearchMarket', {
+          query: state.market.query,
+          category: normalizeMarketCategory(state.market.category) === 'all' ? '' : normalizeMarketCategory(state.market.category),
+          sort: state.market.sort
+        });
+      }
+    }, 250);
+  }
+
+  function setMarketCategory(category) {
+    state.market.category = normalizeMarketCategory(category);
+    renderMarketRows();
+    if (typeof state.cb.onSearchMarket === 'function') {
+      invoke('onSearchMarket', {
+        query: state.market.query,
+        category: state.market.category === 'all' ? '' : state.market.category,
+        sort: state.market.sort
+      });
+    }
+  }
+
+  function setMarketSort(sort) {
+    var value = sort === 'updated' || sort === 'name' ? sort : 'recommended';
+    state.market.sort = value;
+    renderMarketRows();
+    if (typeof state.cb.onSearchMarket === 'function') {
+      invoke('onSearchMarket', {
+        query: state.market.query,
+        category: state.market.category === 'all' ? '' : state.market.category,
+        sort: value
+      });
+    }
   }
 
   function findMarketItem(id) {
@@ -2906,17 +3240,218 @@
   function installMarketItem(id) {
     var item = findMarketItem(id);
     if (!item) return;
-    if (!invoke('onMarketInstall', item)) UI.toast('市场服务尚未就绪');
+    var result = callHandler('onInstallMarket', item);
+    if (result === undefined) result = callHandler('onMarketInstall', item);
+    if (result === undefined) UI.toast('市场服务尚未就绪');
+    if (state.market.detailId === item.id) renderMarketDetail(item);
   }
 
   function removeMarketItem(id) {
     var item = findMarketItem(id);
     var name = item && item.name ? '「' + item.name + '」' : '该插件';
     confirmDialog('卸载插件', '确定卸载' + name + '吗？其工具与面板会立即移除。').then(function (ok) {
-      if (ok) {
-        if (!invoke('onMarketRemove', item ? item.id : id)) UI.toast('市场服务尚未就绪');
-      }
+      if (!ok) return;
+      var result = callHandler('onRemoveMarket', item ? item.id : id);
+      if (result === undefined) result = callHandler('onMarketRemove', item ? item.id : id);
+      if (result === undefined) UI.toast('市场服务尚未就绪');
     });
+  }
+
+  function marketDetailActions() {
+    var box = r('market-detail-actions');
+    if (!box) return;
+    box.textContent = '';
+    var item = state.market.detailId ? findMarketItem(state.market.detailId) : null;
+    if (!item) return;
+    var status = marketStatusFor(item);
+    function add(action, label, cls, disabled) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn ' + (cls || 'btn--ghost');
+      btn.setAttribute('data-action', action);
+      btn.setAttribute('data-id', item.id);
+      btn.textContent = label;
+      if (disabled) btn.disabled = true;
+      box.appendChild(btn);
+      return btn;
+    }
+    if (status.status === 'installed') add('market-remove', '卸载', 'btn--danger');
+    else if (status.status === 'update') {
+      add('market-install', '更新', 'btn--primary');
+      add('market-remove', '卸载', 'btn--danger');
+    } else if (status.status === 'installing') add('market-install', '安装中…', 'btn--primary', true);
+    else if (status.status === 'invalid') add('market-install', '重新安装', 'btn--primary');
+    else if (status.status === 'error') add('market-install', '重试安装', 'btn--primary');
+    else add('market-install', '安装', 'btn--primary');
+    add('close-market-detail', '关闭', 'btn--ghost');
+  }
+
+  function renderMarketDetail(item) {
+    if (!item) return;
+    var status = marketStatusFor(item);
+    var signature = marketSignatureOf(item, status);
+    var nameEl = r('market-detail-name');
+    if (nameEl) nameEl.textContent = item.name;
+    var subEl = r('market-detail-sub');
+    if (subEl) subEl.textContent = (item.author ? ('作者 ' + item.author + ' · ') : '') + 'v' + (item.version || '—');
+    var descEl = r('market-detail-desc');
+    if (descEl) descEl.textContent = item.description || '（暂无描述）';
+    var tagsBox = r('market-detail-tags');
+    if (tagsBox) {
+      tagsBox.textContent = '';
+      item.tags.forEach(function (tag) { tagsBox.appendChild(makeText('span', 'market-tag', tag)); });
+    }
+    setVal('market-detail-version', item.version ? ('v' + item.version) : '—');
+    setVal('market-detail-author', item.author || '—');
+    setVal('market-detail-size', marketSizeText(item.size) || '—');
+    setVal('market-detail-category', item.category || '其它');
+    var signatureEl = r('market-detail-signature');
+    if (signatureEl) {
+      signatureEl.textContent = signature.label;
+      signatureEl.classList.remove('is-signed', 'is-unsigned', 'is-invalid');
+      signatureEl.classList.add('is-' + signature.key);
+    }
+    setVal('market-detail-status', marketStatusLabel(status));
+    var errorEl = r('market-detail-error');
+    if (errorEl) {
+      var message = status.status === 'invalid' ? (status.message || '签名校验失败') : (status.status === 'error' ? (status.message || '安装失败') : '');
+      errorEl.textContent = message;
+      errorEl.hidden = !message;
+    }
+    var progress = state.market.installProgress[item.id];
+    var progressBox = r('market-detail-progress');
+    if (progressBox) {
+      progressBox.hidden = !progress;
+      if (progress) {
+        var percent = Math.max(0, Math.min(100, Math.round(Number(progress.percent) || 0)));
+        var fill = r('market-detail-progress-fill');
+        if (fill) fill.style.width = percent + '%';
+        var text = r('market-detail-progress-text');
+        if (text) text.textContent = (progress.message || '安装中…') + ' · ' + percent + '%';
+      }
+    }
+    marketDetailActions();
+  }
+
+  function openMarketDetail(id) {
+    var item = findMarketItem(id);
+    if (!item) return false;
+    state.market.detailId = item.id;
+    renderMarketDetail(item);
+    openModal(r('market-detail-modal'));
+    return true;
+  }
+
+  function closeMarketDetail() {
+    closeModal(r('market-detail-modal'));
+    state.market.detailId = null;
+  }
+
+  function renderInstallProgress(id, data) {
+    var key = String(id == null ? '' : id);
+    if (!key) return null;
+    var info = data && typeof data === 'object' ? data : { percent: data };
+    var percent = Number(info.percent);
+    if (!isFinite(percent)) percent = null;
+    var record = state.market.installProgress[key] || { percent: 0, message: '' };
+    if (percent != null) record.percent = Math.max(0, Math.min(100, Math.round(percent)));
+    if (info.message != null) record.message = String(info.message);
+    else if (record.percent > 0 && !record.message) record.message = '安装中…';
+    state.market.installProgress[key] = record;
+    if (state.market.detailId === key) {
+      var item = findMarketItem(key);
+      if (item) renderMarketDetail(item);
+    }
+    renderMarketRows();
+    return record;
+  }
+
+  function openMarketUrlInstall() {
+    var error = r('market-install-url-error');
+    if (error) { error.textContent = ''; error.hidden = true; }
+    var input = r('market-install-url');
+    if (input) input.value = '';
+    openModal(r('market-url-install-modal'));
+    setTimeout(function () {
+      var field = r('market-install-url');
+      if (!field) return;
+      try { field.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function submitMarketUrlInstall() {
+    var input = r('market-install-url');
+    var url = input ? String(input.value || '').trim() : '';
+    var error = r('market-install-url-error');
+    function fail(message) {
+      if (error) { error.textContent = message; error.hidden = false; }
+    }
+    if (!url) { fail('请输入插件 URL'); return; }
+    if (!/^https:\/\//i.test(url)) { fail('仅支持 https:// 直链'); return; }
+    var result = callHandler('onInstallMarketFromUrl', url);
+    if (result === undefined) { fail('市场服务尚未就绪'); return; }
+    Promise.resolve(result).then(function (ok) {
+      if (ok === false) { fail('从 URL 安装失败'); return; }
+      closeModal(r('market-url-install-modal'));
+      UI.toast('已开始安装插件');
+    }, function () { fail('从 URL 安装失败'); });
+  }
+
+  function openMarketCodeInstall() {
+    var error = r('market-code-error');
+    if (error) { error.textContent = ''; error.hidden = true; }
+    var input = r('market-code-input');
+    if (input) input.value = '';
+    var risk = r('market-code-risk');
+    if (risk) risk.checked = false;
+    openModal(r('market-code-modal'));
+  }
+
+  function submitMarketCodeInstall() {
+    var input = r('market-code-input');
+    var source = input ? String(input.value || '') : '';
+    var risk = r('market-code-risk');
+    var error = r('market-code-error');
+    function fail(message) {
+      if (error) { error.textContent = message; error.hidden = false; }
+    }
+    if (!source.trim()) { fail('请粘贴插件代码'); return; }
+    if (!risk || !risk.checked) { fail('请先勾选「我已了解风险」'); return; }
+    var result = callHandler('onInstallMarketSource', source);
+    if (result === undefined) { fail('市场服务尚未就绪'); return; }
+    Promise.resolve(result).then(function (ok) {
+      if (ok === false) { fail('安装失败，请检查插件代码'); return; }
+      closeModal(r('market-code-modal'));
+      UI.toast('插件安装已提交');
+    }, function () { fail('安装失败，请检查插件代码'); });
+  }
+
+  function saveCustomMarketSource() {
+    var input = r('market-url');
+    var url = input ? String(input.value || '').trim() : '';
+    if (!url) { UI.toast('请输入索引 URL'); return; }
+    if (!/^https:\/\//i.test(url)) { UI.toast('索引地址需以 https:// 开头'); return; }
+    var result = callHandler('onSetMarketSource', 'custom', url);
+    if (result === undefined) { UI.toast('市场服务尚未就绪'); return; }
+    setMarketSourceLabel({ type: 'custom', label: '自定义源', url: url });
+    UI.toast('已保存自定义源');
+  }
+
+  function resetOfficialMarketSource() {
+    var result = callHandler('onSetMarketSource', 'official', '');
+    if (result === undefined) { UI.toast('市场服务尚未就绪'); return; }
+    state.market.url = '';
+    state.market.source = normalizeMarketSource('official');
+    var input = r('market-url');
+    if (input) input.value = '';
+    setMarketSourceLabel(state.market.source);
+    UI.toast('已恢复官方市场');
+  }
+
+  function toggleMarketSourcePanel() {
+    var panel = r('market-source-panel');
+    if (!panel) return;
+    panel.open = !panel.open;
   }
 
   /* ================================================================== *
@@ -7777,6 +8312,9 @@
     if (isModalOpen(r('pin-setup-modal'))) { closePinSetup(); return true; }
     if (isModalOpen(r('password-modal'))) { resolvePassword(null); return true; }
     if (isModalOpen(r('edit-message-modal'))) { closeEditMessage(); return true; }
+    if (isModalOpen(r('market-detail-modal'))) { closeMarketDetail(); return true; }
+    if (isModalOpen(r('market-url-install-modal'))) { closeModal(r('market-url-install-modal')); return true; }
+    if (isModalOpen(r('market-code-modal'))) { closeModal(r('market-code-modal')); return true; }
     var searchBar = r('chat-search-in');
     if (searchBar && !searchBar.hidden) { closeChatSearch(); return true; }
     if (state.pluginPanelOpen) { closePluginPanel(); return true; }
@@ -7992,10 +8530,52 @@
         openMarketPage();
         break;
       case 'market-refresh':
-        fetchMarketIndex();
+        fetchMarketIndex(true);
         break;
       case 'market-fetch':
-        fetchMarketIndex();
+        fetchMarketIndex(false);
+        break;
+      case 'market-retry':
+        fetchMarketIndex(true);
+        break;
+      case 'market-search-clear':
+        setMarketQuery('');
+        break;
+      case 'market-category':
+        setMarketCategory(node.getAttribute('data-category'));
+        break;
+      case 'market-detail':
+        openMarketDetail(node.getAttribute('data-id'));
+        break;
+      case 'close-market-detail':
+        closeMarketDetail();
+        break;
+      case 'market-url-install':
+        openMarketUrlInstall();
+        break;
+      case 'close-market-url-install':
+        closeModal(r('market-url-install-modal'));
+        break;
+      case 'install-market-url':
+        submitMarketUrlInstall();
+        break;
+      case 'market-code-install':
+        openMarketCodeInstall();
+        break;
+      case 'close-market-code':
+        closeModal(r('market-code-modal'));
+        break;
+      case 'install-market-code':
+        submitMarketCodeInstall();
+        break;
+      case 'market-toggle-source':
+        toggleMarketSourcePanel();
+        break;
+      case 'market-set-source':
+        saveCustomMarketSource();
+        break;
+      case 'market-reset-source':
+        resetOfficialMarketSource();
         break;
       case 'market-install':
         installMarketItem(node.getAttribute('data-id'));
@@ -8426,6 +9006,10 @@
       searchInChat(target.value);
       return;
     }
+    if (target.id === 'market-search') {
+      setMarketQuery(target.value);
+      return;
+    }
     if (target.id === 'appearance-glass-intensity' || target.id === 'appearance-glass-speed') {
       applyGlassOptions({
         intensity: r('appearance-glass-intensity') ? Number(r('appearance-glass-intensity').value) : state.appearance.glass.intensity,
@@ -8475,6 +9059,11 @@
     /* 批次2：安全 PIN 开关 */
     if (target.id === 'set-pin') {
       setPinEnabled(!!target.checked);
+      return;
+    }
+    /* 批次3 v2.9.0：市场排序 */
+    if (target.id === 'market-sort') {
+      setMarketSort(target.value);
       return;
     }
     /* 批次3：液态玻璃滑块（松手/change 时保存） */
@@ -8663,6 +9252,9 @@
     bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
     bindModalBackdrop(r('mcp-form-modal'), function () { closeMcpForm(); });
     bindModalBackdrop(r('memory-item-modal'), function () { closeMemoryItemForm(); });
+    bindModalBackdrop(r('market-detail-modal'), function () { closeMarketDetail(); });
+    bindModalBackdrop(r('market-url-install-modal'), function () { closeModal(r('market-url-install-modal')); });
+    bindModalBackdrop(r('market-code-modal'), function () { closeModal(r('market-code-modal')); });
     bindModalBackdrop(r('pin-modal'), function () { resolvePin(false); });
     bindModalBackdrop(r('pin-setup-modal'), function () { closePinSetup(); });
     bindModalBackdrop(r('password-modal'), function () { resolvePassword(null); });
@@ -8784,7 +9376,18 @@
       'appearance-glass-intensity-val', 'appearance-glass-speed-val', 'appearance-glass-values',
       'quote-bar', 'quote-role', 'quote-text',
       'edit-message-modal', 'edit-message-input', 'edit-message-error',
-      'chat-search-in', 'chat-search-in-input', 'chat-search-in-count'
+      'chat-search-in', 'chat-search-in-input', 'chat-search-in-count',
+      /* 批次3 v2.9.0：市场升级 */
+      'market-search', 'market-search-clear', 'market-categories', 'market-sort',
+      'market-source-label', 'market-updated', 'market-source-panel', 'market-set-source', 'market-reset-source',
+      'market-loading', 'market-error', 'market-error-text', 'market-url-install', 'market-code-install',
+      'market-detail-modal', 'market-detail-name', 'market-detail-sub', 'market-detail-desc',
+      'market-detail-tags', 'market-detail-version', 'market-detail-author', 'market-detail-size',
+      'market-detail-category', 'market-detail-signature', 'market-detail-status',
+      'market-detail-progress', 'market-detail-progress-fill', 'market-detail-progress-text',
+      'market-detail-error', 'market-detail-actions',
+      'market-url-install-modal', 'market-install-url', 'market-install-url-error',
+      'market-code-modal', 'market-code-input', 'market-code-risk', 'market-code-error'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -9454,10 +10057,33 @@
   UI.setLocale = setLocale;
   UI.getLocale = function () { return state.locale || 'zh'; };
 
+  /* 批次 3 · v2.9.0：插件市场升级 */
+  UI.renderMarketPage = function (data) { return renderMarketPage(data); };
+  UI.openMarketDetail = openMarketDetail;
+  UI.closeMarketDetail = closeMarketDetail;
+  UI.renderInstallProgress = function (id, data) { return renderInstallProgress(id, data); };
+  UI.setMarketSourceLabel = setMarketSourceLabel;
+  UI.setMarketQuery = setMarketQuery;
+  UI.setMarketCategory = setMarketCategory;
+  UI.setMarketSort = setMarketSort;
+  UI.openMarketUrlInstall = openMarketUrlInstall;
+  UI.openMarketCodeInstall = openMarketCodeInstall;
+  UI.getMarketState = function () {
+    return {
+      items: (state.market.items || []).slice(),
+      source: state.market.source,
+      query: state.market.query,
+      category: state.market.category,
+      sort: state.market.sort,
+      loading: !!state.market.loading,
+      error: state.market.error || ''
+    };
+  };
+
   /* 液态玻璃 / 毛玻璃 */
   UI.setGlassMode = function (mode) { return applyGlassMode(mode); };
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '2.8.0';
+  UI.version = '2.9.0';
 })();

@@ -309,7 +309,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.8.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v2.9.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -690,7 +690,7 @@
           <button class="form-row form-row--button" id="set-market-row" type="button" data-action="open-market" aria-label="插件市场">
             <span class="form-label">插件市场</span>
             <span class="form-control form-control--value">
-              <span class="form-value" id="set-market-label">未配置索引</span>
+              <span class="form-value" id="set-market-label">官方市场</span>
               <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M9 5l7 7-7 7"></path>
               </svg>
@@ -825,7 +825,7 @@
 
         <div class="section-label" data-i18n="settings.about">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>2.5.5</span></div>
+          <div class="about-row"><span>版本</span><span>2.9.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -1082,8 +1082,8 @@
               <option value="updated">更新时间</option>
               <option value="name">名称</option>
             </select>
-            <button class="market-tool-btn" type="button" data-action="market-url-install">从 URL 安装</button>
-            <button class="market-tool-btn" type="button" data-action="market-code-install">粘贴代码安装</button>
+            <button class="market-tool-btn" id="market-url-install" type="button" data-action="market-url-install">从 URL 安装</button>
+            <button class="market-tool-btn" id="market-code-install" type="button" data-action="market-code-install">粘贴代码安装</button>
             <button class="market-tool-btn market-tool-btn--ghost" type="button" data-action="market-toggle-source">自定义源</button>
           </div>
 
@@ -1096,8 +1096,8 @@
             </div>
             <div class="form-row market-source-actions">
               <button class="btn btn--primary" id="market-fetch" type="button" data-action="market-fetch">拉取索引</button>
-              <button class="btn btn--ghost" type="button" data-action="market-set-source">保存为自定义源</button>
-              <button class="btn btn--ghost" type="button" data-action="market-reset-source">恢复官方源</button>
+              <button class="btn btn--ghost" id="market-set-source" type="button" data-action="market-set-source">保存为自定义源</button>
+              <button class="btn btn--ghost" id="market-reset-source" type="button" data-action="market-reset-source">恢复官方源</button>
             </div>
           </details>
         </div>
@@ -1527,7 +1527,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v2.8.0</span>
+      <span class="drawer-version">v2.9.0</span>
     </div>
   </aside>
 
