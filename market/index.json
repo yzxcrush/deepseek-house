@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "DeepSeek House 官方插件市场",
+  "updatedAt": "2026-10-31T05:51:42Z",
+  "baseUrl": "https://raw.githubusercontent.com/yzxcrush/deepseek-house/main/market/plugins/",
+  "plugins": [
+    {
+      "id": "official.ipinfo",
+      "name": "IP 信息查询",
+      "version": "1.0.0",
+      "author": "DeepSeek House",
+      "description": "查询当前公网 IP 与归属地、运营商；模型工具 get_ip_info + 命令 /ip。",
+      "category": "网络",
+      "tags": [
+        "网络",
+        "IP",
+        "联网"
+      ],
+      "url": "https://raw.githubusercontent.com/yzxcrush/deepseek-house/main/market/plugins/official.ipinfo.js",
+      "sha256": "c3891650947b075970e2fe143344d6075e893e76be8310dc8dfc5589b5d162ea",
+      "hmac": "f9bbd207430eea1c95ea836b23199ae8e6aabc2ea4d46d4252df31608e8b4408",
+      "size": 1495
+    },
+    {
+      "id": "official.prompts",
+      "name": "提示词库",
+      "version": "1.1.0",
+      "author": "DeepSeek House",
+      "description": "内置常用提示词模板（写作/代码/翻译/总结/面试/小红书），/prompt 快速取用。完全离线。",
+      "category": "效率",
+      "tags": [
+        "提示词",
+        "效率",
+        "离线"
+      ],
+      "url": "https://raw.githubusercontent.com/yzxcrush/deepseek-house/main/market/plugins/official.prompts.js",
+      "sha256": "8a9167478f770e0aa1f6f7d9e35b626e32665cd7942fb676b8d9dae75be26d5c",
+      "hmac": "738cc3df9ee4f8125170fe9f853f62b827fd40db79214cc3432aa061fbfcba7b",
+      "size": 2569
+    },
+    {
+      "id": "official.translator",
+      "name": "翻译助手",
+      "version": "1.1.0",
+      "author": "DeepSeek House",
+      "description": "中英互译 / 多语言翻译，模型工具 translate_text + 命令 /translate；无需 API Key。",
+      "category": "语言",
+      "tags": [
+        "翻译",
+        "工具",
+        "联网"
+      ],
+      "url": "https://raw.githubusercontent.com/yzxcrush/deepseek-house/main/market/plugins/official.translator.js",
+      "sha256": "2a74aa7b8613a8802c445f60851dd2873bcd39cc870cc5d065693b9c28aae685",
+      "hmac": "d6d06dfdb347b148a48b3e1017affef4469c899298d94685e34b453125f00339",
+      "size": 2550
+    },
+    {
+      "id": "official.weather",
+      "name": "天气查询",
+      "version": "1.1.0",
+      "author": "DeepSeek House",
+      "description": "查询城市实时天气与未来三天预报；模型工具 get_weather + 命令 /weather。",
+      "category": "生活",
+      "tags": [
+        "天气",
+        "联网",
+        "生活"
+      ],
+      "url": "https://raw.githubusercontent.com/yzxcrush/deepseek-house/main/market/plugins/official.weather.js",
+      "sha256": "18095869b248bce67da31f032bbd93d2c37f0994e0da536d4ccce4b1f4729dc0",
+      "hmac": "ab5322559db0094f412ef27c7128f0021c0c24352b09cf84b100dad9416cba60",
+      "size": 2423
+    }
+  ]
+}

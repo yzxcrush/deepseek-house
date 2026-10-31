@@ -83,7 +83,13 @@
     costPrice: {},
     toolPolicies: {},
     /* 批次2 v2.7.0：安全 PIN（PBKDF2-SHA256 派生，仅存 salt/hash） */
-    appPin: { enabled: false, salt: '', hash: '', iterations: 100000, failures: 0, lockUntil: 0 }
+    appPin: { enabled: false, salt: '', hash: '', iterations: 100000, failures: 0, lockUntil: 0 },
+    /* 批次3 v2.8.0：主题 / 字号 / 壁纸 / 液态玻璃 / 语言 */
+    fontScale: 1,
+    wallpaper: '',
+    glassIntensity: 60,
+    glassSpeed: 1,
+    locale: 'zh'
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -181,7 +187,12 @@
       costBudget: { daily: DEFAULT_PREFS.costBudget.daily, monthly: DEFAULT_PREFS.costBudget.monthly },
       costPrice: {},
       toolPolicies: {},
-      appPin: normalizeAppPin(DEFAULT_PREFS.appPin)
+      appPin: normalizeAppPin(DEFAULT_PREFS.appPin),
+      fontScale: DEFAULT_PREFS.fontScale,
+      wallpaper: DEFAULT_PREFS.wallpaper,
+      glassIntensity: DEFAULT_PREFS.glassIntensity,
+      glassSpeed: DEFAULT_PREFS.glassSpeed,
+      locale: DEFAULT_PREFS.locale
     };
   }
 
@@ -281,7 +292,15 @@
     if (raw.temperature !== undefined) p.temperature = clampNum(raw.temperature, 0, 2);
     if (raw.maxTokens !== undefined) p.maxTokens = Math.round(clampNum(raw.maxTokens, 16, 8192));
     if (raw.stream !== undefined) p.stream = !!raw.stream;
-    if (raw.theme === 'light' || raw.theme === 'dark') p.theme = raw.theme;
+    if (raw.theme === 'light' || raw.theme === 'dark' || raw.theme === 'midnight' || raw.theme === 'black') p.theme = raw.theme;
+    if (raw.fontScale !== undefined) {
+      var fs = Number(raw.fontScale);
+      p.fontScale = (fs === 0.9 || fs === 1 || fs === 1.1 || fs === 1.2) ? fs : 1;
+    }
+    if (raw.wallpaper !== undefined) p.wallpaper = String(raw.wallpaper === null ? '' : raw.wallpaper).slice(0, 4000000);
+    if (raw.glassIntensity !== undefined) p.glassIntensity = Math.round(clampNum(raw.glassIntensity, 0, 100));
+    if (raw.glassSpeed !== undefined) p.glassSpeed = Math.round(clampNum(raw.glassSpeed, 0.2, 3) * 10) / 10;
+    if (raw.locale === 'zh' || raw.locale === 'en') p.locale = raw.locale;
     if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
     if (raw.contextBudget !== undefined) p.contextBudget = Math.round(clampNum(raw.contextBudget, 500, 200000));
     if (raw.workbench !== undefined) p.workbench = !!raw.workbench;
@@ -349,6 +368,17 @@
     if (raw.progress !== undefined && raw.progress !== null) {
       msg.progress = typeof raw.progress === 'object' ? clone(raw.progress) : (Number(raw.progress) || 0);
     }
+    /* 批次3 v2.8.0：引用回复 / 编辑标记 */
+    if (raw.quoted && typeof raw.quoted === 'object') {
+      var quotedRole = String(raw.quoted.role || '');
+      if (quotedRole !== 'user' && quotedRole !== 'assistant' && quotedRole !== 'tool') quotedRole = 'user';
+      msg.quoted = {
+        msgId: raw.quoted.msgId === undefined || raw.quoted.msgId === null ? '' : String(raw.quoted.msgId).slice(0, 120),
+        role: quotedRole,
+        text: String(raw.quoted.text === undefined || raw.quoted.text === null ? '' : raw.quoted.text).slice(0, 500)
+      };
+    }
+    if (raw.editedAt !== undefined && raw.editedAt !== null) msg.editedAt = Number(raw.editedAt) || 0;
     /* 批次2 v2.7.0：工具失败诊断 + 快照标记 */
     if (raw.diagnostics && typeof raw.diagnostics === 'object') {
       var diag = {};

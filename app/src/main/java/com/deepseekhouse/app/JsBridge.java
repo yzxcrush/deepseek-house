@@ -24,6 +24,7 @@ import com.deepseekhouse.app.agent.ToolRegistry;
 import com.deepseekhouse.app.agent.Workspace;
 import com.deepseekhouse.app.agent.WorkspaceSnapshot;
 import com.deepseekhouse.app.mcp.McpManager;
+import com.deepseekhouse.app.media.MediaManager;
 import com.deepseekhouse.app.memory.MemoryDb;
 import com.deepseekhouse.app.plugin.PluginRepository;
 
@@ -73,6 +74,10 @@ import java.util.regex.Pattern;
  * <p>批次2 v2.7.0 追加：工作区快照 {@link #snapshotCreate(String)} / {@link #snapshotList()} /
  * {@link #snapshotDiff(String)} / {@link #snapshotRestore(String)} / {@link #snapshotClear()}
  * （文件 IO 在 {@code WorkspaceSnapshot} 后台线程执行，方法阻塞 WebView JS 桥线程同步返回 JSON）。</p>
+ *
+ * <p>批次3 v2.8.0 追加：壁纸 {@link #saveWallpaper(String, String)} / {@link #getWallpaper()} /
+ * {@link #clearWallpaper()} / {@link #wallpaperInfo()}；保存图片到相册 {@link #saveImage(String, String)}
+ * （API 29+ MediaStore Pictures/DeepSeekHouse，低版本 app 外部目录兜底）。</p>
  */
 public final class JsBridge {
 
@@ -102,6 +107,8 @@ public final class JsBridge {
     private final ExecutorService memoryPool;
     /** 批次2 v2.7.0：工作区快照/差异/恢复（filesDir/snapshots）。 */
     private final WorkspaceSnapshot snapshots;
+    /** 批次3 v2.8.0：壁纸存取 + 图片保存到相册（IO 在 media 内部后台线程）。 */
+    private final MediaManager media;
     private final ExecutorService toolPool;
     /** requestId → 等待确认的工具调用（confirmTool 消费）。 */
     private final Map<String, PendingTool> pendingTools = new ConcurrentHashMap<>();
@@ -181,6 +188,8 @@ public final class JsBridge {
         });
         // 批次2 v2.7.0：工作区快照（文件 IO 在快照内部后台线程执行，调用处同步等待）
         this.snapshots = new WorkspaceSnapshot(activity, this.workspace);
+        // 批次3 v2.8.0：壁纸 + 图片保存
+        this.media = new MediaManager(activity);
     }
 
     /** Activity 销毁时释放网络线程池与事件通道。 */
@@ -204,6 +213,11 @@ public final class JsBridge {
         }
         try {
             snapshots.close();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        try {
+            media.close();
         } catch (Throwable ignored) {
             // 忽略
         }
@@ -1104,6 +1118,69 @@ public final class JsBridge {
             o.put("error", message == null ? "快照操作失败" : message);
         } catch (JSONException ignored) {
             return "{\"ok\":false,\"error\":\"快照操作失败\"}";
+        }
+        return o.toString();
+    }
+
+    // ============================================================ 批次3 v2.8.0 壁纸 / 图片保存
+
+    /** 保存壁纸（JPEG，≤4MB）到 filesDir/wallpaper/wallpaper.jpg。 */
+    @JavascriptInterface
+    public String saveWallpaper(String base64Jpeg, String name) {
+        try {
+            return media.saveWallpaper(base64Jpeg, name);
+        } catch (Throwable t) {
+            return mediaError("壁纸保存失败：" + describe(t));
+        }
+    }
+
+    /** 读取壁纸：{"ok":true,"dataUrl":"data:image/jpeg;base64,.."}；无壁纸 dataUrl=""。 */
+    @JavascriptInterface
+    public String getWallpaper() {
+        try {
+            return media.getWallpaper();
+        } catch (Throwable t) {
+            return mediaError("壁纸读取失败：" + describe(t));
+        }
+    }
+
+    /** 清除壁纸：{"ok":true,"removed":bool}。 */
+    @JavascriptInterface
+    public String clearWallpaper() {
+        try {
+            return media.clearWallpaper();
+        } catch (Throwable t) {
+            return mediaError("壁纸清理失败：" + describe(t));
+        }
+    }
+
+    /** 壁纸信息：{ok,hasWallpaper,path,size,name,updatedAt}。 */
+    @JavascriptInterface
+    public String wallpaperInfo() {
+        try {
+            return media.wallpaperInfo();
+        } catch (Throwable t) {
+            return mediaError("壁纸信息读取失败：" + describe(t));
+        }
+    }
+
+    /** 保存图片到相册（API 29+ MediaStore Pictures/DeepSeekHouse；低版本 app 外部 Pictures 兜底）。 */
+    @JavascriptInterface
+    public String saveImage(String dataUrl, String fileName) {
+        try {
+            return media.saveImage(dataUrl, fileName);
+        } catch (Throwable t) {
+            return mediaError("图片保存失败：" + describe(t));
+        }
+    }
+
+    private static String mediaError(String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("ok", false);
+            o.put("error", message == null ? "操作失败" : message);
+        } catch (JSONException ignored) {
+            return "{\"ok\":false,\"error\":\"操作失败\"}";
         }
         return o.toString();
     }

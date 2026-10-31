@@ -1118,6 +1118,42 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2.8.0 批次3：图片保存 / 壁纸 —— mock 实现
+   * ------------------------------------------------------------------ */
+
+  var mockB3 = {
+    wallpaper: '',
+    images: [] /* [{name,path,dataUrl,at}] */
+  };
+
+  function mockB3SaveImage(dataUrl, name) {
+    var url = String(dataUrl === null || dataUrl === undefined ? '' : dataUrl);
+    if (!/^data:image\//i.test(url)) return { ok: false, error: '不是有效的图片 dataUrl' };
+    var fileName = String(name === null || name === undefined ? '' : name).replace(/[^A-Za-z0-9._-]/g, '_') || ('DeepSeekHouse-' + Date.now() + '.jpg');
+    var path = 'Pictures/DeepSeekHouse/' + fileName;
+    mockB3.images.push({ name: fileName, path: path, dataUrl: url, at: Date.now() });
+    if (mockB3.images.length > 50) mockB3.images.shift();
+    return { ok: true, path: path, uri: 'content://media/external/images/media/mock_' + Date.now(), name: fileName, mime: 'image/jpeg', size: Math.round(url.length * 0.75), mock: true };
+  }
+
+  function mockB3SaveWallpaper(dataUrl, name) {
+    var url = String(dataUrl === null || dataUrl === undefined ? '' : dataUrl);
+    if (!/^data:image\//i.test(url)) return { ok: false, error: '不是有效的 JPEG dataUrl' };
+    mockB3.wallpaper = url;
+    mockB3.wallpaperName = String(name === null || name === undefined ? '' : name);
+    return { ok: true, path: '/data/user/0/com.deepseekhouse.app/files/wallpaper/wallpaper.jpg', size: Math.round(url.length * 0.75) };
+  }
+
+  function parseB3Json(raw) {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === 'object') return raw;
+    var str = String(raw).replace(/^\s+|\s+$/g, '');
+    if (!str) return null;
+    if (str.charAt(0) === '{') return parseJSON(str, null);
+    return null;
+  }
+
+  /* ------------------------------------------------------------------ *
    * ARCH v2.7.0 批次2：工作区快照 —— mock 实现
    * 内存快照（复制 mockFileContents + 目录树），支持 create/list/diff/restore/clear。
    * ------------------------------------------------------------------ */
@@ -1580,6 +1616,28 @@
     snapshotDelete: ['snapshotDelete', 'workspaceSnapshotDelete'],
     snapshotClear: ['snapshotClear', 'workspaceSnapshotClear']
   };
+
+  /* ARCH v2.8.0 批次3：图片保存 / 壁纸原生方法名探测（旧原生缺方法时回落 mock） */
+  var B3_NATIVE_METHODS = {
+    saveImage: ['saveImage', 'saveImageToGallery', 'saveBase64Image'],
+    saveWallpaper: ['saveWallpaper', 'setWallpaper'],
+    getWallpaper: ['getWallpaper'],
+    clearWallpaper: ['clearWallpaper', 'removeWallpaper'],
+    wallpaperInfo: ['wallpaperInfo']
+  };
+
+  function b3NativeName(op) {
+    if (!hasNative) return '';
+    var names = B3_NATIVE_METHODS[op] || [];
+    for (var i = 0; i < names.length; i++) {
+      if (hasNativeMethod(names[i])) return names[i];
+    }
+    return '';
+  }
+
+  function b3HasMethod(op) {
+    return !!b3NativeName(op);
+  }
 
   function b2NativeName(op) {
     if (!hasNative) return '';
@@ -2832,6 +2890,112 @@
     },
 
     /* ------------------------------------------------------------------ *
+     * ARCH v2.8.0 批次3：保存图片 / 壁纸（原生未就绪时 mock）
+     * ------------------------------------------------------------------ */
+    /**
+     * 保存图片 dataUrl 到相册/Pictures（原生返回 JSON {ok,uri,path,name,mime,size}；
+     * mock 返回同结构）。返回归一化 {ok,path,uri,name,error?}。
+     */
+    saveImage: function (dataUrl, fileName) {
+      var url = String(dataUrl === null || dataUrl === undefined ? '' : dataUrl);
+      if (!/^data:image\//i.test(url)) return { ok: false, error: '不是有效的图片 dataUrl' };
+      var name = String(fileName === null || fileName === undefined ? '' : fileName).slice(0, 120);
+      var method = b3NativeName('saveImage');
+      if (method) {
+        var raw = callNative(method, [url, name], false);
+        var parsed = parseB3Json(raw);
+        if (parsed) {
+          return {
+            ok: parsed.ok !== false,
+            path: parsed.path === undefined || parsed.path === null ? '' : String(parsed.path),
+            uri: parsed.uri === undefined || parsed.uri === null ? '' : String(parsed.uri),
+            name: parsed.name === undefined || parsed.name === null ? name : String(parsed.name),
+            mime: parsed.mime ? String(parsed.mime) : '',
+            size: Math.max(0, Number(parsed.size) || 0),
+            error: parsed.error ? String(parsed.error) : ''
+          };
+        }
+        if (raw === true) return { ok: true, path: '', uri: '', name: name, error: '' };
+        if (raw === false || raw === null || raw === undefined) return { ok: false, path: '', uri: '', name: name, error: '保存图片失败' };
+        var str = String(raw).replace(/^\s+|\s+$/g, '');
+        if (str === 'true') return { ok: true, path: '', uri: '', name: name, error: '' };
+        if (str === 'false' || str === '') return { ok: false, path: '', uri: '', name: name, error: '保存图片失败' };
+        return { ok: true, path: str, uri: '', name: name, error: '' };
+      }
+      return mockB3SaveImage(url, name);
+    },
+
+    /**
+     * 保存壁纸（原生仅接受 JPEG dataUrl，返回 JSON {ok,path,size|error}）。
+     * 返回归一化 {ok,path,size,error?}；mock 同结构。
+     */
+    saveWallpaper: function (dataUrl, name) {
+      var url = String(dataUrl === null || dataUrl === undefined ? '' : dataUrl);
+      if (!/^data:image\//i.test(url)) return { ok: false, error: '不是有效的图片 dataUrl' };
+      var displayName = String(name === null || name === undefined ? '' : name).slice(0, 120);
+      var method = b3NativeName('saveWallpaper');
+      if (method) {
+        var raw = callNative(method, [url, displayName], false);
+        var parsed = parseB3Json(raw);
+        if (parsed) {
+          return {
+            ok: parsed.ok !== false,
+            path: parsed.path === undefined || parsed.path === null ? '' : String(parsed.path),
+            size: Math.max(0, Number(parsed.size) || 0),
+            error: parsed.error ? String(parsed.error) : ''
+          };
+        }
+        if (raw === true) return { ok: true, path: '', size: 0, error: '' };
+        return { ok: false, path: '', size: 0, error: '保存壁纸失败' };
+      }
+      return mockB3SaveWallpaper(url, displayName);
+    },
+
+    /** 读取已保存壁纸 dataUrl（原生 JSON {ok,dataUrl,size,name}）；无壁纸返回 "" */
+    getWallpaper: function () {
+      var method = b3NativeName('getWallpaper');
+      if (method) {
+        var raw = callNative(method, [], false);
+        var parsed = parseB3Json(raw);
+        if (parsed) {
+          if (parsed.ok === false) return '';
+          return parsed.dataUrl && /^data:image\//i.test(String(parsed.dataUrl)) ? String(parsed.dataUrl) : '';
+        }
+        var str = raw === null || raw === undefined ? '' : String(raw);
+        return /^data:image\//i.test(str) ? str : '';
+      }
+      return String(mockB3.wallpaper || '');
+    },
+
+    /** 清理壁纸（原生 JSON {ok,removed}）→ boolean */
+    clearWallpaper: function () {
+      var method = b3NativeName('clearWallpaper');
+      if (method) {
+        try {
+          var raw = callNative(method, [], false);
+          var parsed = parseB3Json(raw);
+          if (parsed) return parsed.ok !== false;
+          return raw !== false;
+        } catch (e) { warn('clearWallpaper 失败：' + (e && e.message)); return false; }
+      }
+      mockB3.wallpaper = '';
+      mockB3.wallpaperName = '';
+      return true;
+    },
+
+    /** 补充（arch-native 可选）：壁纸元信息 {ok,hasWallpaper,path,size,name,updatedAt} */
+    wallpaperInfo: function () {
+      var method = b3NativeName('wallpaperInfo');
+      if (method) {
+        var raw = callNative(method, [], false);
+        var parsed = parseB3Json(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+        return { ok: false, hasWallpaper: false };
+      }
+      return { ok: true, hasWallpaper: !!mockB3.wallpaper, path: mockB3.wallpaper ? '/data/user/0/com.deepseekhouse.app/files/wallpaper/wallpaper.jpg' : '', size: mockB3.wallpaper ? Math.round(mockB3.wallpaper.length * 0.75) : 0, name: mockB3.wallpaperName || '' };
+    },
+
+    /* ------------------------------------------------------------------ *
      * ARCH v2 P3：记忆（session_summary + memory_kv）
      * ------------------------------------------------------------------ */
     memoryGetSummaries: function () {
@@ -3121,6 +3285,7 @@
       mockSeedPluginMemory();
       mockSnapshots = [];
       mockSnapshotSeq = 0;
+      mockB3 = { wallpaper: '', images: [] };
       return true;
     }
   };
@@ -3148,6 +3313,16 @@
     save: function (server) { return mockMcpSave(server); },
     remove: function (id) { return mockMcpDelete(id); },
     reset: function () { mockSeedMcp(); return true; }
+  };
+
+  /* ARCH v2.8.0 批次3：图片/壁纸 mock 调试入口（仅测试使用） */
+  Bridge.__mockB3 = {
+    state: function () {
+      return { wallpaper: mockB3.wallpaper, images: mockB3.images.slice() };
+    },
+    setWallpaper: function (dataUrl) { return mockB3SaveWallpaper(dataUrl); },
+    saveImage: function (dataUrl, name) { return mockB3SaveImage(dataUrl, name); },
+    reset: function () { mockB3 = { wallpaper: '', images: [] }; return true; }
   };
 
   /* ARCH v2.7.0 批次2：快照 mock 调试入口（仅测试使用） */

@@ -98,6 +98,14 @@ CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → 
 - 前提：设备已 root（KernelSU/Magisk），并在 root 管理器里**允许「DeepSeek House」**（未授权时开关会提示并保持关闭）
 - 也可不改 App：用 `su` 启动 `termux-mcp/server.py`，通过 MCP 的 `run_shell` 获得 root（见 termux-mcp/README.md）
 
+## 🛍 官方插件市场（market/）
+
+- 托管在仓库 `market/`：`index.json` 索引 + `plugins/*.js` 插件源码，通过 `raw.githubusercontent.com` 分发，无需额外服务器
+- 索引包含每个插件的 `sha256` 与 `hmac`（与 App 内置密钥一致），安装前双重校验
+- 首批官方插件：翻译助手、天气查询、IP 信息查询、提示词库（均可直接安装）
+- App 内「设置 → 插件市场」默认加载官方索引，可搜索/按分类筛选/一键安装更新卸载；也支持填写自定义索引 URL
+- 生成索引：`python3 scripts/make_market.py`
+
 ## 🔭 Agent 可观测性与成本（v2.6.0）
 
 - **运行轨迹时间线**：按会话记录思考摘要 → 工具调用（名称/参数/风险/确认状态）→ 工具结果（成功/失败/耗时/摘要），可搜索、可折叠，失败红色标记

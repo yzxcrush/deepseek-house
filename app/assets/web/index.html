@@ -191,6 +191,11 @@
             <span class="info-label info-label--text">导出当前会话（Markdown）</span>
             <span class="menu-arrow">›</span>
           </button>
+          <button class="info-row info-row--action" type="button" data-action="export-chat-image">
+            <span class="info-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span>
+            <span class="info-label info-label--text">复制会话为长图</span>
+            <span class="menu-arrow">›</span>
+          </button>
           <button class="info-row info-row--action" type="button" data-action="export-all">
             <span class="info-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg></span>
             <span class="info-label info-label--text">导出全部会话（Markdown）</span>
@@ -362,6 +367,23 @@
         </button>
       </header>
 
+      <!-- 批次3 v2.8.0：会话内搜索 -->
+      <div class="chat-search-in" id="chat-search-in" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"></circle>
+          <path d="m20 20-3.4-3.4"></path>
+        </svg>
+        <input id="chat-search-in-input" class="chat-search-in-input" type="search" placeholder="在会话内搜索（关键词高亮）" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="会话内搜索">
+        <span class="chat-search-in-count" id="chat-search-in-count">0/0</span>
+        <button class="chat-search-in-btn" type="button" data-action="chat-search-prev" aria-label="上一个">↑</button>
+        <button class="chat-search-in-btn" type="button" data-action="chat-search-next" aria-label="下一个">↓</button>
+        <button class="icon-btn chat-search-in-close" type="button" data-action="close-chat-search" aria-label="关闭会话搜索">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+
       <!-- ARCH v2 P4：工作台左侧固定文件树栏（宽屏/横屏生效） -->
       <aside class="workbench-files" id="workbench-files" aria-hidden="true" aria-label="工作区文件">
         <div class="workbench-head">
@@ -471,6 +493,20 @@
           <button class="terminal-run" id="terminal-run" type="button" data-action="terminal-run">执行</button>
         </div>
       </section>
+
+      <!-- 批次3 v2.8.0：引用预览条 -->
+      <div class="quote-bar" id="quote-bar" hidden>
+        <span class="quote-accent" aria-hidden="true"></span>
+        <div class="quote-main">
+          <div class="quote-role" id="quote-role">引用</div>
+          <div class="quote-text" id="quote-text"></div>
+        </div>
+        <button class="quote-cancel" type="button" data-action="cancel-quote" aria-label="取消引用">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
 
       <!-- ARCH v2 P4：待发送图片缩略图 chips -->
       <div class="composer-images" id="composer-images" hidden></div>
@@ -671,6 +707,23 @@
           </button>
           <div class="form-row form-row--col">
             <span class="form-hint">插件市场支持 https 索引；记忆保存长期偏好与项目约定，用于拼接系统提示词。</span>
+          </div>
+        </div>
+
+        <!-- 批次3 v2.8.0：外观入口 -->
+        <div class="section-label" data-i18n="settings.interface">界面</div>
+        <div class="section">
+          <button class="form-row form-row--button" id="set-appearance-row" type="button" data-action="open-appearance" aria-label="外观">
+            <span class="form-label" data-i18n="appearance">外观</span>
+            <span class="form-control form-control--value">
+              <span class="form-value" id="set-appearance-label">主题 / 字号 / 壁纸</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7"></path>
+              </svg>
+            </span>
+          </button>
+          <div class="form-row form-row--col">
+            <span class="form-hint">主题色、字号、聊天壁纸与液态玻璃强度 / 速度。</span>
           </div>
         </div>
 
@@ -1197,6 +1250,86 @@
       </div>
     </section>
 
+    <!-- ============================ 外观（批次3 v2.8.0） ============================ -->
+    <section class="screen screen--page screen--appearance" id="screen-appearance" aria-hidden="true">
+      <header class="topbar topbar--page">
+        <button class="icon-btn" type="button" data-action="back" aria-label="返回">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"></path>
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <div class="title" data-i18n="appearance">外观</div>
+          <div class="subtitle" data-i18n="appearance.subtitle">主题 / 字号 / 壁纸 / 液态玻璃</div>
+        </div>
+      </header>
+
+      <div class="page-scroll appearance-scroll">
+        <div class="section-label" data-i18n="appearance.theme">主题色</div>
+        <div class="appearance-themes" id="appearance-theme-list">
+          <button class="appearance-theme is-active" type="button" data-action="set-theme" data-theme="dark">
+            <span class="appearance-swatch appearance-swatch--dark"><i></i><i></i><i></i></span>
+            <span class="appearance-theme-name" data-i18n="theme.dark">暗黑</span>
+          </button>
+          <button class="appearance-theme" type="button" data-action="set-theme" data-theme="midnight">
+            <span class="appearance-swatch appearance-swatch--midnight"><i></i><i></i><i></i></span>
+            <span class="appearance-theme-name" data-i18n="theme.midnight">午夜蓝</span>
+          </button>
+          <button class="appearance-theme" type="button" data-action="set-theme" data-theme="black">
+            <span class="appearance-swatch appearance-swatch--black"><i></i><i></i><i></i></span>
+            <span class="appearance-theme-name" data-i18n="theme.black">纯黑 OLED</span>
+          </button>
+        </div>
+
+        <div class="section-label" data-i18n="appearance.font">字号</div>
+        <div class="appearance-fonts" id="appearance-font-list">
+          <button class="appearance-font" type="button" data-action="set-font-scale" data-scale="0.9">小</button>
+          <button class="appearance-font is-active" type="button" data-action="set-font-scale" data-scale="1">标准</button>
+          <button class="appearance-font" type="button" data-action="set-font-scale" data-scale="1.1">大</button>
+          <button class="appearance-font" type="button" data-action="set-font-scale" data-scale="1.2">特大</button>
+        </div>
+        <div class="appearance-font-preview" id="appearance-font-preview">预览：DeepSeek House 让 AI 在你的手机上工作。</div>
+
+        <div class="section-label" data-i18n="appearance.wallpaper">聊天壁纸</div>
+        <div class="appearance-wallpaper">
+          <div class="appearance-wallpaper-preview" id="appearance-wallpaper-preview">
+            <img id="appearance-wallpaper-img" src="" alt="" hidden>
+            <span id="appearance-wallpaper-empty">默认壁纸</span>
+          </div>
+          <div class="appearance-wallpaper-actions">
+            <button class="btn btn--ghost appearance-btn" type="button" data-action="pick-wallpaper">从相册选择</button>
+            <button class="btn btn--ghost appearance-btn" type="button" data-action="clear-wallpaper">移除</button>
+          </div>
+        </div>
+
+        <div class="section-label" data-i18n="appearance.glass">液态玻璃</div>
+        <div class="section appearance-glass">
+          <div class="appearance-slider-row">
+            <span class="appearance-slider-label">强度</span>
+            <input class="range appearance-slider" id="appearance-glass-intensity" type="range" min="0" max="100" step="5" value="60" aria-label="液态玻璃强度">
+            <span class="appearance-slider-value" id="appearance-glass-intensity-val">60</span>
+          </div>
+          <div class="appearance-slider-row">
+            <span class="appearance-slider-label">速度</span>
+            <input class="range appearance-slider" id="appearance-glass-speed" type="range" min="0.2" max="3" step="0.1" value="1" aria-label="液态玻璃速度">
+            <span class="appearance-slider-value" id="appearance-glass-speed-val">1.0x</span>
+          </div>
+          <div class="appearance-glass-values" id="appearance-glass-values">强度 60 · 速度 1.0x</div>
+        </div>
+
+        <div class="section-label" data-i18n="appearance.language">语言 / Language</div>
+        <div class="appearance-langs">
+          <button class="appearance-lang is-active" id="lang-zh" type="button" data-action="set-locale" data-locale="zh">中文</button>
+          <button class="appearance-lang" id="lang-en" type="button" data-action="set-locale" data-locale="en">English</button>
+        </div>
+
+        <div class="plugins-tip">
+          <b data-i18n="appearance.tip.title">实时预览</b>
+          <p data-i18n="appearance.tip.body">主题、字号、壁纸与液态玻璃参数即时生效并保存到本机；壁纸会显示在聊天背景中。</p>
+        </div>
+      </div>
+    </section>
+
     <!-- ============================ 快照与回滚（批次2 v2.7.0） ============================ -->
     <section class="screen screen--page screen--snapshots" id="screen-snapshots" aria-hidden="true">
       <header class="topbar topbar--page">
@@ -1522,6 +1655,22 @@
       <div class="modal-actions">
         <button class="btn btn--ghost" type="button" data-action="password-cancel">取消</button>
         <button class="btn btn--primary" type="button" data-action="password-confirm">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 编辑消息弹窗（批次3 v2.8.0） ============================ -->
+  <div class="modal modal--center" id="edit-message-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="edit-message-title">
+    <div class="modal-panel">
+      <div class="modal-title" id="edit-message-title">编辑消息</div>
+      <div class="modal-body">
+        <textarea class="input input--textarea edit-message-input" id="edit-message-input" rows="5" placeholder="修改消息内容…" spellcheck="false"></textarea>
+        <div class="modal-error" id="edit-message-error" role="alert" hidden></div>
+        <p class="modal-hint">保存后将从这条消息重新生成回复，后续消息会被截断。</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--ghost" type="button" data-action="edit-message-cancel">取消</button>
+        <button class="btn btn--primary" type="button" data-action="edit-message-save">保存并重新生成</button>
       </div>
     </div>
   </div>
