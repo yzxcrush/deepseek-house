@@ -256,6 +256,7 @@
     bots: {
       list: [],
       messages: {},
+      targets: {},
       currentId: null,
       form: { id: null, type: 'telegram', editing: false }
     }
@@ -6546,10 +6547,13 @@
   /* ================================================================== *
    * v3.0.0：Bot 集成（Telegram / QQ OneBot）
    * ================================================================== */
-  var BOT_TYPE_LABELS = { telegram: 'Telegram Bot', onebot: 'QQ OneBot' };
+  var BOT_TYPE_LABELS = { telegram: 'Telegram Bot', onebot: 'QQ OneBot', qqbot: 'QQ 官方机器人' };
 
   function normalizeBotType(type) {
-    return String(type == null ? '' : type).toLowerCase() === 'onebot' ? 'onebot' : 'telegram';
+    var value = String(type == null ? '' : type).toLowerCase().replace(/-/g, '_');
+    if (value === 'qqbot' || value === 'qq_official' || value === 'official_qq' || value === 'qq') return 'qqbot';
+    if (value === 'onebot') return 'onebot';
+    return 'telegram';
   }
 
   function normalizeBotStatus(value) {
@@ -6600,8 +6604,12 @@
       type: type,
       name: item.name ? String(item.name) : BOT_TYPE_LABELS[type],
       enabled: item.enabled !== false,
-      autoReply: item.autoReply === true || item.auto_reply === true,
+      autoReply: type === 'qqbot' ? false : (item.autoReply === true || item.auto_reply === true),
       status: status.key,
+      appId: item.appId != null ? String(item.appId) : '',
+      appIdMasked: item.appIdMasked ? String(item.appIdMasked) : '',
+      appSecretMasked: item.appSecretMasked ? String(item.appSecretMasked) : '',
+      sandbox: item.sandbox === true || String(item.env || '').toLowerCase() === 'sandbox',
       statusMessage: status.message,
       baseUrl: item.baseUrl ? String(item.baseUrl) : '',
       whitelist: whitelist,
@@ -6672,7 +6680,7 @@
     var card = el('div', 'bot-card');
     card.setAttribute('data-bot-id', bot.id);
     var head = el('div', 'bot-card-head');
-    var icon = makeText('span', 'bot-card-icon', bot.type === 'telegram' ? '✈' : 'Q');
+    var icon = makeText('span', 'bot-card-icon', bot.type === 'telegram' ? '✈' : (bot.type === 'qqbot' ? 'QQ' : 'Q'));
     head.appendChild(icon);
     var main = el('div', 'bot-card-main');
     var nameRow = el('div', 'bot-card-name-row');
@@ -6700,9 +6708,14 @@
     card.appendChild(head);
 
     var meta = el('div', 'bot-card-meta');
-    if (bot.autoReply) meta.appendChild(makeText('span', 'bot-meta-chip is-on', '自动回复'));
-    else meta.appendChild(makeText('span', 'bot-meta-chip', '自动回复关闭'));
-    meta.appendChild(makeText('span', 'bot-meta-chip', bot.type === 'onebot' ? (bot.baseUrl || '未配置 Base URL') : 'Telegram Bot API'));
+    if (bot.type === 'qqbot') {
+      meta.appendChild(makeText('span', 'bot-meta-chip is-on', bot.sandbox ? '沙箱环境' : '正式环境'));
+      if (bot.appIdMasked || bot.appId) meta.appendChild(makeText('span', 'bot-meta-chip', 'AppID ' + (bot.appIdMasked || bot.appId)));
+    } else {
+      if (bot.autoReply) meta.appendChild(makeText('span', 'bot-meta-chip is-on', '自动回复'));
+      else meta.appendChild(makeText('span', 'bot-meta-chip', '自动回复关闭'));
+      meta.appendChild(makeText('span', 'bot-meta-chip', bot.type === 'onebot' ? (bot.baseUrl || '未配置 Base URL') : 'Telegram Bot API'));
+    }
     if (bot.whitelist.length) meta.appendChild(makeText('span', 'bot-meta-chip', '白名单 ' + bot.whitelist.length));
     card.appendChild(meta);
 
@@ -6752,6 +6765,16 @@
     if (telegramGroup) telegramGroup.hidden = value !== 'telegram';
     var onebotGroup = r('bot-field-onebot');
     if (onebotGroup) onebotGroup.hidden = value !== 'onebot';
+    var qqbotGroup = r('bot-field-qqbot');
+    if (qqbotGroup) qqbotGroup.hidden = value !== 'qqbot';
+    var autoWrap = r('bot-auto-reply-wrap');
+    if (autoWrap) autoWrap.hidden = value === 'qqbot';
+    var qqbotHint = r('bot-qqbot-hint');
+    if (qqbotHint) qqbotHint.hidden = value !== 'qqbot';
+    if (value === 'qqbot') {
+      var auto = r('bot-field-auto-reply');
+      if (auto) auto.checked = false;
+    }
   }
 
   function botFormError(text) {
@@ -6783,6 +6806,19 @@
     setVal('bot-field-token', '');
     setVal('bot-field-onebot-token', '');
     setVal('bot-field-onebot-base', bot && bot.baseUrl ? bot.baseUrl : 'http://127.0.0.1:3000');
+    setVal('bot-field-app-id', '');
+    setVal('bot-field-app-secret', '');
+    var appIdInput = r('bot-field-app-id');
+    if (appIdInput) appIdInput.placeholder = bot && bot.appIdMasked ? ('当前：' + bot.appIdMasked + '（留空保持不变）') : 'QQ 开放平台机器人 AppID';
+    var appSecretInput = r('bot-field-app-secret');
+    if (appSecretInput) {
+      appSecretInput.type = 'password';
+      appSecretInput.placeholder = bot ? '留空保持不变（仅保存在本机）' : 'QQ 开放平台机器人 ClientSecret';
+    }
+    var secretToggle = r('bot-secret-toggle');
+    if (secretToggle) secretToggle.classList.remove('is-on');
+    var sandboxInput = r('bot-field-sandbox');
+    if (sandboxInput) sandboxInput.checked = bot ? !!bot.sandbox : false;
     var tokenInput = r('bot-field-token');
     if (tokenInput) tokenInput.placeholder = bot ? '留空保持不变（仅保存在本机）' : '123456789:AA…（从 @BotFather 获取）';
     var onebotTokenInput = r('bot-field-onebot-token');
@@ -6819,7 +6855,7 @@
       : [];
     var cooldown = Number(r('bot-field-cooldown') ? r('bot-field-cooldown').value : 8);
     var limit = Number(r('bot-field-limit') ? r('bot-field-limit').value : 60);
-    return {
+    var cfg = {
       id: state.bots.form.id || undefined,
       type: state.bots.form.type || 'telegram',
       name: String((r('bot-field-name') || {}).value || '').trim(),
@@ -6831,8 +6867,26 @@
       cooldownSec: isFinite(cooldown) ? Math.max(1, Math.min(3600, Math.round(cooldown))) : 8,
       hourlyLimit: isFinite(limit) ? Math.max(1, Math.min(600, Math.round(limit))) : 60,
       systemPrompt: String((r('bot-field-prompt') || {}).value || ''),
-      whitelist: whitelist
+      whitelist: whitelist,
+      appId: String((r('bot-field-app-id') || {}).value || '').trim(),
+      secret: String((r('bot-field-app-secret') || {}).value || '').trim(),
+      sandbox: !!(r('bot-field-sandbox') && r('bot-field-sandbox').checked)
     };
+    if (cfg.type === 'qqbot') {
+      cfg.autoReply = false;
+      cfg.token = '';
+      cfg.accessToken = '';
+      cfg.baseUrl = '';
+    } else if (cfg.type === 'telegram') {
+      cfg.appId = '';
+      cfg.secret = '';
+      cfg.sandbox = false;
+    } else if (cfg.type === 'onebot') {
+      cfg.appId = '';
+      cfg.secret = '';
+      cfg.sandbox = false;
+    }
+    return cfg;
   }
 
   function validateBotForm(cfg) {
@@ -6841,6 +6895,11 @@
     if (cfg.type === 'onebot') {
       if (!cfg.baseUrl) return '请填写 OneBot Base URL';
       if (!/^https?:\/\//i.test(cfg.baseUrl)) return 'Base URL 需以 http:// 或 https:// 开头';
+    }
+    if (cfg.type === 'qqbot') {
+      if (!state.bots.form.id && !cfg.appId) return '请填写 QQ 开放平台 AppID';
+      if (!state.bots.form.id && !cfg.secret) return '请填写 QQ 开放平台 ClientSecret';
+      if (cfg.appId && !/^\d{5,20}$/.test(cfg.appId)) return 'AppID 应为 5-20 位数字';
     }
     return '';
   }
@@ -6977,8 +7036,76 @@
     if (dot) {
       dot.className = 'bot-status-dot ' + botStatusClass(bot ? bot.status : 'idle');
     }
+    var meta = r('bot-detail-meta');
+    if (meta) {
+      meta.textContent = '';
+      if (bot) {
+        meta.hidden = false;
+        meta.appendChild(makeText('span', 'bot-detail-chip is-accent', BOT_TYPE_LABELS[bot.type] || 'Bot'));
+        if (bot.type === 'qqbot') {
+          meta.appendChild(makeText('span', 'bot-detail-chip is-sandbox', bot.sandbox ? '沙箱环境' : '正式环境'));
+          var masked = bot.appIdMasked || bot.appId;
+          if (masked) meta.appendChild(makeText('span', 'bot-detail-chip', 'AppID ' + masked));
+        } else if (bot.type === 'onebot' && bot.baseUrl) {
+          meta.appendChild(makeText('span', 'bot-detail-chip', bot.baseUrl));
+        }
+      } else {
+        meta.hidden = true;
+      }
+    }
+    var chatHint = r('bot-detail-chat-hint');
+    var chatInput = r('bot-detail-chat-id');
+    if (chatHint) {
+      if (bot && bot.type === 'qqbot') {
+        chatHint.hidden = false;
+        chatHint.textContent = '格式：channel:<guildId>:<channelId> / group:<group_openid> / user:<openid>';
+        if (chatInput) chatInput.placeholder = 'channel:<guildId>:<channelId> 等';
+      } else if (bot && bot.type === 'onebot') {
+        chatHint.hidden = false;
+        chatHint.textContent = '格式：用户 ID 或 group:<群号>（私聊/群聊）';
+        if (chatInput) chatInput.placeholder = '用户 ID 或 group:<群号>';
+      } else {
+        chatHint.hidden = true;
+        if (chatInput) chatInput.placeholder = 'chatId（可空）';
+      }
+    }
+    var messagesLabel = r('bot-detail-messages-label');
+    if (messagesLabel) messagesLabel.textContent = bot && bot.type === 'qqbot' ? '发送记录' : '最近消息';
     updateBotDetailCount();
     return bot;
+  }
+
+  function renderBotTargets(list) {
+    var raw = list && typeof list === 'object' && !Array.isArray(list) ? list.targets : list;
+    var targets = (Array.isArray(raw) ? raw : []).map(function (item) {
+      if (!item || typeof item !== 'object') return null;
+      var id = item.id != null ? String(item.id) : '';
+      if (!id) return null;
+      return { id: id, label: item.label != null ? String(item.label) : id, type: item.type ? String(item.type) : '' };
+    }).filter(Boolean);
+    var botId = state.bots.currentId;
+    if (botId) state.bots.targets[botId] = targets;
+    var box = r('bot-detail-targets-list');
+    if (box) {
+      box.textContent = '';
+      targets.forEach(function (target) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'bot-target';
+        btn.setAttribute('data-action', 'bot-target');
+        btn.setAttribute('data-target-id', target.id);
+        var iconText = target.id.indexOf('channel:') === 0 ? '频道' : (target.id.indexOf('group:') === 0 ? '群' : '用户');
+        btn.appendChild(makeText('span', 'bot-target-icon', iconText));
+        var main = el('div', 'bot-target-main');
+        main.appendChild(makeText('span', 'bot-target-label', target.label));
+        main.appendChild(makeText('span', 'bot-target-id', target.id));
+        btn.appendChild(main);
+        box.appendChild(btn);
+      });
+    }
+    var empty = r('bot-detail-targets-empty');
+    if (empty) empty.hidden = targets.length > 0;
+    return targets;
   }
 
   function openBotDetail(id) {
@@ -6992,6 +7119,12 @@
     if (error) { error.textContent = ''; error.hidden = true; }
     setVal('bot-detail-send-text', '');
     setVal('bot-detail-chat-id', '');
+    var targetsBox = r('bot-detail-targets');
+    if (targetsBox) targetsBox.hidden = bot.type !== 'qqbot';
+    if (bot.type === 'qqbot') {
+      renderBotTargets(state.bots.targets[bot.id] || []);
+      if (typeof state.cb.onBotTargets === 'function') invoke('onBotTargets', bot.id);
+    }
     openModal(r('bot-detail-modal'));
     if (typeof state.cb.onOpenBotDetail === 'function') invoke('onOpenBotDetail', bot.id);
     else if (typeof state.cb.onBotFetchMessages === 'function') invoke('onBotFetchMessages', bot.id);
@@ -7080,6 +7213,10 @@
     var chatId = chatInput ? String(chatInput.value || '').trim() : '';
     if (!text) {
       botDetailError('请输入要发送的测试消息');
+      return;
+    }
+    if (bot.type === 'qqbot' && chatId && !/^(user|group|channel):/i.test(chatId)) {
+      botDetailError('QQ 官方机器人 chatId 需为 user: / group: / channel: 格式');
       return;
     }
     botDetailError('');
@@ -9257,6 +9394,30 @@
       case 'bot-type':
         setBotFormType(node.getAttribute('data-type'));
         break;
+      case 'bot-secret-toggle': {
+        var secretInput = r('bot-field-app-secret');
+        if (secretInput) {
+          var show = secretInput.type === 'password';
+          secretInput.type = show ? 'text' : 'password';
+          node.classList.toggle('is-on', show);
+          node.setAttribute('aria-pressed', show ? 'true' : 'false');
+        }
+        break;
+      }
+      case 'bot-target': {
+        var targetId = node.getAttribute('data-target-id');
+        if (targetId) {
+          setVal('bot-detail-chat-id', targetId);
+          botDetailError('');
+          var targetBox = r('bot-detail-targets-list');
+          if (targetBox) {
+            Array.prototype.forEach.call(targetBox.querySelectorAll('.bot-target'), function (item) {
+              item.classList.toggle('is-selected', item === node);
+            });
+          }
+        }
+        break;
+      }
       case 'market-install':
         installMarketItem(node.getAttribute('data-id'));
         break;
@@ -10094,7 +10255,12 @@
       'bot-field-prompt', 'bot-field-whitelist', 'bot-form-error', 'bot-form-status',
       'bot-detail-modal', 'bot-detail-name', 'bot-detail-sub', 'bot-detail-status',
       'bot-detail-status-dot', 'bot-detail-count', 'bot-detail-messages', 'bot-detail-messages-empty',
-      'bot-detail-send-text', 'bot-detail-chat-id', 'bot-detail-error'
+      'bot-detail-send-text', 'bot-detail-chat-id', 'bot-detail-error',
+      /* v3.1.0：QQ 官方机器人 */
+      'bot-field-qqbot', 'bot-field-app-id', 'bot-field-app-secret', 'bot-secret-toggle',
+      'bot-field-sandbox', 'bot-auto-reply-wrap', 'bot-qqbot-hint',
+      'bot-detail-meta', 'bot-detail-targets', 'bot-detail-targets-list', 'bot-detail-targets-empty',
+      'bot-detail-chat-hint', 'bot-detail-messages-label'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -10784,6 +10950,10 @@
   UI.renderBotMessages = function (list) { return renderBotMessages(list); };
   UI.setBotStatus = setBotStatus;
   UI.appendBotMessage = appendBotMessage;
+  UI.renderBotTargets = function (list) { return renderBotTargets(list); };
+  UI.getBotTargets = function () {
+    return state.bots.currentId ? (state.bots.targets[state.bots.currentId] || []).slice() : [];
+  };
   UI.getBots = function () { return (state.bots.list || []).slice(); };
   UI.getBotState = function () {
     return {
@@ -10810,5 +10980,5 @@
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '3.0.0';
+  UI.version = '3.1.0';
 })();

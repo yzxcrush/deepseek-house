@@ -309,7 +309,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v3.0.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v3.1.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -834,7 +834,7 @@
 
         <div class="section-label" data-i18n="settings.about">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>3.0.0</span></div>
+          <div class="about-row"><span>版本</span><span>3.1.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -1583,7 +1583,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v3.0.0</span>
+      <span class="drawer-version">v3.1.0</span>
     </div>
   </aside>
 
@@ -1727,6 +1727,10 @@
             <span class="bot-type-icon">✈</span>
             <span>Telegram Bot</span>
           </button>
+          <button class="bot-type" type="button" data-action="bot-type" data-type="qqbot" role="tab" aria-selected="false">
+            <span class="bot-type-icon">QQ</span>
+            <span>QQ 官方机器人</span>
+          </button>
           <button class="bot-type" type="button" data-action="bot-type" data-type="onebot" role="tab" aria-selected="false">
             <span class="bot-type-icon">Q</span>
             <span>QQ OneBot</span>
@@ -1758,6 +1762,39 @@
           </div>
         </div>
 
+        <div id="bot-field-qqbot" hidden>
+          <div class="form-row form-row--col">
+            <span class="form-label">AppID</span>
+            <input class="input" id="bot-field-app-id" type="text" inputmode="numeric" placeholder="QQ 开放平台机器人 AppID" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <span class="form-hint">在 QQ 开放平台（q.qq.com）机器人设置中获取 AppID；仅保存在本机设备私有存储。</span>
+          </div>
+          <div class="form-row form-row--col">
+            <span class="form-label">ClientSecret</span>
+            <div class="bot-secret-row">
+              <input class="input" id="bot-field-app-secret" type="password" placeholder="QQ 开放平台机器人 ClientSecret" autocomplete="off" autocapitalize="off" spellcheck="false">
+              <button class="icon-btn bot-secret-toggle" id="bot-secret-toggle" type="button" data-action="bot-secret-toggle" aria-label="显示 / 隐藏 ClientSecret">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12Z"></path>
+                  <circle cx="12" cy="12" r="2.6"></circle>
+                </svg>
+              </button>
+            </div>
+            <span class="form-hint">ClientSecret 用于获取 access_token；建议仅在本机使用，不要分享给他人。</span>
+          </div>
+          <div class="form-row">
+            <span class="form-label">沙箱环境</span>
+            <span class="form-control">
+              <label class="switch">
+                <input type="checkbox" id="bot-field-sandbox">
+                <span class="switch-track"></span>
+              </label>
+            </span>
+          </div>
+          <div class="form-row form-row--col">
+            <span class="form-hint">沙箱环境仅能向沙箱配置的频道/群发送；上线前请切换到正式环境并重新测试。</span>
+          </div>
+        </div>
+
         <div class="form-row">
           <span class="form-label">启用</span>
           <span class="form-control">
@@ -1768,28 +1805,32 @@
           </span>
         </div>
 
-        <div class="form-row">
-          <span class="form-label">自动回复</span>
-          <span class="form-control">
-            <label class="switch">
-              <input type="checkbox" id="bot-field-auto-reply">
-              <span class="switch-track"></span>
-            </label>
-          </span>
-        </div>
-        <div class="bot-risk-hint" id="bot-risk-hint">
-          仅用于合规 Bot API 的自动回复；不要用于真人账号骚扰或欺诈。开启需二次确认，并受冷却时间与每小时上限限制。
-        </div>
-
-        <div class="bot-field-grid">
-          <div class="form-row form-row--col">
-            <span class="form-label">冷却（秒）</span>
-            <input class="input" id="bot-field-cooldown" type="number" min="1" max="3600" step="1" value="8">
+        <div id="bot-auto-reply-wrap">
+          <div class="form-row">
+            <span class="form-label">自动回复</span>
+            <span class="form-control">
+              <label class="switch">
+                <input type="checkbox" id="bot-field-auto-reply">
+                <span class="switch-track"></span>
+              </label>
+            </span>
           </div>
-          <div class="form-row form-row--col">
-            <span class="form-label">每小时上限</span>
-            <input class="input" id="bot-field-limit" type="number" min="1" max="600" step="1" value="60">
+          <div class="bot-risk-hint" id="bot-risk-hint">
+            仅用于合规 Bot API 的自动回复；不要用于真人账号骚扰或欺诈。开启需二次确认，并受冷却时间与每小时上限限制。
           </div>
+          <div class="bot-field-grid">
+            <div class="form-row form-row--col">
+              <span class="form-label">冷却（秒）</span>
+              <input class="input" id="bot-field-cooldown" type="number" min="1" max="3600" step="1" value="8">
+            </div>
+            <div class="form-row form-row--col">
+              <span class="form-label">每小时上限</span>
+              <input class="input" id="bot-field-limit" type="number" min="1" max="600" step="1" value="60">
+            </div>
+          </div>
+        </div>
+        <div class="bot-qqbot-hint" id="bot-qqbot-hint" hidden>
+          QQ 官方机器人当前仅支持主动发送消息；自动收发需 WebSocket 网关，后续版本支持。
         </div>
 
         <div class="form-row form-row--col">
@@ -1803,7 +1844,7 @@
           <span class="form-hint">留空表示允许所有会话（不推荐）；建议只填自己的 chatId 或群 ID。</span>
         </div>
 
-        <div class="bot-privacy-note">🔒 Token 仅保存在本机设备私有存储；不会上传到 DeepSeek 服务器，也不会写入聊天记录。</div>
+        <div class="bot-privacy-note">🔒 Token / AppID / ClientSecret 仅保存在本机设备私有存储；不会上传到 DeepSeek 服务器，也不会写入聊天记录。</div>
         <div class="bot-form-status" id="bot-form-status" hidden></div>
         <div class="modal-error" id="bot-form-error" role="alert" hidden></div>
       </div>
@@ -1835,13 +1876,21 @@
           <span class="bot-detail-status-text" id="bot-detail-status">未连接</span>
           <span class="bot-detail-count" id="bot-detail-count"></span>
         </div>
+        <div class="bot-detail-meta" id="bot-detail-meta" hidden></div>
 
-        <div class="section-label">最近消息</div>
+        <div class="bot-targets" id="bot-detail-targets" hidden>
+          <div class="section-label">可选目标</div>
+          <div class="bot-target-list" id="bot-detail-targets-list"></div>
+          <div class="bot-targets-empty" id="bot-detail-targets-empty" hidden>请先在 QQ 开放平台把机器人加入频道</div>
+        </div>
+
+        <div class="section-label" id="bot-detail-messages-label">最近消息</div>
         <div class="bot-messages" id="bot-detail-messages"></div>
         <div class="bot-messages-empty" id="bot-detail-messages-empty" hidden>还没有收到消息</div>
 
         <div class="bot-send-box">
-          <input class="input" id="bot-detail-chat-id" type="text" placeholder="chatId（可空；OneBot 可用 group:群号）" autocomplete="off" spellcheck="false">
+          <input class="input" id="bot-detail-chat-id" type="text" placeholder="chatId（可空）" autocomplete="off" spellcheck="false">
+          <div class="bot-send-hint" id="bot-detail-chat-hint" hidden></div>
           <div class="bot-send-row">
             <input class="input" id="bot-detail-send-text" type="text" placeholder="发送测试消息…" autocomplete="off" maxlength="2000">
             <button class="btn btn--primary bot-send-btn" type="button" data-action="bot-send-test">发送</button>

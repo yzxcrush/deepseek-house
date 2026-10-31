@@ -1155,6 +1155,20 @@
         status: 'stopped', running: false, recentCount: 0, createdAt: 0
       },
       {
+        id: 'mock.qqbot', type: 'qqbot', name: '演示 QQ 官方机器人',
+        token: '', accessToken: '', appId: '102000001', secret: 'mock-secret', sandbox: true,
+        baseUrl: '', enabled: false, autoReply: false, whitelist: [], systemPrompt: '',
+        cooldownSec: 8, hourlyLimit: 60,
+        status: 'stopped', running: false, recentCount: 0, createdAt: 0
+      },
+      {
+        id: 'mock.qqbot', type: 'qqbot', name: '演示 QQ 官方机器人',
+        token: '', accessToken: '', appId: '102000001', secret: 'mock-secret', sandbox: true,
+        baseUrl: '', enabled: false, autoReply: false, whitelist: [], systemPrompt: '',
+        cooldownSec: 8, hourlyLimit: 60,
+        status: 'stopped', running: false, recentCount: 0, createdAt: 0
+      },
+      {
         id: 'mock.onebot', type: 'onebot', name: '演示 QQ OneBot',
         token: '', accessToken: 'mock-access-token', baseUrl: 'http://127.0.0.1:3000',
         enabled: false, autoReply: false, whitelist: [], systemPrompt: '',
@@ -1187,7 +1201,8 @@
 
   function mockBotSave(config) {
     if (!config || typeof config !== 'object') return false;
-    var type = String(config.type || 'telegram') === 'onebot' ? 'onebot' : 'telegram';
+    var rawType = String(config.type || 'telegram').toLowerCase();
+    var type = rawType === 'onebot' ? 'onebot' : (rawType === 'qqbot' ? 'qqbot' : 'telegram');
     var target = mockBotFind(config.id);
     if (!target) {
       mockBotSeq++;
@@ -1206,12 +1221,20 @@
     if (config.accessToken !== undefined && String(config.accessToken) !== '') target.accessToken = String(config.accessToken).slice(0, 600);
     if (config.baseUrl !== undefined) target.baseUrl = String(config.baseUrl || '').slice(0, 300);
     if (target.type === 'onebot' && !target.baseUrl) target.baseUrl = 'http://127.0.0.1:3000';
+    if (config.appId !== undefined && String(config.appId) !== '') target.appId = String(config.appId).slice(0, 200);
+    if (config.secret !== undefined && String(config.secret) !== '') target.secret = String(config.secret).slice(0, 600);
+    if (config.sandbox !== undefined) target.sandbox = !!config.sandbox;
     if (config.enabled !== undefined) target.enabled = !!config.enabled;
     if (config.autoReply !== undefined) target.autoReply = !!config.autoReply;
     if (Array.isArray(config.whitelist)) target.whitelist = config.whitelist.slice(0, 50).map(function (v) { return String(v); });
     if (config.systemPrompt !== undefined) target.systemPrompt = String(config.systemPrompt || '').slice(0, 4000);
     if (config.cooldownSec !== undefined) target.cooldownSec = Math.max(3, Math.min(300, Math.round(Number(config.cooldownSec) || 8)));
     if (config.hourlyLimit !== undefined) target.hourlyLimit = Math.max(1, Math.min(600, Math.round(Number(config.hourlyLimit) || 60)));
+    if (target.type === 'qqbot') {
+      target.autoReply = false;
+      if (!String(target.appId || '').trim() || !String(target.secret || '').trim()) return false;
+      if (target.baseUrl && !/^https:\/\//i.test(String(target.baseUrl))) return false;
+    }
     target.updatedAt = Date.now();
     return true;
   }
@@ -1270,10 +1293,14 @@
     var bot = mockBotFind(id);
     if (!bot) { mockBotStatus(id, 'error', '机器人不存在'); return false; }
     var invalid = (bot.type === 'telegram' && /invalid/i.test(String(bot.token || ''))) ||
-      (bot.type === 'onebot' && /invalid/i.test(String(bot.accessToken || '')));
+      (bot.type === 'onebot' && /invalid/i.test(String(bot.accessToken || ''))) ||
+      (bot.type === 'qqbot' && (/invalid/i.test(String(bot.appId || '')) || /invalid/i.test(String(bot.secret || ''))));
     if (invalid) { mockBotStatus(bot.id, 'error', '连接失败：凭证无效'); return false; }
     if (bot.type === 'telegram' && !bot.token) { mockBotStatus(bot.id, 'error', '缺少 Telegram Bot Token'); return false; }
-    mockBotStatus(bot.id, 'connected', bot.type === 'telegram' ? ('@' + bot.name.replace(/\s+/g, '_')) : 'QQ 已连接');
+    if (bot.type === 'qqbot' && (!bot.appId || !bot.secret)) { mockBotStatus(bot.id, 'error', '缺少 QQ 机器人 AppID 或 Secret'); return false; }
+    mockBotStatus(bot.id, 'connected', bot.type === 'telegram'
+      ? ('@' + bot.name.replace(/\s+/g, '_'))
+      : (bot.type === 'qqbot' ? ('QQ 机器人已连接' + (bot.sandbox ? '（沙箱）' : '')) : 'QQ 已连接'));
     return true;
   }
 
@@ -1289,6 +1316,10 @@
       emitAgentLater(10, { type: 'bot-sent', botId: bot.id, chatId: '', ok: false, messageId: '', error: '缺少会话/收件人' });
       return false;
     }
+    if (bot.type === 'qqbot' && !/^(user|group|channel):/.test(cid)) {
+      emitAgentLater(10, { type: 'bot-sent', botId: bot.id, chatId: cid, ok: false, messageId: '', error: 'QQ 机器人 chatId 需为 user:<openid> / group:<group_openid> / channel:<guild>:<channel>' });
+      return false;
+    }
     mockBotSeq++;
     var message = {
       botId: bot.id, chatId: cid, from: 'me', fromName: '我', text: content,
@@ -1298,6 +1329,34 @@
     if (mockBotMessages.length > 400) mockBotMessages.shift();
     emitAgentLater(10, { type: 'bot-sent', botId: bot.id, chatId: cid, ok: true, messageId: message.messageId, error: '' });
     return true;
+  }
+
+  function mockBotTargets(botId) {
+    var bot = mockBotFind(botId);
+    if (!bot) return [];
+    if (bot.type === 'telegram') {
+      var seen = {};
+      var out = [];
+      for (var i = mockBotMessages.length - 1; i >= 0 && out.length < 20; i--) {
+        var m = mockBotMessages[i];
+        if (!m || m.botId !== bot.id || !m.chatId || seen[m.chatId]) continue;
+        seen[m.chatId] = true;
+        out.push({ id: m.chatId, label: m.fromName || m.chatId, type: 'chat', chatId: m.chatId });
+      }
+      return out;
+    }
+    if (bot.type === 'onebot') {
+      return [
+        { id: 'private:10001', label: '测试好友 · 10001', type: 'chat', userId: '10001' },
+        { id: 'group:20001', label: '测试群 · 20001', type: 'chat', groupId: '20001' }
+      ];
+    }
+    return [
+      { id: 'channel:mock_guild_001:mock_channel_001', label: '测试频道 · #综合', type: 'channel', guildId: 'mock_guild_001', channelId: 'mock_channel_001' },
+      { id: 'channel:mock_guild_001:mock_channel_002', label: '测试频道 · #闲聊', type: 'channel', guildId: 'mock_guild_001', channelId: 'mock_channel_002' },
+      { id: 'group:mock_group_openid_001', label: '测试群 · mock 群', type: 'group', groupOpenid: 'mock_group_openid_001' },
+      { id: 'user:mock_user_openid_001', label: '测试用户 · 小明', type: 'user', openid: 'mock_user_openid_001' }
+    ];
   }
 
   function mockBotReceive(botId, chatId, text, from, fromName) {
@@ -1323,7 +1382,8 @@
 
   function normalizeBotFront(raw) {
     if (!raw || typeof raw !== 'object') return null;
-    var type = String(raw.type || 'telegram').toLowerCase() === 'onebot' ? 'onebot' : 'telegram';
+    var rawType = String(raw.type || 'telegram').toLowerCase();
+    var type = rawType === 'onebot' ? 'onebot' : (rawType === 'qqbot' ? 'qqbot' : 'telegram');
     var id = raw.id === undefined || raw.id === null ? '' : String(raw.id);
     if (!id) return null;
     var whitelist = [];
@@ -1341,12 +1401,15 @@
     return {
       id: id,
       type: type,
-      name: String(raw.name === undefined || raw.name === null ? '' : raw.name).slice(0, 80) || (type === 'onebot' ? 'QQ Bot' : 'Telegram Bot'),
+      name: String(raw.name === undefined || raw.name === null ? '' : raw.name).slice(0, 80) || (type === 'onebot' ? 'QQ Bot' : (type === 'qqbot' ? 'QQ 官方机器人' : 'Telegram Bot')),
       token: String(raw.token === undefined || raw.token === null ? '' : raw.token).slice(0, 600),
       accessToken: String(raw.accessToken === undefined || raw.accessToken === null ? '' : raw.accessToken).slice(0, 600),
+      appId: String(raw.appId === undefined || raw.appId === null ? '' : raw.appId).slice(0, 200),
+      secret: String(raw.secret === undefined || raw.secret === null ? '' : raw.secret).slice(0, 600),
+      sandbox: raw.sandbox === undefined || raw.sandbox === null ? false : !!raw.sandbox,
       baseUrl: String(raw.baseUrl === undefined || raw.baseUrl === null ? '' : raw.baseUrl).slice(0, 300),
       enabled: !!raw.enabled,
-      autoReply: !!raw.autoReply,
+      autoReply: type === 'qqbot' ? false : !!raw.autoReply,
       whitelist: whitelist,
       systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 4000),
       cooldownSec: num(raw.cooldownSec !== undefined ? raw.cooldownSec : 8, 3, 300, 8),
@@ -1879,7 +1942,8 @@
     botStop: ['botStop'],
     botTest: ['botTest'],
     botSend: ['botSend'],
-    botRecent: ['botRecent']
+    botRecent: ['botRecent'],
+    botTargets: ['botTargets', 'qqBotTargets']
   };
 
   function botNativeName(op) {
@@ -3376,6 +3440,35 @@
           messageId: msg.messageId ? String(msg.messageId) : '',
           error: msg.error ? String(msg.error) : ''
         });
+      }
+      return out;
+    },
+
+    /** v3.1.0：QQ 官方机器人可发送目标（频道/群/用户）；失败返回 [] */
+    botTargets: function (botId) {
+      var id = String(botId === null || botId === undefined ? '' : botId);
+      if (!id) return [];
+      var name = botNativeName('botTargets');
+      var raw = null;
+      if (name) raw = callNative(name, [id], true);
+      else raw = mockBotTargets(id);
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length && out.length < 200; i++) {
+        var item = raw[i];
+        if (!item || typeof item !== 'object') continue;
+        var targetId = item.id === undefined || item.id === null ? '' : String(item.id);
+        if (!targetId) continue;
+        var target = {
+          id: targetId,
+          label: item.label === undefined || item.label === null ? targetId : String(item.label).slice(0, 200),
+          type: String(item.type || (targetId.indexOf('channel:') === 0 ? 'channel' : (targetId.indexOf('group:') === 0 ? 'group' : 'user'))),
+          guildId: item.guildId ? String(item.guildId) : '',
+          channelId: item.channelId ? String(item.channelId) : '',
+          groupOpenid: item.groupOpenid ? String(item.groupOpenid) : '',
+          openid: item.openid ? String(item.openid) : ''
+        };
+        out.push(target);
       }
       return out;
     },

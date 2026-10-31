@@ -277,10 +277,11 @@
   /** v3.0.0：机器人配置归一化（type/name/token/baseUrl/autoReply/whitelist/限流） */
   function normalizeBotConfig(raw) {
     if (!raw || typeof raw !== 'object') return null;
-    var type = String(raw.type || 'telegram').toLowerCase() === 'onebot' ? 'onebot' : 'telegram';
+    var rawType = String(raw.type || 'telegram').toLowerCase();
+    var type = rawType === 'onebot' ? 'onebot' : (rawType === 'qqbot' ? 'qqbot' : 'telegram');
     var id = raw.id === undefined || raw.id === null ? '' : String(raw.id).slice(0, 120);
     var name = String(raw.name === undefined || raw.name === null ? '' : raw.name).slice(0, 80);
-    if (!name) name = type === 'onebot' ? 'QQ Bot' : 'Telegram Bot';
+    if (!name) name = type === 'onebot' ? 'QQ Bot' : (type === 'qqbot' ? 'QQ 官方机器人' : 'Telegram Bot');
     var baseUrl = String(raw.baseUrl === undefined || raw.baseUrl === null ? '' : raw.baseUrl).slice(0, 300);
     if (type === 'onebot' && !baseUrl) baseUrl = 'http://127.0.0.1:3000';
     var whitelist = [];
@@ -290,15 +291,20 @@
         if (chatId) whitelist.push(chatId.slice(0, 120));
       }
     }
+    var isQqBot = type === 'qqbot';
     return {
       id: id,
       type: type,
       name: name,
       token: String(raw.token === undefined || raw.token === null ? '' : raw.token).slice(0, 600),
       accessToken: String(raw.accessToken === undefined || raw.accessToken === null ? '' : raw.accessToken).slice(0, 600),
+      appId: String(raw.appId === undefined || raw.appId === null ? '' : raw.appId).slice(0, 200),
+      secret: String(raw.secret === undefined || raw.secret === null ? '' : raw.secret).slice(0, 600),
+      sandbox: raw.sandbox === undefined || raw.sandbox === null ? false : !!raw.sandbox,
       baseUrl: baseUrl,
       enabled: !!raw.enabled,
-      autoReply: !!raw.autoReply,
+      /* QQ 官方机器人无接收通道：自动回复强制关闭 */
+      autoReply: isQqBot ? false : !!raw.autoReply,
       whitelist: whitelist,
       systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 4000),
       cooldownSec: Math.round(clampNum(raw.cooldownSec !== undefined ? raw.cooldownSec : 8, 3, 300)),

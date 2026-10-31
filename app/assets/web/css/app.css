@@ -8814,3 +8814,176 @@ html.glass-frost .bot-type {
   -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
   backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
 }
+
+/* ==========================================================================
+   v3.1.0：QQ 官方机器人（qqbot）UI
+   ========================================================================== */
+
+/* 三段类型 */
+#bot-type-list .bot-type {
+  flex: 1 1 0;
+  padding: 9px 5px;
+  font-size: 11.5px;
+  gap: 5px;
+}
+
+#bot-type-list .bot-type-icon {
+  width: 20px;
+  height: 20px;
+  font-size: 10.5px;
+}
+
+/* ClientSecret 显示切换 */
+.bot-secret-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.bot-secret-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bot-secret-toggle {
+  flex: none;
+  width: 38px;
+  height: 40px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #b9b9b9;
+}
+
+.bot-secret-toggle.is-on {
+  color: var(--accent-2);
+  background-color: rgba(81, 122, 246, 0.16);
+}
+
+/* qqbot 提示 */
+.bot-qqbot-hint {
+  margin: 2px 0 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: rgba(81, 122, 246, 0.1);
+  color: #9db6ff;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* 详情 meta 芯片 */
+.bot-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: -2px 0 8px;
+}
+
+.bot-detail-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: #8b8b8b;
+  font-size: 10.5px;
+  line-height: 1.7;
+}
+
+.bot-detail-chip.is-accent {
+  background-color: rgba(81, 122, 246, 0.16);
+  color: #cfe0ff;
+}
+
+.bot-detail-chip.is-sandbox {
+  background-color: rgba(240, 178, 86, 0.14);
+  color: #f0b256;
+}
+
+/* 可选目标 */
+.bot-targets {
+  margin-bottom: 8px;
+}
+
+.bot-targets .section-label {
+  margin-top: 2px;
+}
+
+.bot-target-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.bot-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.04);
+  text-align: left;
+}
+
+.bot-target.is-selected {
+  border-color: var(--accent);
+  background-color: rgba(81, 122, 246, 0.14);
+}
+
+.bot-target-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background-color: rgba(81, 122, 246, 0.16);
+  color: #9db6ff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.bot-target-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bot-target-label {
+  display: block;
+  overflow: hidden;
+  color: #d6d6d6;
+  font-size: 12.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bot-target-id {
+  display: block;
+  overflow: hidden;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bot-targets-empty {
+  padding: 9px 10px;
+  border-radius: 10px;
+  background-color: rgba(240, 178, 86, 0.08);
+  color: #f0b256;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* chatId 格式提示 */
+.bot-send-hint {
+  margin-top: 4px;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}

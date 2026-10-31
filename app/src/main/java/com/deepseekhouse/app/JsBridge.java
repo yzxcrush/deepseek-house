@@ -82,8 +82,8 @@ import java.util.regex.Pattern;
  *
  * <p>v3.0.0 追加：Telegram Bot / OneBot 集成 {@link #botsList()} / {@link #botSave(String)} /
  * {@link #botDelete(String)} / {@link #botStart(String)} / {@link #botStop(String)} /
- * {@link #botTest(String)} / {@link #botSend(String, String, String)} / {@link #botRecent(String, int)}
- * （bot-status / bot-message / bot-sent 事件）。</p>
+ * {@link #botTest(String)} / {@link #botSend(String, String, String)} / {@link #botRecent(String, int)} /
+ * {@link #botTargets(String)}（bot-status / bot-message / bot-sent 事件；qqbot 频道/群/用户目标）。</p>
  */
 public final class JsBridge {
 
@@ -1282,6 +1282,16 @@ public final class JsBridge {
     public String botRecent(String botId, int limit) {
         try {
             return bots.recentJson(botId, limit);
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** v3.1.0 SPEC botTargets：可发送目标 JSON 数组（qqbot 频道 / telegram 最近会话 / onebot 好友）。 */
+    @JavascriptInterface
+    public String botTargets(String botId) {
+        try {
+            return bots.targetsJson(botId);
         } catch (Throwable t) {
             return "[]";
         }

@@ -50,6 +50,9 @@ public final class BotManager {
     private static final long POLL_TIMEOUT_SECONDS = 25L;
     private static final long ERROR_RETRY_DELAY_MS = 5 * 1000L;
     private static final int DEFAULT_RECENT = 50;
+    private static final long TARGETS_CACHE_MS = 5 * 60 * 1000L;
+    private static final int MAX_TARGETS = 50;
+    private static final int MAX_GUILDS = 15;
 
     private final Context context;
     private final Prefs prefs;
@@ -75,6 +78,9 @@ public final class BotManager {
         Thread pollThread;
         TelegramBotApi telegram;
         OneBotApi onebot;
+        QqBotApi qqbot;
+        JSONArray targetsCache;
+        long targetsCacheAt;
         final Deque<JSONObject> recent = new ArrayDeque<>();
 
         BotState(String id, BotConfig config) {
@@ -239,6 +245,9 @@ public final class BotManager {
                 }
                 if (state != null) {
                     state.config = updated.copy();
+                    // 配置变化后频道/目标缓存作废
+                    state.targetsCache = null;
+                    state.targetsCacheAt = 0L;
                 }
                 targetId = existing.id;
             }
@@ -347,7 +356,19 @@ public final class BotManager {
             }
             return null;
         }
-        return "Bot 类型无效（仅支持 telegram/onebot）";
+        if (config.isQqBot()) {
+            if (config.appId == null || config.appId.trim().isEmpty()) {
+                return "缺少 QQ 机器人 AppID";
+            }
+            if (config.secret == null || config.secret.trim().isEmpty()) {
+                return "缺少 QQ 机器人 Secret";
+            }
+            if (!BotConfig.isValidQqBotUrl(config.baseUrl)) {
+                return "QQ 机器人 API 地址无效（仅支持 https）";
+            }
+            return null;
+        }
+        return "Bot 类型无效（仅支持 telegram/onebot/qqbot）";
     }
 
     private void startAsync(final BotState state, final int generation) {
@@ -377,7 +398,7 @@ public final class BotManager {
                 }
                 emitStatus(state.id, STATUS_CONNECTED, message);
                 startTelegramPolling(state, api, generation);
-            } else {
+            } else if (config.isOneBot()) {
                 OneBotApi api = new OneBotApi(config.baseUrl, config.accessToken);
                 JSONObject info = api.getLoginInfo();
                 String nickname = info.optString("nickname", "");
@@ -394,6 +415,27 @@ public final class BotManager {
                     state.botUsername = who;
                     state.status = STATUS_CONNECTED;
                     state.message = message;
+                }
+                emitStatus(state.id, STATUS_CONNECTED, message);
+            } else {
+                QqBotApi api = new QqBotApi(config.appId, config.secret, config.baseUrl);
+                api.getAccessToken();
+                long ttl = api.tokenTtlSeconds();
+                String message = "已连接：QQ 机器人 appId=" + config.appId
+                        + "（AccessToken 有效期 " + ttl + "s）";
+                synchronized (lock) {
+                    if (!state.running || closed || state.generation != generation) {
+                        api.cancel();
+                        return;
+                    }
+                    state.qqbot = api;
+                    state.telegram = null;
+                    state.onebot = null;
+                    state.botUsername = "QQBot:" + config.appId;
+                    state.status = STATUS_CONNECTED;
+                    state.message = message;
+                    state.targetsCache = null;
+                    state.targetsCacheAt = 0L;
                 }
                 emitStatus(state.id, STATUS_CONNECTED, message);
             }
@@ -452,6 +494,17 @@ public final class BotManager {
                 // 忽略
             }
         }
+        QqBotApi qqbot = state.qqbot;
+        state.qqbot = null;
+        if (qqbot != null) {
+            try {
+                qqbot.cancel();
+            } catch (Throwable ignored) {
+                // 忽略
+            }
+        }
+        state.targetsCache = null;
+        state.targetsCacheAt = 0L;
         Thread thread = state.pollThread;
         state.pollThread = null;
         if (thread != null && thread != Thread.currentThread()) {
@@ -500,6 +553,18 @@ public final class BotManager {
                         String username = me.optString("username", "");
                         message = "测试成功：" + (username.isEmpty()
                                 ? "Telegram Bot 可用" : "@" + username + "（未启动）");
+                    } else if (config.isQqBot()) {
+                        QqBotApi api = new QqBotApi(config.appId, config.secret, config.baseUrl);
+                        api.getAccessToken();
+                        long ttl = api.tokenTtlSeconds();
+                        String prefix = "鉴权成功：appId=" + config.appId
+                                + "（token 有效期 " + ttl + "s）";
+                        try {
+                            JSONArray guilds = api.getGuilds();
+                            message = prefix + "，频道 " + guilds.length() + " 个";
+                        } catch (Throwable guildError) {
+                            message = prefix + "，但无法列出频道：" + message(guildError);
+                        }
                     } else {
                         JSONObject info = new OneBotApi(config.baseUrl, config.accessToken)
                                 .getLoginInfo();
@@ -525,6 +590,7 @@ public final class BotManager {
         BotConfig config;
         TelegramBotApi telegram = null;
         OneBotApi onebot = null;
+        QqBotApi qqbot = null;
         synchronized (lock) {
             BotState state = states.get(botId);
             if (state == null) {
@@ -534,9 +600,11 @@ public final class BotManager {
             config = state.config.copy();
             telegram = state.telegram;
             onebot = state.onebot;
+            qqbot = state.qqbot;
         }
         final TelegramBotApi telegramApi = telegram;
         final OneBotApi onebotApi = onebot;
+        final QqBotApi qqbotApi = qqbot;
         ioPool.execute(new Runnable() {
             @Override
             public void run() {
@@ -550,9 +618,13 @@ public final class BotManager {
                         TelegramBotApi api = telegramApi != null
                                 ? telegramApi : new TelegramBotApi(config.token);
                         messageId = String.valueOf(api.sendMessage(target, content, ""));
-                    } else {
+                    } else if (config.isOneBot()) {
                         OneBotApi api = onebotApi != null
                                 ? onebotApi : new OneBotApi(config.baseUrl, config.accessToken);
+                        messageId = api.sendMessage(target, content);
+                    } else {
+                        QqBotApi api = qqbotApi != null
+                                ? qqbotApi : new QqBotApi(config.appId, config.secret, config.baseUrl);
                         messageId = api.sendMessage(target, content);
                     }
                     cacheRecent(botId, target, "bot", "", content, System.currentTimeMillis(),
@@ -619,6 +691,177 @@ public final class BotManager {
             while (state.recent.size() > RECENT_LIMIT) {
                 state.recent.removeFirst();
             }
+        }
+    }
+
+    // ------------------------------------------------------------ 可发送目标（botTargets）
+
+    /** SPEC botTargets：可发送目标 JSON 数组（qqbot 频道 / telegram 最近会话 / onebot 好友）；失败 "[]"。 */
+    public String targetsJson(String rawBotId) {
+        String botId = rawBotId == null ? "" : rawBotId.trim();
+        BotState state;
+        BotConfig config;
+        synchronized (lock) {
+            state = states.get(botId);
+            if (state == null) {
+                return "[]";
+            }
+            config = state.config.copy();
+            if (config.isQqBot() && state.targetsCache != null
+                    && System.currentTimeMillis() - state.targetsCacheAt < TARGETS_CACHE_MS) {
+                return state.targetsCache.toString();
+            }
+        }
+        try {
+            if (config.isQqBot()) {
+                return qqTargets(state, config);
+            }
+            if (config.isTelegram()) {
+                return telegramTargets(state);
+            }
+            if (config.isOneBot()) {
+                return oneBotTargets(state, config);
+            }
+        } catch (Throwable ignored) {
+            // 失败返回空数组
+        }
+        return "[]";
+    }
+
+    /** qqbot：拉 guilds + channels，只返回可发送的文字子频道（type==0），缓存 5 分钟。 */
+    private String qqTargets(BotState state, BotConfig config) {
+        try {
+            QqBotApi api;
+            synchronized (lock) {
+                api = state.qqbot;
+            }
+            if (api == null) {
+                api = new QqBotApi(config.appId, config.secret, config.baseUrl);
+            }
+            JSONArray guilds = api.getGuilds();
+            JSONArray out = new JSONArray();
+            int guildsSeen = 0;
+            for (int i = 0; i < guilds.length() && guildsSeen < MAX_GUILDS; i++) {
+                JSONObject guild = guilds.optJSONObject(i);
+                if (guild == null) {
+                    continue;
+                }
+                String guildId = valueString(guild.opt("id"));
+                String guildName = guild.optString("name", "");
+                if (guildId.isEmpty()) {
+                    continue;
+                }
+                guildsSeen++;
+                JSONArray channels = null;
+                try {
+                    channels = api.getChannels(guildId);
+                } catch (Throwable ignored) {
+                    // 单个频道失败不影响其它
+                }
+                if (channels == null) {
+                    continue;
+                }
+                for (int j = 0; j < channels.length() && out.length() < MAX_TARGETS; j++) {
+                    JSONObject channel = channels.optJSONObject(j);
+                    if (channel == null || channel.optInt("type", 0) != 0) {
+                        continue; // 只要文字子频道
+                    }
+                    String channelId = valueString(channel.opt("id"));
+                    if (channelId.isEmpty()) {
+                        continue;
+                    }
+                    String channelName = channel.optString("name", "");
+                    JSONObject item = new JSONObject();
+                    item.put("id", "channel:" + guildId + ":" + channelId);
+                    item.put("label", (guildName.isEmpty() ? guildId : guildName)
+                            + " / " + (channelName.isEmpty() ? channelId : channelName));
+                    item.put("type", "channel");
+                    item.put("guildId", guildId);
+                    item.put("channelId", channelId);
+                    item.put("guildName", guildName);
+                    item.put("name", channelName);
+                    out.put(item);
+                }
+            }
+            synchronized (lock) {
+                state.targetsCache = out;
+                state.targetsCacheAt = System.currentTimeMillis();
+            }
+            return out.toString();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** telegram：从最近消息缓存去重得到最近会话。 */
+    private String telegramTargets(BotState state) {
+        try {
+            java.util.LinkedHashMap<String, JSONObject> unique = new java.util.LinkedHashMap<>();
+            synchronized (lock) {
+                java.util.Iterator<JSONObject> iterator = state.recent.descendingIterator();
+                while (iterator.hasNext() && unique.size() < MAX_TARGETS) {
+                    JSONObject item = iterator.next();
+                    String chatId = item.optString("chatId", "");
+                    if (chatId.isEmpty() || unique.containsKey(chatId)) {
+                        continue;
+                    }
+                    String fromName = item.optString("fromName", "");
+                    String text = item.optString("text", "");
+                    String label = !fromName.isEmpty() ? fromName
+                            : (!text.isEmpty() ? text : "会话 " + chatId);
+                    if (label.length() > 40) {
+                        label = label.substring(0, 40);
+                    }
+                    JSONObject target = new JSONObject();
+                    target.put("id", chatId);
+                    target.put("label", label);
+                    target.put("type", "chat");
+                    target.put("chatId", chatId);
+                    unique.put(chatId, target);
+                }
+            }
+            JSONArray out = new JSONArray();
+            for (JSONObject item : unique.values()) {
+                out.put(item);
+            }
+            return out.toString();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** onebot：好友列表（网络失败返回空）。 */
+    private String oneBotTargets(BotState state, BotConfig config) {
+        try {
+            OneBotApi api;
+            synchronized (lock) {
+                api = state.onebot;
+            }
+            if (api == null) {
+                api = new OneBotApi(config.baseUrl, config.accessToken);
+            }
+            JSONArray friends = api.getFriendList();
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < friends.length() && out.length() < MAX_TARGETS; i++) {
+                JSONObject friend = friends.optJSONObject(i);
+                if (friend == null) {
+                    continue;
+                }
+                String userId = valueString(friend.opt("user_id"));
+                if (userId.isEmpty()) {
+                    continue;
+                }
+                String nickname = friend.optString("nickname", "");
+                JSONObject item = new JSONObject();
+                item.put("id", "private:" + userId);
+                item.put("label", nickname.isEmpty() ? userId : nickname);
+                item.put("type", "chat");
+                item.put("userId", userId);
+                out.put(item);
+            }
+            return out.toString();
+        } catch (Throwable t) {
+            return "[]";
         }
     }
 
@@ -866,6 +1109,17 @@ public final class BotManager {
                         // 忽略
                     }
                 }
+                QqBotApi qqbot = state.qqbot;
+                state.qqbot = null;
+                if (qqbot != null) {
+                    try {
+                        qqbot.cancel();
+                    } catch (Throwable ignored) {
+                        // 忽略
+                    }
+                }
+                state.targetsCache = null;
+                state.targetsCacheAt = 0L;
                 Thread thread = state.pollThread;
                 state.pollThread = null;
                 if (thread != null && thread != Thread.currentThread()) {

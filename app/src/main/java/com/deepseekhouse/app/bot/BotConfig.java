@@ -12,8 +12,8 @@ import java.util.Locale;
  * <p>JSON 存储于 {@code Prefs.bots} 数组；核心字段：</p>
  * <pre>
  * {id, type:"telegram"|"onebot", name, enabled,
- *  token (telegram), accessToken (onebot), baseUrl (onebot，默认 http://127.0.0.1:3000),
- *  appId?, secret?}
+ *  token (telegram), accessToken (onebot), baseUrl (onebot 默认 http://127.0.0.1:3000；
+ *  qqbot 默认 https://api.sgroup.qq.com，可用 sandbox:true 切到沙箱), appId?, secret?}
  * </pre>
  *
  * <p>未知字段（如 autoReply/whitelist/systemPrompt/cooldownSec/hourlyLimit 等 JS 侧配置）
@@ -25,7 +25,10 @@ public final class BotConfig {
 
     public static final String TYPE_TELEGRAM = "telegram";
     public static final String TYPE_ONEBOT = "onebot";
+    public static final String TYPE_QQBOT = "qqbot";
     public static final String DEFAULT_ONEBOT_BASE = "http://127.0.0.1:3000";
+    public static final String DEFAULT_QQ_API_BASE = "https://api.sgroup.qq.com";
+    public static final String SANDBOX_QQ_API_BASE = "https://sandbox.api.sgroup.qq.com";
 
     private static final String[] CORE_KEYS = new String[]{
             "id", "type", "name", "enabled", "token", "accessToken", "baseUrl", "appId", "secret"
@@ -78,6 +81,19 @@ public final class BotConfig {
             if (!isValidOneBotUrl(baseUrl)) {
                 return null;
             }
+        } else if (TYPE_QQBOT.equals(type)) {
+            if (text(o, "appId").trim().isEmpty() || text(o, "secret").trim().isEmpty()) {
+                return null;
+            }
+            if (baseUrl.isEmpty()) {
+                boolean sandbox = o.has("sandbox") && !o.isNull("sandbox")
+                        && o.optBoolean("sandbox", false);
+                baseUrl = sandbox ? SANDBOX_QQ_API_BASE : DEFAULT_QQ_API_BASE;
+            }
+            baseUrl = stripTrailingSlashes(baseUrl);
+            if (!isValidQqBotUrl(baseUrl)) {
+                return null;
+            }
         } else {
             return null;
         }
@@ -86,7 +102,7 @@ public final class BotConfig {
         config.type = type;
         config.name = text(o, "name").trim();
         if (config.name.isEmpty()) {
-            config.name = TYPE_TELEGRAM.equals(type) ? "Telegram Bot" : "OneBot";
+            config.name = defaultName(type);
         }
         config.enabled = !o.has("enabled") || o.isNull("enabled") || o.optBoolean("enabled", true);
         config.token = token;
@@ -143,23 +159,39 @@ public final class BotConfig {
         return TYPE_ONEBOT.equals(type);
     }
 
+    public boolean isQqBot() {
+        return TYPE_QQBOT.equals(type);
+    }
+
     /** 端点是否变化（type/token/baseUrl 变化时需要重启轮询）。 */
     public boolean sameEndpoint(BotConfig other) {
         if (other == null) {
             return false;
         }
         return eq(type, other.type) && eq(token, other.token)
-                && eq(accessToken, other.accessToken) && eq(baseUrl, other.baseUrl);
+                && eq(accessToken, other.accessToken) && eq(baseUrl, other.baseUrl)
+                && eq(appId, other.appId) && eq(secret, other.secret);
     }
 
     // ------------------------------------------------------------ 校验 / 清洗
 
     public static String normalizeType(String raw) {
         String value = raw == null ? "" : raw.trim().toLowerCase(Locale.US);
-        if (TYPE_TELEGRAM.equals(value) || TYPE_ONEBOT.equals(value)) {
+        if (TYPE_TELEGRAM.equals(value) || TYPE_ONEBOT.equals(value)
+                || TYPE_QQBOT.equals(value)) {
             return value;
         }
         return "";
+    }
+
+    private static String defaultName(String type) {
+        if (TYPE_TELEGRAM.equals(type)) {
+            return "Telegram Bot";
+        }
+        if (TYPE_ONEBOT.equals(type)) {
+            return "OneBot";
+        }
+        return "QQ 机器人";
     }
 
     /** Bot id 只允许 [A-Za-z0-9_-]，最长 32；空返回空（由 manager 生成）。 */
@@ -178,6 +210,33 @@ public final class BotConfig {
             }
         }
         return sb.toString();
+    }
+
+    /** QQ 官方机器人 API 只允许 https（api.sgroup.qq.com / sandbox.api.sgroup.qq.com 或自定义 https）。 */
+    public static boolean isValidQqBotUrl(String raw) {
+        String value = stripTrailingSlashes(raw);
+        if (value.isEmpty()) {
+            return false;
+        }
+        try {
+            java.net.URL url = new java.net.URL(value);
+            String protocol = url.getProtocol() == null ? "" : url.getProtocol().toLowerCase(Locale.US);
+            if (!"https".equals(protocol)) {
+                return false;
+            }
+            String host = url.getHost();
+            return host != null && !host.isEmpty();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static String stripTrailingSlashes(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        return value;
     }
 
     /** OneBot 地址只允许 http/https 且必须有主机名。 */
@@ -201,12 +260,9 @@ public final class BotConfig {
 
     /** 去空白/去尾部斜杠；空返回默认地址。 */
     public static String normalizeBaseUrl(String raw) {
-        String value = raw == null ? "" : raw.trim();
+        String value = stripTrailingSlashes(raw);
         if (value.isEmpty()) {
             return DEFAULT_ONEBOT_BASE;
-        }
-        while (value.endsWith("/")) {
-            value = value.substring(0, value.length() - 1);
         }
         return value;
     }
