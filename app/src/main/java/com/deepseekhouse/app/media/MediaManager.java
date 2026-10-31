@@ -384,10 +384,9 @@ public final class MediaManager {
                 return errorJson("图片过大（" + parsed.bytes.length + " 字节，上限 "
                         + MAX_IMAGE_BYTES + " 字节）");
             }
-            String mime = parsed.mime;
-            if (mime == null || !mime.startsWith("image/")) {
-                mime = detectMime(parsed.bytes);
-            }
+            // 文件头优先（避免 data URL 的 MIME 与实际内容不一致导致扩展名错误）
+            String detected = detectMime(parsed.bytes);
+            String mime = detected == null || detected.isEmpty() ? parsed.mime : detected;
             if (mime == null || !mime.startsWith("image/")) {
                 return errorJson("不支持的图片格式");
             }

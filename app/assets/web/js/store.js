@@ -89,7 +89,10 @@
     wallpaper: '',
     glassIntensity: 60,
     glassSpeed: 1,
-    locale: 'zh'
+    locale: 'zh',
+    /* 批次4 v2.9.0：插件市场源 */
+    marketSource: 'official',
+    marketUrl: ''
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -192,7 +195,9 @@
       wallpaper: DEFAULT_PREFS.wallpaper,
       glassIntensity: DEFAULT_PREFS.glassIntensity,
       glassSpeed: DEFAULT_PREFS.glassSpeed,
-      locale: DEFAULT_PREFS.locale
+      locale: DEFAULT_PREFS.locale,
+      marketSource: DEFAULT_PREFS.marketSource,
+      marketUrl: DEFAULT_PREFS.marketUrl
     };
   }
 
@@ -301,6 +306,8 @@
     if (raw.glassIntensity !== undefined) p.glassIntensity = Math.round(clampNum(raw.glassIntensity, 0, 100));
     if (raw.glassSpeed !== undefined) p.glassSpeed = Math.round(clampNum(raw.glassSpeed, 0.2, 3) * 10) / 10;
     if (raw.locale === 'zh' || raw.locale === 'en') p.locale = raw.locale;
+    if (raw.marketSource === 'official' || raw.marketSource === 'custom') p.marketSource = raw.marketSource;
+    if (raw.marketUrl !== undefined) p.marketUrl = String(raw.marketUrl === null ? '' : raw.marketUrl).slice(0, 500);
     if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
     if (raw.contextBudget !== undefined) p.contextBudget = Math.round(clampNum(raw.contextBudget, 500, 200000));
     if (raw.workbench !== undefined) p.workbench = !!raw.workbench;
@@ -965,7 +972,20 @@
     if (patch.temperature !== undefined) state.prefs.temperature = clampNum(patch.temperature, 0, 2);
     if (patch.maxTokens !== undefined) state.prefs.maxTokens = Math.round(clampNum(patch.maxTokens, 16, 8192));
     if (patch.stream !== undefined) state.prefs.stream = !!patch.stream;
-    if (patch.theme !== undefined) state.prefs.theme = patch.theme === 'light' ? 'light' : 'dark';
+    if (patch.theme !== undefined) {
+      var nextTheme = String(patch.theme);
+      state.prefs.theme = (nextTheme === 'light' || nextTheme === 'dark' || nextTheme === 'midnight' || nextTheme === 'black') ? nextTheme : 'dark';
+    }
+    if (patch.fontScale !== undefined) {
+      var nextFont = Number(patch.fontScale);
+      state.prefs.fontScale = (nextFont === 0.9 || nextFont === 1 || nextFont === 1.1 || nextFont === 1.2) ? nextFont : 1;
+    }
+    if (patch.wallpaper !== undefined) state.prefs.wallpaper = String(patch.wallpaper === null ? '' : patch.wallpaper).slice(0, 4000000);
+    if (patch.glassIntensity !== undefined) state.prefs.glassIntensity = Math.round(clampNum(patch.glassIntensity, 0, 100));
+    if (patch.glassSpeed !== undefined) state.prefs.glassSpeed = Math.round(clampNum(patch.glassSpeed, 0.2, 3) * 10) / 10;
+    if (patch.locale !== undefined) state.prefs.locale = String(patch.locale) === 'en' ? 'en' : 'zh';
+    if (patch.marketSource !== undefined) state.prefs.marketSource = String(patch.marketSource) === 'custom' ? 'custom' : 'official';
+    if (patch.marketUrl !== undefined) state.prefs.marketUrl = String(patch.marketUrl === null ? '' : patch.marketUrl).slice(0, 500);
     if (patch.systemPrompt !== undefined) state.prefs.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
     if (patch.contextBudget !== undefined) state.prefs.contextBudget = Math.round(clampNum(patch.contextBudget, 500, 200000));
     if (patch.workbench !== undefined) state.prefs.workbench = !!patch.workbench;

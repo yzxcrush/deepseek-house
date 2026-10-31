@@ -5245,20 +5245,24 @@ body { background-color: #181818; }
 .screen--chat.is-workbench {
   display: grid;
   grid-template-columns: minmax(200px, 30%) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto auto auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto auto;
   grid-template-areas:
     "head head"
+    "search search"
     "files main"
     "files terminal"
+    "files quote"
     "files images"
     "files composer"
     "files emoji";
 }
 
 .screen--chat.is-workbench > .topbar { grid-area: head; }
+.screen--chat.is-workbench > .chat-search-in { grid-area: search; }
 .screen--chat.is-workbench > .workbench-files { grid-area: files; display: flex; }
 .screen--chat.is-workbench > .chat-main { grid-area: main; min-height: 0; }
 .screen--chat.is-workbench > .terminal-panel { grid-area: terminal; height: auto; min-height: 0; max-height: none; }
+.screen--chat.is-workbench > .quote-bar { grid-area: quote; }
 .screen--chat.is-workbench > .composer-images { grid-area: images; }
 .screen--chat.is-workbench > .composer { grid-area: composer; }
 .screen--chat.is-workbench > .emoji-panel { grid-area: emoji; }
@@ -7964,6 +7968,433 @@ html.glass-frost .appearance-theme,
 html.glass-frost .appearance-lang,
 html.glass-frost .quote-bar,
 html.glass-frost .chat-search-in {
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}
+
+/* ==========================================================================
+   批次 3 · v2.9.0：插件市场升级（搜索 / 分类 / 排序 / 详情 / URL 安装 / 代码安装）
+   ========================================================================== */
+
+.market-toolbar {
+  margin: 2px 12px 8px;
+}
+
+.market-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 8px 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background-color: rgba(35, 35, 35, 0.82);
+}
+
+.market-search > svg {
+  flex: none;
+  width: 19px;
+  height: 19px;
+  color: #8b8b8b;
+}
+
+.market-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+}
+
+.market-search-input::placeholder {
+  color: #8b8b8b;
+}
+
+.market-search-clear {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  color: #8b8b8b;
+}
+
+.market-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 2px 0;
+}
+
+.market-source-label {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background-color: rgba(81, 122, 246, 0.16);
+  color: #9db6ff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.market-updated {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #8b8b8b;
+  font-size: 10.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.market-refresh-btn {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  color: #c7c7c7;
+}
+
+.market-categories {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.market-categories::-webkit-scrollbar {
+  display: none;
+}
+
+.market-cat {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #8b8b8b;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.market-cat.is-active {
+  background-color: rgba(81, 122, 246, 0.22);
+  color: #cfe0ff;
+}
+
+.market-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.market-sort {
+  height: 32px;
+  padding: 0 26px 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  background-color: rgba(31, 31, 31, 0.9);
+  color: #c7c7c7;
+  font-size: 12px;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, #8b8b8b 50%), linear-gradient(135deg, #8b8b8b 50%, transparent 50%);
+  background-position: calc(100% - 13px) 13px, calc(100% - 8px) 13px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.market-tool-btn {
+  padding: 7px 11px;
+  border-radius: 9px;
+  background-color: rgba(81, 122, 246, 0.16);
+  color: #9db6ff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.market-tool-btn--ghost {
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #b9b9b9;
+}
+
+.market-tool-btn:active {
+  opacity: 0.8;
+}
+
+.market-source-panel {
+  margin-top: 8px;
+  padding: 0 12px;
+}
+
+.market-source-summary {
+  padding: 9px 2px;
+  color: #8b8b8b;
+  font-size: 12px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.market-source-summary::-webkit-details-marker {
+  display: none;
+}
+
+.market-source-panel .market-source-actions {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.market-source-panel .market-source-actions .btn {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  border-radius: 9px;
+}
+
+.market-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 26px 16px;
+  color: #8b8b8b;
+  font-size: 13px;
+}
+
+.market-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-top-color: var(--accent-2);
+  border-radius: 50%;
+  animation: market-spin 0.8s linear infinite;
+}
+
+@keyframes market-spin {
+  to { transform: rotate(360deg); }
+}
+
+.market-error {
+  margin: 0 12px 8px;
+  padding: 14px;
+  border: 1px solid rgba(224, 93, 93, 0.3);
+  border-radius: 14px;
+  background-color: rgba(224, 93, 93, 0.08);
+  text-align: center;
+}
+
+.market-error-text {
+  margin: 0 0 9px;
+  color: #f08c8c;
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.market-retry-btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+/* ---------- 市场卡片增强 ---------- */
+.market-card {
+  position: relative;
+}
+
+.market-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.market-size {
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.market-signature {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.market-signature--signed {
+  background-color: rgba(79, 208, 91, 0.14);
+  color: #8fe897;
+}
+
+.market-signature--unsigned {
+  background-color: rgba(240, 178, 86, 0.16);
+  color: #f0b256;
+}
+
+.market-signature--invalid {
+  background-color: rgba(224, 93, 93, 0.16);
+  color: #f08c8c;
+}
+
+.market-update-dot {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(81, 122, 246, 0.18);
+}
+
+.market-card-progress {
+  margin-top: 7px;
+}
+
+.market-card-progress .tool-progress {
+  margin: 0;
+}
+
+.market-detail-btn {
+  padding: 6px 12px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #b9b9b9;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+/* ---------- 插件详情弹层 ---------- */
+.market-detail-panel {
+  max-height: 86vh;
+}
+
+.market-detail-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.market-detail-sub {
+  color: #8b8b8b;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.market-detail-desc {
+  margin: 0 0 10px;
+  color: #c7c7c7;
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.market-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.market-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.market-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.market-detail-item span {
+  color: #8b8b8b;
+  font-size: 10.5px;
+}
+
+.market-detail-item b {
+  overflow: hidden;
+  color: #d6d6d6;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#market-detail-signature.is-signed { color: #8fe897; }
+#market-detail-signature.is-unsigned { color: #f0b256; }
+#market-detail-signature.is-invalid { color: #f08c8c; }
+
+.market-detail-progress {
+  margin-top: 10px;
+}
+
+.market-detail-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background-color: rgba(255, 255, 255, 0.09);
+}
+
+.market-detail-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #517af6, #7c9bff);
+  transition: width 200ms var(--ease);
+}
+
+.market-detail-progress-text {
+  display: block;
+  margin-top: 5px;
+  color: #8b8b8b;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.market-detail-actions .btn {
+  flex: 1 1 0;
+}
+
+/* ---------- 粘贴代码安装 ---------- */
+.market-code-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: rgba(240, 178, 86, 0.08);
+  color: #f0b256;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.market-code-risk input {
+  flex: none;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+/* 液态玻璃 */
+html.glass-liquid .market-search,
+html.glass-liquid .market-detail-panel,
+html.glass-frost .market-search {
   -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
   backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
 }

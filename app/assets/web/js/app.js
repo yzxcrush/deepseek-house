@@ -108,6 +108,58 @@
     'deepseek-v4-flash': { input: 1.0, output: 4.0 },
     '_default': { input: 2.0, output: 8.0 }
   };
+  /* ARCH v2.8.0 批次3：主题 / 字号 / 壁纸 / 液态玻璃 / i18n */
+  var THEME_OPTIONS = ['dark', 'midnight', 'black'];
+  var FONT_SCALES = [0.9, 1, 1.1, 1.2];
+  var GLASS_INTENSITY_DEFAULT = 60;
+  var GLASS_SPEED_DEFAULT = 1;
+  var LOCALES = ['zh', 'en'];
+  /* 1x1 PNG（Canvas 不可用环境 <如 jsdom> 的导出兜底；真机走 Canvas 渲染） */
+  var FALLBACK_PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  var I18N_ZH = {
+    appName: 'DeepSeek House',
+    cancel: '取消', confirm: '确定', save: '保存', close: '关闭', done: '完成', retry: '重试', delete: '删除',
+    copy: '复制', copied: '已复制', copyFailed: '复制失败', export: '导出', share: '分享', search: '搜索',
+    loginTitle: '登录', loginSubtitle: '填入 DeepSeek API Key 开始对话', apiKey: 'API Key', apiKeyPlaceholder: 'sk-...',
+    login: '登录', loginBusy: '连接中…', loginFailed: '登录失败，请检查 Key 与网络', advanced: '高级设置',
+    navChats: '聊天', navContacts: '通讯录', navProfile: '我的',
+    settings: '设置', appearance: '外观', appearanceTitle: '外观', general: '通用', model: '模型', plugins: '插件', about: '关于',
+    theme: '主题', themeDark: '暗黑', themeMidnight: '午夜蓝', themeBlack: '纯黑 OLED',
+    fontSize: '字号', fontSmall: '小', fontNormal: '标准', fontLarge: '大', fontXLarge: '特大',
+    wallpaper: '聊天壁纸', pickWallpaper: '从相册选择', clearWallpaper: '移除壁纸', wallpaperNone: '未设置',
+    language: '语言', chinese: '简体中文', english: 'English',
+    glass: '液态玻璃', glassIntensity: '玻璃强度', glassSpeed: '流动速度',
+    chatSearch: '会话内搜索', searchPlaceholder: '搜索当前会话…', searchEmpty: '没有匹配的消息', searchCount: '匹配 {n} 条',
+    quote: '引用', cancelQuote: '取消引用', quotedFromAI: '引用 AI 回复', quotedFromUser: '引用我的消息', quotedPrefix: '引用',
+    edit: '编辑', edited: '已编辑', editFailed: '编辑失败', editEmpty: '消息内容不能为空',
+    exportMessageImage: '复制为图片', exportChatImage: '复制为长图', imageSaved: '图片已保存到相册', imageSaveFailed: '图片保存失败',
+    themeSaved: '主题已更新', fontSaved: '字号已更新', wallpaperSaved: '壁纸已更新', wallpaperCleared: '壁纸已移除', wallpaperFailed: '壁纸设置失败',
+    localeSaved: '语言已切换', watermark: '@惜白. · DeepSeek House', you: '我', ai: 'DeepSeek',
+    newChat: '新建会话', notice: '提示', loading: '加载中…'
+  };
+  var I18N_EN = {
+    appName: 'DeepSeek House',
+    cancel: 'Cancel', confirm: 'OK', save: 'Save', close: 'Close', done: 'Done', retry: 'Retry', delete: 'Delete',
+    copy: 'Copy', copied: 'Copied', copyFailed: 'Copy failed', export: 'Export', share: 'Share', search: 'Search',
+    loginTitle: 'Sign in', loginSubtitle: 'Enter your DeepSeek API key to start', apiKey: 'API Key', apiKeyPlaceholder: 'sk-...',
+    login: 'Sign in', loginBusy: 'Connecting…', loginFailed: 'Sign-in failed, check key/network', advanced: 'Advanced',
+    navChats: 'Chats', navContacts: 'Contacts', navProfile: 'Me',
+    settings: 'Settings', appearance: 'Appearance', appearanceTitle: 'Appearance', general: 'General', model: 'Model', plugins: 'Plugins', about: 'About',
+    theme: 'Theme', themeDark: 'Dark', themeMidnight: 'Midnight Blue', themeBlack: 'Pure Black OLED',
+    fontSize: 'Text size', fontSmall: 'Small', fontNormal: 'Normal', fontLarge: 'Large', fontXLarge: 'X-Large',
+    wallpaper: 'Chat wallpaper', pickWallpaper: 'Pick from gallery', clearWallpaper: 'Remove wallpaper', wallpaperNone: 'Not set',
+    language: 'Language', chinese: '简体中文', english: 'English',
+    glass: 'Liquid glass', glassIntensity: 'Glass intensity', glassSpeed: 'Flow speed',
+    chatSearch: 'Search in chat', searchPlaceholder: 'Search this chat…', searchEmpty: 'No matching messages', searchCount: '{n} matches',
+    quote: 'Quote', cancelQuote: 'Cancel quote', quotedFromAI: 'Quoting AI reply', quotedFromUser: 'Quoting my message', quotedPrefix: 'Quote',
+    edit: 'Edit', edited: 'Edited', editFailed: 'Edit failed', editEmpty: 'Message cannot be empty',
+    exportMessageImage: 'Copy as image', exportChatImage: 'Copy as long image', imageSaved: 'Image saved to gallery', imageSaveFailed: 'Failed to save image',
+    themeSaved: 'Theme updated', fontSaved: 'Text size updated', wallpaperSaved: 'Wallpaper updated', wallpaperCleared: 'Wallpaper removed', wallpaperFailed: 'Failed to set wallpaper',
+    localeSaved: 'Language switched', watermark: '@惜白. · DeepSeek House', you: 'Me', ai: 'DeepSeek',
+    newChat: 'New chat', notice: 'Notice', loading: 'Loading…'
+  };
+
   /* ARCH v2.7.0 批次2：快照 / PIN / 加密备份 / 失败诊断 */
   var WRITE_TOOL_NAMES = { 'write_file': true, 'run_shell': true, 'pack_apk': true, 'repack_apk': true, 'decompile_apk': true, 'run_gradle': true };
   var PIN_ITERATIONS = 100000;
@@ -207,7 +259,12 @@
     lastSnapshotByChat: {}, /* chatId -> 快照对象 */
     snapshotOpening: false,
     pinBusy: false,
-    pendingBackupPassword: '' /* onImportBackup 传入的密码，供 file-imported 解密用 */
+    pendingBackupPassword: '', /* onImportBackup 传入的密码，供 file-imported 解密用 */
+    /* 批次3 v2.8.0：引用 / 外观 */
+    quotedMessage: null,      /* {msgId,role,text} 发送时拼入 API content 并写入 msg.quoted */
+    wallpaper: '',            /* 当前壁纸 dataUrl（原生 getWallpaper 为准，prefs.wallpaper 兜底） */
+    appearance: { theme: 'dark', fontScale: 1, glassIntensity: 60, glassSpeed: 1 },
+    appearanceOpening: false
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -460,6 +517,8 @@
       }
     } catch (e6) { warn('读取应用锁状态失败：' + errText(e6)); }
     try { applyWorkbenchFromPrefs(); } catch (e7) { warn('应用工作台布局失败：' + errText(e7)); }
+    /* 批次3：主题/字号/壁纸（原生 getWallpaper 为准）+ 语言 */
+    try { restoreAppearance(); } catch (e7b) { warn('恢复外观失败：' + errText(e7b)); }
     try {
       if (global.Store && typeof global.Store.onError === 'function') {
         global.Store.onError(function (message) { if (message) toast(String(message), true); });
@@ -746,7 +805,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '2.7.0' }
+      { label: '版本', value: '2.8.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -899,7 +958,7 @@
         }
         return;
       }
-      if (uiScreen === 'cost' || uiScreen === 'tool-policy' || uiScreen === 'snapshots') {
+      if (uiScreen === 'cost' || uiScreen === 'tool-policy' || uiScreen === 'snapshots' || uiScreen === 'appearance') {
         closeDrawer();
         if (state.nav.screen !== 'settings') {
           state.nav = { screen: 'settings', drawerOpen: false, from: state.nav.screen || 'chats' };
@@ -1179,7 +1238,21 @@
       onCreateSnapshot: safe(function () { return createSnapshot('手动快照'); }, 'onCreateSnapshot'),
       onSetPin: safe(function (pin) { return setPin(pin); }, 'onSetPin'),
       onDisablePin: safe(function () { return disablePin(); }, 'onDisablePin'),
-      onVerifyPin: safe(function (pin) { return verifyPin(pin); }, 'onVerifyPin')
+      onVerifyPin: safe(function (pin) { return verifyPin(pin); }, 'onVerifyPin'),
+      /* ARCH v2.8.0 批次3：引用 / 编辑 / 长图 / 外观 / 会话搜索 / i18n */
+      onQuoteMessage: safe(function (msgId) { return quoteMessageById(msgId); }, 'onQuoteMessage'),
+      onCancelQuote: safe(function () { return clearQuotedMessage(); }, 'onCancelQuote'),
+      onEditMessage: safe(function (msgId, newText) { return editMessage(Store.getActiveChatId(), msgId, newText); }, 'onEditMessage'),
+      onExportMessageImage: safe(function (msgId) { return exportMessageImage(msgId); }, 'onExportMessageImage'),
+      onExportChatImage: safe(function () { return exportChatImage(); }, 'onExportChatImage'),
+      onOpenAppearance: safe(function () { applyAppearance(); return currentAppearance(); }, 'onOpenAppearance'),
+      onSetTheme: safe(function (theme) { return setTheme(theme); }, 'onSetTheme'),
+      onSetFontScale: safe(function (scale) { return setFontScale(scale); }, 'onSetFontScale'),
+      onPickWallpaper: safe(function () { return pickWallpaper(); }, 'onPickWallpaper'),
+      onClearWallpaper: safe(function () { return clearWallpaper(); }, 'onClearWallpaper'),
+      onSetGlassOptions: safe(function (opts) { return setGlassOptions(opts); }, 'onSetGlassOptions'),
+      onSetLocale: safe(function (locale) { return setLocale(locale); }, 'onSetLocale'),
+      onSearchInChat: safe(function (keyword) { return searchMessages(Store.getActiveChatId(), keyword); }, 'onSearchInChat')
     };
   }
 
@@ -1290,8 +1363,13 @@
         return meta[idx] || { width: 0, height: 0, name: '图片 ' + (idx + 1) };
       });
     }
+    var quote = state.quotedMessage;
+    if (quote && quote.msgId) {
+      payload.quoted = { msgId: String(quote.msgId), role: quote.role, text: String(quote.text || '') };
+    }
     var userMsg = Store.appendMessage(chat.id, payload);
     if (!userMsg) return false;
+    if (quote && quote.msgId) clearQuotedMessage();
     state.toolRounds = 0;
     resetBuffer();
     ui('appendMessage', userMsg);
@@ -1333,6 +1411,8 @@
     var basePrompt = resolveSystemPrompt(chat);
     /* ARCH v2 P3：超预算先压缩历史（保留最近 10 条），再按新摘要重新组装 system prompt */
     var messages = prepareContextMessages(chat, baseMessages, basePrompt, tools);
+    /* 批次3：引用回复在 API content 前拼「> 引用：…」 */
+    messages = applyQuotedPrefix(messages);
     sendPrefs.systemPrompt = resolveSystemPrompt(chat);
     var requestId = Api.send({
       chat: chat,
@@ -5862,6 +5942,9 @@
     if (state.nav && state.nav.screen === 'settings') {
       try { ui('renderSettings', state.prefs, state.modelCatalog, getPresets()); } catch (e8) { /* ignore */ }
     }
+    /* 批次3：store 异步加载/解密完成后重新应用外观与语言 */
+    try { applyAppearance(); } catch (e9) { /* ignore */ }
+    try { applyLocale(getLocale()); } catch (e10) { /* ignore */ }
   }
 
   /** 打开设置页时刷新 MCP 服务器统计到 UI（不进入 MCP 管理页） */
@@ -6890,6 +6973,649 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2.8.0 批次3：主题 / 壁纸 / 液态玻璃 / i18n / 引用编辑 / 长图 / 会话搜索
+   * ------------------------------------------------------------------ */
+
+  /* ---------------- i18n ---------------- */
+
+  function normalizeLocale(locale) {
+    var value = String(locale === null || locale === undefined ? '' : locale).toLowerCase();
+    return LOCALES.indexOf(value) >= 0 ? value : 'zh';
+  }
+
+  function getLocale() {
+    try {
+      if (state.prefs && state.prefs.locale) return normalizeLocale(state.prefs.locale);
+    } catch (e) { /* ignore */ }
+    return 'zh';
+  }
+
+  /** App.t(key, vars?)：取当前语言文案（缺失回落中文，再回落 key） */
+  function t(key, vars) {
+    var dict = getLocale() === 'en' ? I18N_EN : I18N_ZH;
+    var text = dict[key];
+    if (text === undefined || text === null) text = I18N_ZH[key];
+    if (text === undefined || text === null) text = String(key === null || key === undefined ? '' : key);
+    text = String(text);
+    if (vars && typeof vars === 'object') {
+      var keys = Object.keys(vars);
+      for (var i = 0; i < keys.length; i++) {
+        text = text.split('{' + keys[i] + '}').join(String(vars[keys[i]]));
+      }
+    }
+    return text;
+  }
+
+  function applyLocale(locale) {
+    var loc = normalizeLocale(locale);
+    try {
+      if (global.document && global.document.documentElement) {
+        global.document.documentElement.setAttribute('lang', loc === 'en' ? 'en' : 'zh-CN');
+      }
+    } catch (e) { /* ignore */ }
+    var U = getUI();
+    if (U && typeof U.applyLocale === 'function') {
+      try { U.applyLocale(loc); } catch (e2) { warn('UI.applyLocale 异常：' + errText(e2)); }
+    }
+    return loc;
+  }
+
+  /** App.setLocale('zh'|'en')：持久化并应用；返回最终 locale */
+  function setLocale(locale) {
+    var loc = normalizeLocale(locale);
+    state.prefs.locale = loc;
+    try { Store.setPrefs({ locale: loc }); } catch (e) { warn('保存语言失败：' + errText(e)); }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ locale: loc }); } catch (e2) { /* ignore */ }
+    applyLocale(loc);
+    toast(t('localeSaved'));
+    return loc;
+  }
+
+  /* ---------------- 主题 / 字号 / 壁纸 / 液态玻璃 ---------------- */
+
+  function normalizeTheme(theme) {
+    var value = String(theme === null || theme === undefined ? '' : theme);
+    return THEME_OPTIONS.indexOf(value) >= 0 ? value : 'dark';
+  }
+
+  function normalizeFontScale(scale) {
+    var value = Number(scale);
+    return FONT_SCALES.indexOf(value) >= 0 ? value : 1;
+  }
+
+  function clampGlassIntensity(value) {
+    var num = Number(value);
+    if (!isFinite(num)) num = GLASS_INTENSITY_DEFAULT;
+    return Math.max(0, Math.min(100, Math.round(num)));
+  }
+
+  function clampGlassSpeed(value) {
+    var num = Number(value);
+    if (!isFinite(num)) num = GLASS_SPEED_DEFAULT;
+    return Math.round(Math.max(0.2, Math.min(3, num)) * 10) / 10;
+  }
+
+  function glassCssVars(intensity, speed) {
+    var alpha = Math.round((0.08 + (intensity / 100) * 0.42) * 1000) / 1000;
+    var blur = Math.round(4 + (intensity / 100) * 24);
+    return {
+      alpha: alpha,
+      blur: blur,
+      speed: clampGlassSpeed(speed),
+      cssAlpha: String(alpha),
+      cssBlur: blur + 'px',
+      cssSpeed: clampGlassSpeed(speed) + 's'
+    };
+  }
+
+  function currentAppearance() {
+    var intensity = clampGlassIntensity(state.prefs && state.prefs.glassIntensity !== undefined ? state.prefs.glassIntensity : GLASS_INTENSITY_DEFAULT);
+    var speed = clampGlassSpeed(state.prefs && state.prefs.glassSpeed !== undefined ? state.prefs.glassSpeed : GLASS_SPEED_DEFAULT);
+    return {
+      theme: normalizeTheme(state.prefs && state.prefs.theme),
+      fontScale: normalizeFontScale(state.prefs && state.prefs.fontScale),
+      wallpaper: String(state.wallpaper || ''),
+      glass: { intensity: intensity, speed: speed }
+    };
+  }
+
+  function applyGlassToDocument(intensity, speed) {
+    var vars = glassCssVars(intensity, speed);
+    try {
+      if (global.document && global.document.documentElement) {
+        var root = global.document.documentElement;
+        root.style.setProperty('--glass-alpha', vars.cssAlpha);
+        root.style.setProperty('--glass-blur', vars.cssBlur);
+        root.style.setProperty('--liquid-speed', vars.cssSpeed);
+      }
+    } catch (e) { warn('应用玻璃参数失败：' + errText(e)); }
+    return vars;
+  }
+
+  /** 应用液态玻璃参数（UI.applyGlassOptions 优先） */
+  function applyGlassOptions(opts) {
+    var source = opts && typeof opts === 'object' ? opts : {};
+    var intensity = clampGlassIntensity(source.intensity !== undefined ? source.intensity : (state.prefs ? state.prefs.glassIntensity : GLASS_INTENSITY_DEFAULT));
+    var speed = clampGlassSpeed(source.speed !== undefined ? source.speed : (state.prefs ? state.prefs.glassSpeed : GLASS_SPEED_DEFAULT));
+    var U = getUI();
+    if (U && typeof U.applyGlassOptions === 'function') {
+      try { U.applyGlassOptions({ intensity: intensity, speed: speed }); } catch (e) { warn('UI.applyGlassOptions 异常：' + errText(e)); }
+    } else {
+      applyGlassToDocument(intensity, speed);
+    }
+    state.appearance = state.appearance || {};
+    state.appearance.glassIntensity = intensity;
+    state.appearance.glassSpeed = speed;
+    return { intensity: intensity, speed: speed };
+  }
+
+  /** 应用主题/字号/壁纸（UI.applyAppearance 优先，缺省自行写 html 属性与 CSS 变量） */
+  function applyAppearance(input) {
+    var a = input && typeof input === 'object' ? input : currentAppearance();
+    var theme = normalizeTheme(a.theme);
+    var scale = normalizeFontScale(a.fontScale);
+    var wallpaper = String(a.wallpaper === undefined || a.wallpaper === null ? (state.wallpaper || '') : a.wallpaper);
+    var intensity = clampGlassIntensity(a.glass && a.glass.intensity !== undefined ? a.glass.intensity : (state.prefs ? state.prefs.glassIntensity : GLASS_INTENSITY_DEFAULT));
+    var speed = clampGlassSpeed(a.glass && a.glass.speed !== undefined ? a.glass.speed : (state.prefs ? state.prefs.glassSpeed : GLASS_SPEED_DEFAULT));
+    state.wallpaper = wallpaper;
+    state.appearance = { theme: theme, fontScale: scale, glassIntensity: intensity, glassSpeed: speed, wallpaper: wallpaper };
+    var U = getUI();
+    var appliedByUI = false;
+    if (U && typeof U.applyAppearance === 'function') {
+      try {
+        U.applyAppearance({ theme: theme, fontScale: scale, wallpaper: wallpaper || null, glass: { intensity: intensity, speed: speed } });
+        appliedByUI = true;
+      } catch (e) { warn('UI.applyAppearance 异常：' + errText(e)); }
+    }
+    if (!appliedByUI) {
+      try {
+        if (global.document && global.document.documentElement) {
+          var root = global.document.documentElement;
+          root.setAttribute('data-theme', theme);
+          root.setAttribute('data-font-scale', String(scale));
+          root.style.setProperty('--font-scale', String(scale));
+          root.style.setProperty('--wallpaper-image', wallpaper ? 'url("' + wallpaper + '")' : 'none');
+        }
+      } catch (e2) { warn('应用外观失败：' + errText(e2)); }
+      applyGlassToDocument(intensity, speed);
+    } else {
+      /* UI 已应用；仍确保 CSS 变量可用（部分 UI 版本只设 html 属性） */
+      applyGlassToDocument(intensity, speed);
+    }
+    return state.appearance;
+  }
+
+  function persistAppearancePrefs(patch) {
+    var keys = Object.keys(patch || {});
+    for (var i = 0; i < keys.length; i++) {
+      if (state.prefs) state.prefs[keys[i]] = patch[keys[i]];
+    }
+    try { Store.setPrefs(patch); } catch (e) { warn('保存外观设置失败：' + errText(e)); }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs(patch); } catch (e2) { /* ignore */ }
+  }
+
+  function setTheme(theme) {
+    var next = String(theme === null || theme === undefined ? '' : theme);
+    if (THEME_OPTIONS.indexOf(next) < 0) { toast('未知主题：' + next, true); return false; }
+    persistAppearancePrefs({ theme: next });
+    applyAppearance();
+    toast(t('themeSaved'));
+    return true;
+  }
+
+  function setFontScale(scale) {
+    var next = Number(scale);
+    if (FONT_SCALES.indexOf(next) < 0) { toast('未知字号：' + scale, true); return false; }
+    persistAppearancePrefs({ fontScale: next });
+    applyAppearance();
+    toast(t('fontSaved'));
+    return true;
+  }
+
+  function setGlassOptions(opts) {
+    var source = opts && typeof opts === 'object' ? opts : {};
+    var intensity = clampGlassIntensity(source.intensity !== undefined ? source.intensity : (state.prefs ? state.prefs.glassIntensity : GLASS_INTENSITY_DEFAULT));
+    var speed = clampGlassSpeed(source.speed !== undefined ? source.speed : (state.prefs ? state.prefs.glassSpeed : GLASS_SPEED_DEFAULT));
+    persistAppearancePrefs({ glassIntensity: intensity, glassSpeed: speed });
+    applyGlassOptions({ intensity: intensity, speed: speed });
+    return { intensity: intensity, speed: speed };
+  }
+
+  function restoreWallpaper() {
+    var wp = '';
+    try { if (global.Bridge && typeof global.Bridge.getWallpaper === 'function') wp = String(global.Bridge.getWallpaper() || ''); } catch (e) { warn('读取壁纸失败：' + errText(e)); }
+    if (!wp && state.prefs && state.prefs.wallpaper) wp = String(state.prefs.wallpaper);
+    state.wallpaper = wp;
+    return wp;
+  }
+
+  function restoreAppearance() {
+    restoreWallpaper();
+    applyAppearance();
+    applyLocale(getLocale());
+    return currentAppearance();
+  }
+
+  function pickWallpaper() {
+    var B = global.Bridge;
+    if (!B || typeof B.pickImageAsync !== 'function') {
+      toast('当前环境不支持选择图片', true);
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(B.pickImageAsync('gallery', 120000)).then(function (res) {
+      if (!res || !res.ok || !res.dataUrl) {
+        if (res && res.error && String(res.error).indexOf('取消') === -1) toast(t('wallpaperFailed') + '：' + res.error, true);
+        return false;
+      }
+      var dataUrl = String(res.dataUrl);
+      var saved = null;
+      try { saved = (typeof B.saveWallpaper === 'function') ? B.saveWallpaper(dataUrl, 'wallpaper.jpg') : null; } catch (e) { warn('保存壁纸失败：' + errText(e)); saved = null; }
+      if (saved && saved.ok === false) {
+        toast(t('wallpaperFailed') + (saved.error ? '：' + saved.error : ''), true);
+        return false;
+      }
+      state.wallpaper = dataUrl;
+      /* 原生是壁纸唯一真源；仅在小图时把 dataUrl 兜底存 prefs（避免 localStorage 超限） */
+      var small = dataUrl.length <= 1500000 ? dataUrl : '';
+      persistAppearancePrefs({ wallpaper: small });
+      applyAppearance();
+      toast(t('wallpaperSaved'));
+      return true;
+    });
+  }
+
+  function clearWallpaper() {
+    var ok = false;
+    try { if (global.Bridge && typeof global.Bridge.clearWallpaper === 'function') ok = global.Bridge.clearWallpaper() !== false; } catch (e) { warn('清除壁纸失败：' + errText(e)); }
+    state.wallpaper = '';
+    persistAppearancePrefs({ wallpaper: '' });
+    applyAppearance();
+    toast(t(ok ? 'wallpaperCleared' : 'wallpaperFailed', ok ? undefined : true));
+    return ok;
+  }
+
+  function openAppearancePage() {
+    if (state.appearanceOpening) return currentAppearance();
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'appearance' && U && typeof U.openAppearancePage === 'function') {
+      state.appearanceOpening = true;
+      try { U.openAppearancePage(); } catch (e) { warn('UI.openAppearancePage 异常：' + errText(e)); } finally { state.appearanceOpening = false; }
+    }
+    applyAppearance();
+    return currentAppearance();
+  }
+
+  /* ---------------- 引用回复 ---------------- */
+
+  function messagePlainText(msg) {
+    if (!msg) return '';
+    var content = msg.content;
+    if (Array.isArray(content)) {
+      content = content.map(function (part) {
+        if (!part || typeof part !== 'object') return '';
+        return String(part.text || '');
+      }).join(' ');
+    }
+    var text = String(content === null || content === undefined ? '' : content);
+    if (!text && msg.images && msg.images.length) text = '[图片]';
+    return text;
+  }
+
+  function setQuotedMessage(msg) {
+    if (!msg || !msg.id) { clearQuotedMessage(); return null; }
+    var text = messagePlainText(msg).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    if (text.length > 200) text = text.slice(0, 200) + '…';
+    state.quotedMessage = {
+      msgId: String(msg.id),
+      role: msg.role === 'assistant' ? 'assistant' : (msg.role === 'tool' ? 'tool' : 'user'),
+      text: text
+    };
+    var U = getUI();
+    if (U && typeof U.setQuotedMessage === 'function') {
+      try { U.setQuotedMessage(state.quotedMessage); } catch (e) { warn('UI.setQuotedMessage 异常：' + errText(e)); }
+    }
+    return state.quotedMessage;
+  }
+
+  function clearQuotedMessage() {
+    state.quotedMessage = null;
+    var U = getUI();
+    if (U && typeof U.setQuotedMessage === 'function') {
+      try { U.setQuotedMessage(null); } catch (e) { /* ignore */ }
+    }
+    return true;
+  }
+
+  function quoteMessageById(msgId) {
+    var chat = Store.getActiveChat();
+    if (!chat) return null;
+    var key = String(msgId === null || msgId === undefined ? '' : msgId);
+    var messages = chat.messages || [];
+    for (var i = 0; i < messages.length; i++) {
+      if (String(messages[i].id) === key) return setQuotedMessage(messages[i]);
+    }
+    return null;
+  }
+
+  /** 发送前把引用拼到 API messages 的 content 前（user 消息）；返回浅拷贝数组 */
+  function applyQuotedPrefix(messages) {
+    var list = Array.isArray(messages) ? messages : [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var msg = list[i];
+      if (!msg || !msg.quoted || !msg.quoted.text) { out.push(msg); continue; }
+      var quoteText = String(msg.quoted.text).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+      if (!quoteText) { out.push(msg); continue; }
+      var prefix = '> ' + (msg.quoted.role === 'assistant' ? '引用 AI：' : '引用：') + quoteText + '\n\n';
+      var copy = {};
+      var keys = Object.keys(msg);
+      for (var k = 0; k < keys.length; k++) copy[keys[k]] = msg[keys[k]];
+      if (Array.isArray(copy.content)) {
+        var parts = copy.content.slice();
+        var textIndex = -1;
+        for (var p = 0; p < parts.length; p++) {
+          if (parts[p] && parts[p].type === 'text') { textIndex = p; break; }
+        }
+        if (textIndex >= 0) {
+          parts[textIndex] = { type: 'text', text: prefix + String(parts[textIndex].text || '') };
+          copy.content = parts;
+        } else {
+          copy.content = prefix + messagePlainText(msg);
+        }
+      } else {
+        copy.content = prefix + String(copy.content === null || copy.content === undefined ? '' : copy.content);
+      }
+      out.push(copy);
+    }
+    return out;
+  }
+
+  /* ---------------- 编辑重发 ---------------- */
+
+  /**
+   * App.editMessage(chatId,msgId,newText)：更新消息 → 截断其后消息 → （user 消息）重新请求。
+   * 返回 boolean（未找到/内容为空返回 false）。
+   */
+  function editMessage(chatId, msgId, newText) {
+    var chat = Store.getChat(chatId) || Store.getActiveChat();
+    if (!chat) return false;
+    var key = String(msgId === null || msgId === undefined ? '' : msgId);
+    var index = -1;
+    var messages = chat.messages || [];
+    for (var i = 0; i < messages.length; i++) {
+      if (String(messages[i].id) === key) { index = i; break; }
+    }
+    if (index < 0) { toast('找不到该消息', true); return false; }
+    var msg = messages[index];
+    var content = String(newText === null || newText === undefined ? '' : newText).replace(/^\s+|\s+$/g, '');
+    if (!content) { toast(t('editEmpty'), true); return false; }
+    if (content.length > MAX_INPUT) { toast('消息太长，最多 ' + MAX_INPUT + ' 字', true); return false; }
+    if (msg.role === 'user' && state.busy) {
+      try { stopGeneration(); } catch (e) { warn('停止生成失败：' + errText(e)); }
+    }
+    Store.updateMessage(chat.id, msg.id, { content: content, editedAt: Date.now() });
+    if (msg.role === 'user') {
+      /* 截断该 user 消息之后的内容（含旧 assistant/工具消息）并从该消息重新请求 */
+      try { Store.truncateMessages(chat.id, index + 1); } catch (e2) { warn('截断消息失败：' + errText(e2)); }
+      var latest = Store.getChat(chat.id);
+      try { ui('renderMessages', latest); } catch (e3) { /* ignore */ }
+      refreshChatList();
+      if (state.busy) finishBusy();
+      startAssistantRound(chat.id);
+      toast(t('edited'));
+      return true;
+    }
+    var latestChat = Store.getChat(chat.id);
+    try { ui('renderMessages', latestChat); } catch (e4) { /* ignore */ }
+    toast(t('edited'));
+    return true;
+  }
+
+  /* ---------------- 长图导出（Canvas 渲染；无 Canvas 环境兜底 PNG） ---------------- */
+
+  function estimateTextWidth(text, fontSize) {
+    var total = 0;
+    for (var i = 0; i < text.length; i++) {
+      var code = text.charCodeAt(i);
+      total += (code > 0x2e80 ? fontSize : fontSize * 0.56);
+    }
+    return total;
+  }
+
+  function wrapTextForCanvas(text, maxWidth, fontSize, ctx) {
+    var str = String(text === null || text === undefined ? '' : text);
+    var lines = [];
+    var paragraphs = str.split('\n');
+    for (var p = 0; p < paragraphs.length; p++) {
+      var para = paragraphs[p];
+      if (!para) { lines.push(''); continue; }
+      var line = '';
+      for (var i = 0; i < para.length; i++) {
+        var candidate = line + para.charAt(i);
+        var width = ctx && typeof ctx.measureText === 'function' ? ctx.measureText(candidate).width : estimateTextWidth(candidate, fontSize);
+        if (width > maxWidth && line) {
+          lines.push(line);
+          line = para.charAt(i);
+        } else {
+          line = candidate;
+        }
+      }
+      if (line) lines.push(line);
+    }
+    return lines.length ? lines : [''];
+  }
+
+  function roundRectPath(ctx, x, y, w, h, r) {
+    var radius = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  function formatExportTime(ts) {
+    var d = new Date(Number(ts) || Date.now());
+    function p(n) { return n < 10 ? '0' + n : String(n); }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  /** 渲染一组消息为长图 dataUrl；无 Canvas 环境返回 1x1 PNG 兜底 */
+  function renderMessagesToDataUrl(messages, title) {
+    var list = (Array.isArray(messages) ? messages : []).filter(function (m) {
+      return m && (m.role === 'user' || m.role === 'assistant' || m.role === 'note');
+    });
+    var doc = global.document;
+    var canvas = null;
+    var ctx = null;
+    try {
+      if (doc && typeof doc.createElement === 'function') {
+        canvas = doc.createElement('canvas');
+        if (canvas && typeof canvas.getContext === 'function') ctx = canvas.getContext('2d');
+      }
+    } catch (e) { canvas = null; ctx = null; }
+    if (!canvas || !ctx || typeof canvas.toDataURL !== 'function') return FALLBACK_PNG_DATA_URL;
+
+    var WIDTH = 720;
+    var PAD = 30;
+    var FONT = 20;
+    var LINE = 28;
+    var AVATAR = 42;
+    var GAP = 12;
+    var contentWidth = WIDTH - PAD * 2 - AVATAR - GAP;
+    var entries = [];
+    var totalHeight = PAD + 56;
+    for (var i = 0; i < list.length; i++) {
+      var msg = list[i];
+      var isUser = msg.role === 'user';
+      var name = isUser ? t('you') : (msg.role === 'note' ? t('notice') : t('ai'));
+      var body = messagePlainText(msg);
+      var quote = msg.quoted && msg.quoted.text ? msg.quoted.text : '';
+      var contentText = (quote ? '「' + quote + '」\n' : '') + body;
+      var lines = wrapTextForCanvas(contentText, contentWidth - 28, FONT, ctx);
+      var height = 44 + lines.length * LINE + 24;
+      entries.push({ msg: msg, isUser: isUser, name: name, lines: lines, height: height });
+      totalHeight += height + 18;
+    }
+    totalHeight += 40;
+    try {
+      canvas.width = WIDTH * 2;
+      canvas.height = Math.max(200, totalHeight) * 2;
+    } catch (e2) { return FALLBACK_PNG_DATA_URL; }
+    try {
+      ctx.scale(2, 2);
+      ctx.fillStyle = '#14181d';
+      ctx.fillRect(0, 0, WIDTH, totalHeight);
+      /* 标题 */
+      ctx.fillStyle = '#e9edf2';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.fillText(String(title || t('appName')), PAD, PAD + 18);
+      ctx.fillStyle = 'rgba(233,237,242,0.45)';
+      ctx.font = '15px sans-serif';
+      ctx.fillText(t('watermark'), PAD, PAD + 42);
+      var y = PAD + 64;
+      for (var e = 0; e < entries.length; e++) {
+        var entry = entries[e];
+        var msg2 = entry.msg;
+        var x = PAD;
+        /* 头像圆 */
+        ctx.beginPath();
+        ctx.arc(x + AVATAR / 2, y + AVATAR / 2, AVATAR / 2, 0, Math.PI * 2);
+        ctx.fillStyle = entry.isUser ? '#2d6cdf' : (msg2.role === 'note' ? '#5a6472' : '#3fbf8f');
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(entry.isUser ? '我' : 'AI', x + AVATAR / 2, y + AVATAR / 2 + 6);
+        ctx.textAlign = 'left';
+        var bx = x + AVATAR + GAP;
+        ctx.fillStyle = 'rgba(233,237,242,0.75)';
+        ctx.font = '14px sans-serif';
+        var nameLine = entry.name + ' · ' + formatExportTime(msg2.createdAt || msg2.ts);
+        if (msg2.editedAt) nameLine += ' · ' + t('edited');
+        ctx.fillText(nameLine, bx, y + 14);
+        /* 气泡 */
+        var bubbleY = y + 24;
+        var bubbleH = entry.lines.length * LINE + 20;
+        var bubbleW = contentWidth;
+        ctx.fillStyle = entry.isUser ? '#24506e' : '#1e2730';
+        roundRectPath(ctx, bx, bubbleY, bubbleW, bubbleH, 12);
+        ctx.fill();
+        ctx.fillStyle = '#e9edf2';
+        ctx.font = FONT + 'px sans-serif';
+        for (var l = 0; l < entry.lines.length; l++) {
+          ctx.fillText(entry.lines[l], bx + 14, bubbleY + 26 + l * LINE);
+        }
+        y += entry.height + 18;
+      }
+      ctx.fillStyle = 'rgba(233,237,242,0.35)';
+      ctx.font = '14px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(t('watermark'), WIDTH - PAD, totalHeight - 14);
+      ctx.textAlign = 'left';
+      return canvas.toDataURL('image/jpeg', 0.9);
+    } catch (e3) {
+      warn('长图渲染失败：' + errText(e3));
+      return FALLBACK_PNG_DATA_URL;
+    }
+  }
+
+  function exportImageName(prefix) {
+    var stamp = '';
+    try { stamp = backupDateStamp(); } catch (e) { stamp = String(Date.now()); }
+    return 'DeepSeekHouse-' + prefix + '-' + stamp + '.jpg';
+  }
+
+  function saveExportedImage(dataUrl, name) {
+    var B = global.Bridge;
+    if (!B || typeof B.saveImage !== 'function') { toast('当前环境不支持保存图片', true); return false; }
+    var result = null;
+    try { result = B.saveImage(dataUrl, name); } catch (e) { warn('保存图片失败：' + errText(e)); result = null; }
+    if (result && result.ok !== false) {
+      toast(t('imageSaved') + (result.path ? ' · ' + result.path : ''), true);
+      return true;
+    }
+    toast(t('imageSaveFailed') + (result && result.error ? '：' + result.error : ''), true);
+    return false;
+  }
+
+  /** App.exportMessageImage(msgId)：单条消息渲染长图 → Bridge.saveImage */
+  function exportMessageImage(msgId) {
+    var chat = Store.getActiveChat();
+    if (!chat) { toast('没有可导出的消息', true); return false; }
+    var key = String(msgId === null || msgId === undefined ? '' : msgId);
+    var messages = chat.messages || [];
+    var target = null;
+    for (var i = 0; i < messages.length; i++) {
+      if (String(messages[i].id) === key) { target = messages[i]; break; }
+    }
+    if (!target) { toast('找不到该消息', true); return false; }
+    var dataUrl = renderMessagesToDataUrl([target], chat.title || t('appName'));
+    return saveExportedImage(dataUrl, exportImageName('message'));
+  }
+
+  /** App.exportChatImage()：整段会话（最近 30 条 user/assistant/note）渲染长图 */
+  function exportChatImage() {
+    var chat = Store.getActiveChat();
+    if (!chat) { toast('没有可导出的会话', true); return false; }
+    var all = chat.messages || [];
+    var picked = [];
+    for (var i = 0; i < all.length; i++) {
+      var m = all[i];
+      if (m && (m.role === 'user' || m.role === 'assistant' || m.role === 'note')) picked.push(m);
+    }
+    if (!picked.length) { toast('当前会话没有可导出的消息', true); return false; }
+    if (picked.length > 30) picked = picked.slice(picked.length - 30);
+    var dataUrl = renderMessagesToDataUrl(picked, chat.title || t('appName'));
+    return saveExportedImage(dataUrl, exportImageName('chat'));
+  }
+
+  /* ---------------- 会话内搜索 ---------------- */
+
+  /** App.searchMessages(chatId,keyword) → [{msgId,role,text,index,msgIndex}] */
+  function searchMessages(chatId, keyword) {
+    var chat = Store.getChat(chatId) || Store.getActiveChat();
+    if (!chat) return [];
+    var raw = String(keyword === null || keyword === undefined ? '' : keyword).replace(/^\s+|\s+$/g, '');
+    if (!raw) return [];
+    var needle = raw.toLowerCase();
+    var messages = chat.messages || [];
+    var results = [];
+    for (var i = 0; i < messages.length && results.length < 200; i++) {
+      var msg = messages[i];
+      if (!msg || msg.role === 'system') continue;
+      var text = messagePlainText(msg);
+      if (!text) continue;
+      var pos = text.toLowerCase().indexOf(needle);
+      if (pos < 0 && msg.quoted && msg.quoted.text && String(msg.quoted.text).toLowerCase().indexOf(needle) >= 0) {
+        pos = 0;
+      }
+      if (pos < 0) continue;
+      var snippet = text;
+      if (snippet.length > 160) {
+        var from = Math.max(0, pos - 40);
+        var to = Math.min(snippet.length, from + 160);
+        snippet = (from > 0 ? '…' : '') + snippet.slice(from, to) + (to < snippet.length ? '…' : '');
+      }
+      results.push({
+        msgId: String(msg.id),
+        role: msg.role,
+        text: snippet,
+        index: pos,
+        msgIndex: i
+      });
+    }
+    return results;
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -7140,6 +7866,34 @@
   App.buildToolDiagnostics = function (name, args, resultText, evt, durationMs) {
     return buildToolDiagnostics(name, args, resultText, evt, durationMs);
   };
+
+  /* ARCH v2.8.0 批次3 对外接口：i18n / 外观 / 引用编辑 / 长图 / 搜索 */
+  App.t = function (key, vars) { return t(key, vars); };
+  App.getLocale = function () { return getLocale(); };
+  App.setLocale = safe(function (locale) { return setLocale(locale); }, 'App.setLocale');
+  App.applyLocale = safe(function (locale) { return applyLocale(locale); }, 'App.applyLocale');
+  App.getAppearance = function () { return currentAppearance(); };
+  App.applyAppearance = safe(function (input) { return applyAppearance(input); }, 'App.applyAppearance');
+  App.setTheme = safe(function (theme) { return setTheme(theme); }, 'App.setTheme');
+  /** App.applyTheme(theme?)：无参应用当前 prefs，有参等价 setTheme */
+  App.applyTheme = safe(function (theme) {
+    if (theme === undefined || theme === null || theme === '') return applyAppearance();
+    return setTheme(theme);
+  }, 'App.applyTheme');
+  App.setFontScale = safe(function (scale) { return setFontScale(scale); }, 'App.setFontScale');
+  App.applyGlassOptions = safe(function (opts) { return applyGlassOptions(opts); }, 'App.applyGlassOptions');
+  App.setGlassOptions = safe(function (opts) { return setGlassOptions(opts); }, 'App.setGlassOptions');
+  App.getWallpaper = function () { return String(state.wallpaper || ''); };
+  App.pickWallpaper = safe(function () { return pickWallpaper(); }, 'App.pickWallpaper');
+  App.clearWallpaper = safe(function () { return clearWallpaper(); }, 'App.clearWallpaper');
+  App.openAppearancePage = safe(function () { return openAppearancePage(); }, 'App.openAppearancePage');
+  App.exportMessageImage = safe(function (msgId) { return exportMessageImage(msgId); }, 'App.exportMessageImage');
+  App.exportChatImage = safe(function () { return exportChatImage(); }, 'App.exportChatImage');
+  App.searchMessages = function (chatId, keyword) { return searchMessages(chatId, keyword); };
+  App.quoteMessage = safe(function (msgId) { return quoteMessageById(msgId); }, 'App.quoteMessage');
+  App.getQuotedMessage = function () { return state.quotedMessage ? { msgId: state.quotedMessage.msgId, role: state.quotedMessage.role, text: state.quotedMessage.text } : null; };
+  App.clearQuote = safe(function () { return clearQuotedMessage(); }, 'App.clearQuote');
+  App.editMessage = safe(function (chatId, msgId, newText) { return editMessage(chatId, msgId, newText); }, 'App.editMessage');
   App.getFilePreview = function () { return state.filePreview; };
   App.confirmTool = safe(function (allow) {
     if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }

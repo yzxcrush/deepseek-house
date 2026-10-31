@@ -230,7 +230,18 @@
       resolve: null,
       passwordResolve: null,
       setupForToggle: false
-    }
+    },
+    /* 批次 3 · v2.8.0：外观 / 引用 / 编辑 / 会话搜索 / i18n */
+    appearance: {
+      theme: 'dark',
+      fontScale: 1,
+      wallpaper: '',
+      glass: { intensity: 60, speed: 1 }
+    },
+    quote: null,
+    edit: { msgId: null },
+    chatSearch: { keyword: '', matches: [], index: 0 },
+    locale: 'zh'
   };
 
   var WORKBENCH_KEY = 'dsh.workbench';
@@ -1249,7 +1260,8 @@
     else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents' ||
              state.screen === 'audit' || state.screen === 'mcp' || state.screen === 'market' ||
              state.screen === 'memory' || state.screen === 'trace' || state.screen === 'cost' ||
-             state.screen === 'tool-policy' || state.screen === 'snapshots') base = 2;
+             state.screen === 'tool-policy' || state.screen === 'snapshots' ||
+             state.screen === 'appearance') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen || state.buildPanelOpen ||
@@ -1258,7 +1270,8 @@
       isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal')) ||
       isModalOpen(r('mcp-form-modal')) || isModalOpen(r('memory-item-modal')) ||
       isModalOpen(r('attachment-sheet')) || isModalOpen(r('image-viewer')) ||
-      isModalOpen(r('pin-modal')) || isModalOpen(r('pin-setup-modal')) || isModalOpen(r('password-modal'));
+      isModalOpen(r('pin-modal')) || isModalOpen(r('pin-setup-modal')) || isModalOpen(r('password-modal')) ||
+      isModalOpen(r('edit-message-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1293,8 +1306,10 @@
     if (isModalOpen(r('pin-modal'))) resolvePin(false);
     if (isModalOpen(r('pin-setup-modal'))) closePinSetup();
     if (isModalOpen(r('password-modal'))) resolvePassword(null);
+    if (isModalOpen(r('edit-message-modal'))) closeEditMessage();
     ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal',
-      'mcp-form-modal', 'memory-item-modal', 'pin-modal', 'pin-setup-modal', 'password-modal'].forEach(function (id) {
+      'mcp-form-modal', 'memory-item-modal', 'pin-modal', 'pin-setup-modal', 'password-modal',
+      'edit-message-modal'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -5447,6 +5462,543 @@
     badge.title = '快照：' + String(snapshotId);
   }
 
+  /* ================================================================== *
+   * 批次 3 · v2.8.0：外观（主题 / 字号 / 壁纸 / 液态玻璃 / 语言）
+   * ================================================================== */
+  var THEME_VALUES = { dark: 1, midnight: 1, black: 1 };
+  var FONT_SCALES = [0.9, 1, 1.1, 1.2];
+
+  function normalizeThemeName(theme) {
+    var value = String(theme == null ? '' : theme).toLowerCase();
+    if (value === 'midnight' || value === 'blue' || value === 'midnight_blue') return 'midnight';
+    if (value === 'black' || value === 'oled' || value === 'pure_black') return 'black';
+    return 'dark';
+  }
+
+  function normalizeFontScale(value) {
+    var scale = Number(value);
+    if (!isFinite(scale)) return 1;
+    var best = 1;
+    var bestDiff = Infinity;
+    FONT_SCALES.forEach(function (item) {
+      var diff = Math.abs(item - scale);
+      if (diff < bestDiff) { bestDiff = diff; best = item; }
+    });
+    return best;
+  }
+
+  function clampNumber(value, min, max, fallback) {
+    var n = Number(value);
+    if (!isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function applyTheme(theme) {
+    var value = normalizeThemeName(theme);
+    state.appearance.theme = value;
+    var root = document.documentElement;
+    if (root) root.setAttribute('data-theme', value);
+    var cards = document.querySelectorAll('#appearance-theme-list [data-theme]');
+    Array.prototype.forEach.call(cards, function (card) {
+      card.classList.toggle('is-active', card.getAttribute('data-theme') === value);
+    });
+    return value;
+  }
+
+  function setFontScale(scale) {
+    var value = normalizeFontScale(scale);
+    state.appearance.fontScale = value;
+    var root = document.documentElement;
+    if (root) root.setAttribute('data-font-scale', String(value));
+    var buttons = document.querySelectorAll('#appearance-font-list [data-scale]');
+    Array.prototype.forEach.call(buttons, function (button) {
+      button.classList.toggle('is-active', Number(button.getAttribute('data-scale')) === value);
+    });
+    return value;
+  }
+
+  function applyWallpaper(dataUrl) {
+    var value = dataUrl == null ? '' : String(dataUrl);
+    state.appearance.wallpaper = value;
+    var root = document.documentElement;
+    try {
+      if (root) root.style.setProperty('--chat-wallpaper', value ? ('url("' + value + '")') : 'none');
+    } catch (err) { /* 静默 */ }
+    var img = r('appearance-wallpaper-img');
+    var empty = r('appearance-wallpaper-empty');
+    if (img) {
+      if (value) {
+        img.src = value;
+        img.hidden = false;
+      } else {
+        img.src = '';
+        img.hidden = true;
+      }
+    }
+    if (empty) empty.hidden = !!value;
+    return value;
+  }
+
+  function clearWallpaper() {
+    return applyWallpaper('');
+  }
+
+  function applyGlassOptions(options) {
+    var data = options && typeof options === 'object' ? options : {};
+    var intensity = clampNumber(data.intensity, 0, 100, state.appearance.glass.intensity);
+    var speed = clampNumber(data.speed, 0.2, 3, state.appearance.glass.speed);
+    state.appearance.glass = { intensity: Math.round(intensity), speed: Math.round(speed * 10) / 10 };
+    var root = document.documentElement;
+    if (root) {
+      var alpha = 0.3 + (state.appearance.glass.intensity / 100) * 0.45;
+      var blur = 6 + (state.appearance.glass.intensity / 100) * 30;
+      var sheen = 0.2 + (state.appearance.glass.intensity / 100) * 0.7;
+      var duration = 9 / state.appearance.glass.speed;
+      root.style.setProperty('--glass-surface-alpha', alpha.toFixed(3));
+      root.style.setProperty('--glass-blur', blur.toFixed(1) + 'px');
+      root.style.setProperty('--glass-sheen-opacity', sheen.toFixed(3));
+      root.style.setProperty('--liquid-speed', duration.toFixed(2) + 's');
+    }
+    var intensityInput = r('appearance-glass-intensity');
+    if (intensityInput) intensityInput.value = String(state.appearance.glass.intensity);
+    var speedInput = r('appearance-glass-speed');
+    if (speedInput) speedInput.value = String(state.appearance.glass.speed);
+    var intensityVal = r('appearance-glass-intensity-val');
+    if (intensityVal) intensityVal.textContent = String(state.appearance.glass.intensity);
+    var speedVal = r('appearance-glass-speed-val');
+    if (speedVal) speedVal.textContent = state.appearance.glass.speed.toFixed(1) + 'x';
+    var values = r('appearance-glass-values');
+    if (values) values.textContent = '强度 ' + state.appearance.glass.intensity + ' · 速度 ' + state.appearance.glass.speed.toFixed(1) + 'x';
+    return state.appearance.glass;
+  }
+
+  function applyAppearance(data) {
+    var info = data && typeof data === 'object' ? data : {};
+    if (info.theme != null) applyTheme(info.theme);
+    if (info.fontScale != null) setFontScale(info.fontScale);
+    if (Object.prototype.hasOwnProperty.call(info, 'wallpaper')) applyWallpaper(info.wallpaper);
+    if (info.glass && typeof info.glass === 'object') applyGlassOptions(info.glass);
+    else if (info.glassIntensity != null || info.glassSpeed != null) {
+      applyGlassOptions({ intensity: info.glassIntensity, speed: info.glassSpeed });
+    }
+    var label = r('set-appearance-label');
+    if (label) {
+      label.textContent = ({
+        dark: '暗黑', midnight: '午夜蓝', black: '纯黑 OLED'
+      }[state.appearance.theme] || '暗黑') + ' · ' + Math.round(state.appearance.fontScale * 100) + '%';
+    }
+    return getAppearance();
+  }
+
+  function getAppearance() {
+    return {
+      theme: state.appearance.theme,
+      fontScale: state.appearance.fontScale,
+      wallpaper: state.appearance.wallpaper,
+      glass: {
+        intensity: state.appearance.glass.intensity,
+        speed: state.appearance.glass.speed
+      }
+    };
+  }
+
+  function openAppearancePage() {
+    showScreenImpl('appearance');
+    if (!invoke('onOpenAppearance')) {
+      applyAppearance(state.appearance);
+    }
+  }
+
+  /* ================================================================== *
+   * 批次 3 · v2.8.0：i18n（语言切换 / 静态文案替换）
+   * ================================================================== */
+  var UI_LOCALES = {
+    zh: {
+      'settings.interface': '界面',
+      'appearance': '外观',
+      'appearance.subtitle': '主题 / 字号 / 壁纸 / 液态玻璃',
+      'appearance.theme': '主题色',
+      'appearance.font': '字号',
+      'appearance.wallpaper': '聊天壁纸',
+      'appearance.glass': '液态玻璃',
+      'appearance.language': '语言 / Language',
+      'appearance.tip.title': '实时预览',
+      'appearance.tip.body': '主题、字号、壁纸与液态玻璃参数即时生效并保存到本机；壁纸会显示在聊天背景中。',
+      'theme.dark': '暗黑',
+      'theme.midnight': '午夜蓝',
+      'theme.black': '纯黑 OLED',
+      'nav.chats': '聊天',
+      'nav.share': '分享',
+      'nav.profile': '个人资料',
+      'settings.title': '设置',
+      'plugins.title': '插件',
+      'composer.placeholder': '消息',
+      'profile.share': '分享聊天记录',
+      'profile.clear': '清空所有会话',
+      'profile.about': '关于 DeepSeek House',
+      'profile.logout': '退出登录',
+      'profile.audit': '审计日志',
+      'profile.backup': '备份与恢复',
+      'profile.settings': '设置',
+      'profile.edit': '编辑资料',
+      'settings.save': '保存设置',
+      'settings.general': '模型与生成',
+      'settings.server': '服务器',
+      'settings.workspace': '工作区',
+      'settings.prompt': '系统提示词',
+      'settings.agents': '智能体',
+      'settings.mcp': 'MCP 与构建',
+      'settings.plugins': '插件与记忆',
+      'settings.observability': '可观测性与权限',
+      'settings.security': '安全与快照',
+      'settings.account': '账户',
+      'settings.about': '关于',
+      'share.exportImage': '复制会话为长图',
+      'login.submit': '登录'
+    },
+    en: {
+      'settings.interface': 'Interface',
+      'appearance': 'Appearance',
+      'appearance.subtitle': 'Theme / Font size / Wallpaper / Glass',
+      'appearance.theme': 'Theme color',
+      'appearance.font': 'Font size',
+      'appearance.wallpaper': 'Chat wallpaper',
+      'appearance.glass': 'Liquid glass',
+      'appearance.language': 'Language / 语言',
+      'appearance.tip.title': 'Live preview',
+      'appearance.tip.body': 'Theme, font size, wallpaper and glass options apply instantly and are saved locally.',
+      'theme.dark': 'Dark',
+      'theme.midnight': 'Midnight',
+      'theme.black': 'OLED black',
+      'nav.chats': 'Chats',
+      'nav.share': 'Share',
+      'nav.profile': 'Profile',
+      'settings.title': 'Settings',
+      'plugins.title': 'Plugins',
+      'composer.placeholder': 'Message',
+      'profile.share': 'Share chat history',
+      'profile.clear': 'Clear all chats',
+      'profile.about': 'About DeepSeek House',
+      'profile.logout': 'Log out',
+      'profile.audit': 'Audit log',
+      'profile.backup': 'Backup & restore',
+      'profile.settings': 'Settings',
+      'profile.edit': 'Edit profile',
+      'settings.save': 'Save settings',
+      'settings.general': 'Model & generation',
+      'settings.server': 'Server',
+      'settings.workspace': 'Workspace',
+      'settings.prompt': 'System prompt',
+      'settings.agents': 'Agents',
+      'settings.mcp': 'MCP & builds',
+      'settings.plugins': 'Plugins & memory',
+      'settings.observability': 'Observability & permissions',
+      'settings.security': 'Security & snapshots',
+      'settings.account': 'Account',
+      'settings.about': 'About',
+      'share.exportImage': 'Copy chat as image',
+      'login.submit': 'Log in'
+    }
+  };
+
+  function normalizeLocaleName(value) {
+    return String(value == null ? '' : value).toLowerCase().indexOf('en') === 0 ? 'en' : 'zh';
+  }
+
+  function applyLocale(source) {
+    var dict = null;
+    var locale = state.locale || 'zh';
+    if (typeof source === 'string') {
+      locale = normalizeLocaleName(source);
+      dict = UI_LOCALES[locale] || {};
+    } else if (source && typeof source === 'object') {
+      dict = source;
+      if (source.locale != null) locale = normalizeLocaleName(source.locale);
+    }
+    state.locale = locale;
+    var root = document.documentElement;
+    if (root) root.setAttribute('lang', locale === 'en' ? 'en' : 'zh-CN');
+    var nodes = document.querySelectorAll('[data-i18n]');
+    Array.prototype.forEach.call(nodes, function (node) {
+      var key = node.getAttribute('data-i18n');
+      if (!key) return;
+      if (!node.getAttribute('data-i18n-original')) node.setAttribute('data-i18n-original', node.textContent);
+      var value = dict && dict[key] != null ? String(dict[key]) : '';
+      if (!value) {
+        var fallback = UI_LOCALES[locale] && UI_LOCALES[locale][key];
+        value = fallback != null ? String(fallback) : '';
+      }
+      if (!value) value = node.getAttribute('data-i18n-original') || '';
+      if (value) node.textContent = value;
+    });
+    var placeholders = document.querySelectorAll('[data-i18n-placeholder]');
+    Array.prototype.forEach.call(placeholders, function (node) {
+      var key = node.getAttribute('data-i18n-placeholder');
+      if (!key) return;
+      var value = dict && dict[key] != null ? String(dict[key]) : '';
+      if (!value && UI_LOCALES[locale] && UI_LOCALES[locale][key] != null) value = String(UI_LOCALES[locale][key]);
+      if (value) node.setAttribute('placeholder', value);
+    });
+    var langButtons = document.querySelectorAll('[data-locale]');
+    Array.prototype.forEach.call(langButtons, function (button) {
+      button.classList.toggle('is-active', button.getAttribute('data-locale') === locale);
+    });
+    var composeInput = r('composer-input');
+    if (composeInput) {
+      var ph = dict && dict['composer.placeholder'] != null ? String(dict['composer.placeholder'])
+        : (UI_LOCALES[locale] && UI_LOCALES[locale]['composer.placeholder']) || '消息';
+      composeInput.setAttribute('placeholder', ph);
+    }
+    return locale;
+  }
+
+  function setLocale(locale) {
+    var value = normalizeLocaleName(locale);
+    applyLocale(value);
+    if (!invoke('onSetLocale', value)) UI.toast('语言设置服务尚未就绪');
+    return value;
+  }
+
+  /* ================================================================== *
+   * 批次 3 · v2.8.0：引用回复 / 编辑消息 / 消息长图
+   * ================================================================== */
+  function normalizeQuoted(quoted) {
+    if (!quoted || typeof quoted !== 'object') return null;
+    var role = quoted.role === 'assistant' ? 'assistant' : 'user';
+    var text = quoted.text != null ? String(quoted.text)
+      : (quoted.preview != null ? String(quoted.preview) : (quoted.content != null ? String(quoted.content) : ''));
+    return {
+      msgId: quoted.msgId != null ? quoted.msgId : quoted.id,
+      role: role,
+      name: quoted.name != null ? String(quoted.name) : '',
+      text: text
+    };
+  }
+
+  function setQuotedMessage(quoted) {
+    var normalized = normalizeQuoted(quoted);
+    state.quote = normalized;
+    var bar = r('quote-bar');
+    var roleEl = r('quote-role');
+    var textEl = r('quote-text');
+    if (!bar) return normalized;
+    if (!normalized) {
+      bar.hidden = true;
+      if (roleEl) roleEl.textContent = '';
+      if (textEl) textEl.textContent = '';
+      return null;
+    }
+    bar.hidden = false;
+    if (roleEl) roleEl.textContent = '引用 · ' + (normalized.name || (normalized.role === 'assistant' ? 'AI 回复' : '用户消息'));
+    if (textEl) textEl.textContent = truncate(normalized.text.replace(/\s+/g, ' ').trim(), 160);
+    return normalized;
+  }
+
+  function cancelQuote() {
+    setQuotedMessage(null);
+    if (!invoke('onCancelQuote')) {
+      /* 无需提示：取消引用是本地行为 */
+    }
+  }
+
+  function quoteMessage(msgId) {
+    if (msgId == null) return;
+    if (!invoke('onQuoteMessage', msgId)) UI.toast('引用服务尚未就绪');
+  }
+
+  function findMessageData(msgId) {
+    var id = String(msgId == null ? '' : msgId);
+    return state.msgData[id] || null;
+  }
+
+  function openEditMessage(msgId) {
+    var data = findMessageData(msgId);
+    if (!data || data.role !== 'user') return;
+    state.edit.msgId = String(msgId);
+    var input = r('edit-message-input');
+    if (input) input.value = data.content == null ? '' : String(data.content);
+    var error = r('edit-message-error');
+    if (error) {
+      error.textContent = '';
+      error.hidden = true;
+    }
+    openModal(r('edit-message-modal'));
+    setTimeout(function () {
+      var field = r('edit-message-input');
+      if (!field) return;
+      try { field.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function closeEditMessage() {
+    closeModal(r('edit-message-modal'));
+    state.edit.msgId = null;
+  }
+
+  function editMessageError(text) {
+    var error = r('edit-message-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function submitEditMessage() {
+    var msgId = state.edit.msgId;
+    var input = r('edit-message-input');
+    var text = input ? String(input.value || '').trim() : '';
+    if (!msgId) return;
+    if (!text) {
+      editMessageError('消息内容不能为空');
+      return;
+    }
+    var data = findMessageData(msgId);
+    if (data && String(data.content == null ? '' : data.content) === text) {
+      closeEditMessage();
+      return;
+    }
+    var result = callHandler('onEditMessage', msgId, text);
+    if (result === undefined) {
+      editMessageError('编辑服务尚未就绪');
+      return;
+    }
+    Promise.resolve(result).then(function (done) {
+      if (done === false) {
+        editMessageError('编辑失败，请重试');
+        return;
+      }
+      closeEditMessage();
+      UI.toast('已更新消息，正在重新生成');
+    }, function () {
+      editMessageError('编辑失败，请重试');
+    });
+  }
+
+  function exportMessageImage(msgId) {
+    if (msgId == null) return;
+    if (!invoke('onExportMessageImage', msgId)) UI.toast('长图导出服务尚未就绪');
+  }
+
+  function exportChatImage() {
+    if (!invoke('onExportChatImage')) UI.toast('长图导出服务尚未就绪');
+  }
+
+  /* ================================================================== *
+   * 批次 3 · v2.8.0：会话内搜索
+   * ================================================================== */
+  function clearSearchHighlights() {
+    Object.keys(state.msgNodes || {}).forEach(function (id) {
+      var refs = state.msgNodes[id];
+      if (!refs || !refs.root) return;
+      refs.root.classList.remove('is-search-hit', 'is-search-current');
+    });
+  }
+
+  function messageSearchText(data) {
+    if (!data) return '';
+    var parts = [data.content, data.result, data.summary, data.reasoning];
+    if (data.args != null) parts.push(toolArgsText(data.args));
+    if (Array.isArray(data.images)) parts.push('图片');
+    return parts.map(function (item) { return item == null ? '' : String(item); }).join(' ');
+  }
+
+  function openChatSearch() {
+    var bar = r('chat-search-in');
+    if (bar) bar.hidden = false;
+    var input = r('chat-search-in-input');
+    if (input) {
+      try { input.focus(); input.select(); } catch (err) { /* 静默 */ }
+    }
+  }
+
+  function closeChatSearch() {
+    var bar = r('chat-search-in');
+    if (bar) bar.hidden = true;
+    clearSearchHighlights();
+    state.chatSearch = { keyword: '', matches: [], index: 0 };
+    var input = r('chat-search-in-input');
+    if (input) input.value = '';
+    var count = r('chat-search-in-count');
+    if (count) count.textContent = '0/0';
+  }
+
+  function updateChatSearchCount() {
+    var count = r('chat-search-in-count');
+    if (!count) return;
+    var total = state.chatSearch.matches.length;
+    if (!total) { count.textContent = '0/0'; return; }
+    count.textContent = (state.chatSearch.index + 1) + '/' + total;
+  }
+
+  function searchInChat(keyword) {
+    var query = String(keyword == null ? '' : keyword).trim().toLowerCase();
+    state.chatSearch.keyword = query;
+    clearSearchHighlights();
+    var matches = [];
+    if (query) {
+      state.order.forEach(function (id) {
+        var data = state.msgData[id];
+        if (!data) return;
+        if (messageSearchText(data).toLowerCase().indexOf(query) >= 0) matches.push(String(id));
+      });
+    }
+    state.chatSearch.matches = matches;
+    state.chatSearch.index = 0;
+    matches.forEach(function (id) {
+      var refs = state.msgNodes[id];
+      if (refs && refs.root) refs.root.classList.add('is-search-hit');
+    });
+    if (matches.length) highlightMessage(matches[0]);
+    else updateChatSearchCount();
+    return matches.slice();
+  }
+
+  function highlightMessage(msgId) {
+    var id = String(msgId == null ? '' : msgId);
+    if (!id) return;
+    var refs = state.msgNodes[id];
+    if (!refs || !refs.root) return;
+    Object.keys(state.msgNodes).forEach(function (key) {
+      if (state.msgNodes[key] && state.msgNodes[key].root) state.msgNodes[key].root.classList.remove('is-search-current');
+    });
+    refs.root.classList.add('is-search-hit', 'is-search-current');
+    state.chatSearch.index = Math.max(0, state.chatSearch.matches.indexOf(id));
+    updateChatSearchCount();
+    try {
+      if (refs.root.scrollIntoView) refs.root.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } catch (err) { /* 静默 */ }
+    return id;
+  }
+
+  function moveChatSearch(delta) {
+    var matches = state.chatSearch.matches || [];
+    if (!matches.length) return;
+    var next = (state.chatSearch.index + Number(delta || 1) + matches.length) % matches.length;
+    state.chatSearch.index = next;
+    highlightMessage(matches[next]);
+  }
+
+  function renderMessageSearch(results, keyword) {
+    var list = Array.isArray(results) ? results : [];
+    searchInChat(keyword);
+    if (!list.length) return state.chatSearch.matches;
+    var ids = [];
+    list.forEach(function (item) {
+      if (!item) return;
+      var id = item.msgId != null ? String(item.msgId) : (item.id != null ? String(item.id) : '');
+      if (id && ids.indexOf(id) < 0) ids.push(id);
+    });
+    if (!ids.length) return state.chatSearch.matches;
+    state.chatSearch.matches = ids.filter(function (id) {
+      return !!state.msgNodes[id];
+    });
+    state.chatSearch.index = 0;
+    if (state.chatSearch.matches.length) highlightMessage(state.chatSearch.matches[0]);
+    else updateChatSearchCount();
+    return state.chatSearch.matches.slice();
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -5466,7 +6018,8 @@
     trace: 'screen-trace',
     cost: 'screen-cost',
     'tool-policy': 'screen-tool-policy',
-    snapshots: 'screen-snapshots'
+    snapshots: 'screen-snapshots',
+    appearance: 'screen-appearance'
   };
 
   function syncBottomNav(name) {
@@ -5509,7 +6062,7 @@
     closeAttachmentSheet();
     closeBuildPanel();
     closeImageViewer();
-    if (name !== 'chat') { closeEmojiPanel(); closeSlashMenu(); }
+    if (name !== 'chat') { closeEmojiPanel(); closeSlashMenu(); closeChatSearch(); }
     if (name === 'settings') refreshSettingsStats();
     syncDepth();
   }
@@ -6950,6 +7503,28 @@
           run: function () { invoke('onForkMessage', origMsgId(context.id)); }
         });
       }
+      /* 批次3 v2.8.0：引用 / 编辑 / 复制为图片 */
+      if (content) {
+        items.push({
+          label: '引用',
+          icon: ICON.link,
+          run: function () { quoteMessage(origMsgId(context.id)); }
+        });
+      }
+      if ((data.role || '') === 'user' && content) {
+        items.push({
+          label: '编辑',
+          icon: ICON.edit,
+          run: function () { openEditMessage(context.id); }
+        });
+      }
+      if (content || (Array.isArray(data.images) && data.images.length)) {
+        items.push({
+          label: '复制为图片',
+          icon: ICON.download,
+          run: function () { exportMessageImage(origMsgId(context.id)); }
+        });
+      }
       if ((data.role || 'assistant') === 'assistant') {
         items.push({
           label: '重新生成',
@@ -7012,6 +7587,11 @@
         label: '导出 Markdown',
         icon: ICON.download,
         run: function () { invoke('onExportChat', context.id); }
+      });
+      items.push({
+        label: '复制为长图',
+        icon: ICON.download,
+        run: function () { exportChatImage(); }
       });
       items.push({
         label: '删除会话',
@@ -7153,6 +7733,11 @@
       if (typeof state.cb.onCloseTrace === 'function') invoke('onCloseTrace');
       return;
     }
+    if (state.screen === 'appearance') {
+      showScreenImpl('settings');
+      if (typeof state.cb.onCloseAppearance === 'function') invoke('onCloseAppearance');
+      return;
+    }
     if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') {
       var closeSnapKey = state.screen === 'snapshots' ? 'onCloseSnapshots' : (state.screen === 'cost' ? 'onCloseCost' : 'onCloseToolPolicies');
       var snapScreen = state.screen;
@@ -7191,6 +7776,9 @@
     if (isModalOpen(r('pin-modal'))) { resolvePin(false); return true; }
     if (isModalOpen(r('pin-setup-modal'))) { closePinSetup(); return true; }
     if (isModalOpen(r('password-modal'))) { resolvePassword(null); return true; }
+    if (isModalOpen(r('edit-message-modal'))) { closeEditMessage(); return true; }
+    var searchBar = r('chat-search-in');
+    if (searchBar && !searchBar.hidden) { closeChatSearch(); return true; }
     if (state.pluginPanelOpen) { closePluginPanel(); return true; }
     if (state.fileDrawer.open) { closeFileDrawer(); return true; }
     if (state.modelPicker.open) { closeModelPickerPanel(true); return true; }
@@ -7203,6 +7791,7 @@
     if (state.screen === 'market' || state.screen === 'memory') { showScreenImpl('settings'); return true; }
     if (state.screen === 'trace') { showScreenImpl('chat'); return true; }
     if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') { showScreenImpl('settings'); return true; }
+    if (state.screen === 'appearance') { showScreenImpl('settings'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -7537,6 +8126,53 @@
       case 'password-cancel':
         resolvePassword(null);
         break;
+      /* -------- 批次3 v2.8.0：外观 / 引用 / 编辑 / 搜索 / 长图 / 语言 -------- */
+      case 'open-appearance':
+        openAppearancePage();
+        break;
+      case 'set-theme': {
+        var themeValue = node.getAttribute('data-theme');
+        applyTheme(themeValue);
+        if (!invoke('onSetTheme', themeValue)) UI.toast('主题服务尚未就绪');
+        break;
+      }
+      case 'set-font-scale': {
+        var scaleValue = Number(node.getAttribute('data-scale'));
+        setFontScale(scaleValue);
+        if (!invoke('onSetFontScale', scaleValue)) UI.toast('字号服务尚未就绪');
+        break;
+      }
+      case 'pick-wallpaper':
+        if (!invoke('onPickWallpaper')) UI.toast('壁纸选择服务尚未就绪');
+        break;
+      case 'clear-wallpaper':
+        clearWallpaper();
+        if (!invoke('onClearWallpaper')) UI.toast('壁纸服务尚未就绪');
+        break;
+      case 'set-locale':
+        setLocale(node.getAttribute('data-locale'));
+        break;
+      case 'cancel-quote':
+        cancelQuote();
+        break;
+      case 'edit-message-save':
+        submitEditMessage();
+        break;
+      case 'edit-message-cancel':
+        closeEditMessage();
+        break;
+      case 'chat-search-prev':
+        moveChatSearch(-1);
+        break;
+      case 'chat-search-next':
+        moveChatSearch(1);
+        break;
+      case 'close-chat-search':
+        closeChatSearch();
+        break;
+      case 'export-chat-image':
+        exportChatImage();
+        break;
       case 'tool-policy':
         setToolPolicyMode(node.getAttribute('data-tool'), node.getAttribute('data-mode'));
         break;
@@ -7586,7 +8222,9 @@
         toggleEmojiPanel();
         break;
       case 'open-search':
-        if (state.screen === 'chats') { toggleChatSearch(true); } else { openDrawer(); focusSearch(); }
+        if (state.screen === 'chat') { openChatSearch(); }
+        else if (state.screen === 'chats') { toggleChatSearch(true); }
+        else { openDrawer(); focusSearch(); }
         break;
       case 'clear-search':
         clearSearch();
@@ -7784,6 +8422,17 @@
       searchTrace(target.value);
       return;
     }
+    if (target.id === 'chat-search-in-input') {
+      searchInChat(target.value);
+      return;
+    }
+    if (target.id === 'appearance-glass-intensity' || target.id === 'appearance-glass-speed') {
+      applyGlassOptions({
+        intensity: r('appearance-glass-intensity') ? Number(r('appearance-glass-intensity').value) : state.appearance.glass.intensity,
+        speed: r('appearance-glass-speed') ? Number(r('appearance-glass-speed').value) : state.appearance.glass.speed
+      });
+      return;
+    }
     if (target.id === 'search-input') {
       onSearchInput();
       return;
@@ -7826,6 +8475,14 @@
     /* 批次2：安全 PIN 开关 */
     if (target.id === 'set-pin') {
       setPinEnabled(!!target.checked);
+      return;
+    }
+    /* 批次3：液态玻璃滑块（松手/change 时保存） */
+    if (target.id === 'appearance-glass-intensity' || target.id === 'appearance-glass-speed') {
+      if (!invoke('onSetGlassOptions', {
+        intensity: state.appearance.glass.intensity,
+        speed: state.appearance.glass.speed
+      })) UI.toast('液态玻璃设置服务尚未就绪');
     }
     /* Root 模式开关 */
     if (target.id === 'set-rootmode') {
@@ -7898,6 +8555,13 @@
       if (key === 'Enter') {
         event.preventDefault();
         submitMcpForm();
+      }
+      return;
+    }
+    if (target.id === 'chat-search-in-input') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        moveChatSearch(event.shiftKey ? -1 : 1);
       }
       return;
     }
@@ -8111,7 +8775,16 @@
       'pin-modal', 'pin-title', 'pin-message', 'pin-input', 'pin-error',
       'pin-setup-modal', 'pin-setup-new', 'pin-setup-confirm', 'pin-setup-error',
       'password-modal', 'password-title', 'password-message', 'password-input', 'password-error',
-      'backup-modal', 'backup-encrypt', 'backup-password', 'backup-error'
+      'backup-modal', 'backup-encrypt', 'backup-password', 'backup-error',
+      /* 批次3 v2.8.0：外观 / 引用 / 编辑 / 会话搜索 / i18n */
+      'screen-appearance', 'set-appearance-row', 'set-appearance-label',
+      'appearance-theme-list', 'appearance-font-list', 'appearance-font-preview',
+      'appearance-wallpaper-preview', 'appearance-wallpaper-img', 'appearance-wallpaper-empty',
+      'appearance-glass-intensity', 'appearance-glass-speed',
+      'appearance-glass-intensity-val', 'appearance-glass-speed-val', 'appearance-glass-values',
+      'quote-bar', 'quote-role', 'quote-text',
+      'edit-message-modal', 'edit-message-input', 'edit-message-error',
+      'chat-search-in', 'chat-search-in-input', 'chat-search-in-count'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -8754,10 +9427,37 @@
   UI.requirePassword = requirePassword;
   UI.promptPassword = requirePassword;
 
+  /* 批次 3 · v2.8.0：外观 / 引用 / 编辑 / 搜索 / 语言 */
+  UI.applyAppearance = function (data) { return applyAppearance(data); };
+  UI.applyTheme = applyTheme;
+  UI.setFontScale = setFontScale;
+  UI.applyWallpaper = applyWallpaper;
+  UI.clearWallpaper = clearWallpaper;
+  UI.applyGlassOptions = function (options) { return applyGlassOptions(options); };
+  UI.getAppearance = getAppearance;
+  UI.openAppearancePage = openAppearancePage;
+  UI.setQuotedMessage = setQuotedMessage;
+  UI.quoteMessage = quoteMessage;
+  UI.cancelQuote = cancelQuote;
+  UI.clearQuote = function () { return setQuotedMessage(null); };
+  UI.openEditMessage = openEditMessage;
+  UI.closeEditMessage = closeEditMessage;
+  UI.exportMessageImage = exportMessageImage;
+  UI.exportChatImage = exportChatImage;
+  UI.searchInChat = searchInChat;
+  UI.highlightMessage = highlightMessage;
+  UI.renderMessageSearch = renderMessageSearch;
+  UI.openChatSearch = openChatSearch;
+  UI.closeChatSearch = closeChatSearch;
+  UI.moveChatSearch = moveChatSearch;
+  UI.applyLocale = applyLocale;
+  UI.setLocale = setLocale;
+  UI.getLocale = function () { return state.locale || 'zh'; };
+
   /* 液态玻璃 / 毛玻璃 */
   UI.setGlassMode = function (mode) { return applyGlassMode(mode); };
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '2.7.0';
+  UI.version = '2.8.0';
 })();
