@@ -49,7 +49,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.5.5.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.6.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -69,7 +69,7 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.5.5.apk`
+产物：`dist/DeepSeekHouse-2.6.0.apk`
 
 ### 云端构建（GitHub Actions）
 
@@ -97,6 +97,15 @@ CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → 
 - 开启后：App 内置终端、AI 的 `run_shell` 工具通过 `/system/bin/su -c` 执行，可读写 root 路径
 - 前提：设备已 root（KernelSU/Magisk），并在 root 管理器里**允许「DeepSeek House」**（未授权时开关会提示并保持关闭）
 - 也可不改 App：用 `su` 启动 `termux-mcp/server.py`，通过 MCP 的 `run_shell` 获得 root（见 termux-mcp/README.md）
+
+## 🔭 Agent 可观测性与成本（v2.6.0）
+
+- **运行轨迹时间线**：按会话记录思考摘要 → 工具调用（名称/参数/风险/确认状态）→ 工具结果（成功/失败/耗时/摘要），可搜索、可折叠，失败红色标记
+- **Trace 导出与重放**：一键导出 JSON；单条工具记录可「用同样参数重放」
+- **斜杠命令**：`/new /clear /model /export /audit /trace /cost /mcp /workbench /stop /help`
+- **用量与成本**：按会话/天/周/月统计 token 与估算费用（CNY），按模型拆分，预算 80% 黄色告警 / 超限红色提示
+- **工具权限策略**：每个工具可设 自动 / 首次确认 / 每次确认 / 禁止，策略优先于默认风险等级
+- **审计导出**：审计日志导出 JSON / CSV
 
 ## 🧩 插件生态与记忆（P3，v2.2.0）
 

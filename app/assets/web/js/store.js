@@ -77,7 +77,11 @@
     /* ARCH v2 P4：工作台 / 终端高度 / 应用锁 */
     workbench: false,
     terminalHeight: 260,
-    appLock: false
+    appLock: false,
+    /* 批次1 v2.6.0：成本预算 / 自定义价格 / 工具权限策略 */
+    costBudget: { daily: 0, monthly: 0 },
+    costPrice: {},
+    toolPolicies: {}
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -171,7 +175,10 @@
       contextBudget: DEFAULT_PREFS.contextBudget,
       workbench: DEFAULT_PREFS.workbench,
       terminalHeight: DEFAULT_PREFS.terminalHeight,
-      appLock: DEFAULT_PREFS.appLock
+      appLock: DEFAULT_PREFS.appLock,
+      costBudget: { daily: DEFAULT_PREFS.costBudget.daily, monthly: DEFAULT_PREFS.costBudget.monthly },
+      costPrice: {},
+      toolPolicies: {}
     };
   }
 
@@ -184,7 +191,8 @@
       customModels: [],
       presets: defaultPresets(),
       plugins: { enabled: {}, settings: {} },
-      ui: { drawerOpen: false }
+      ui: { drawerOpen: false },
+      usage: normalizeUsage(null)
     };
   }
 
@@ -261,6 +269,38 @@
     if (raw.workbench !== undefined) p.workbench = !!raw.workbench;
     if (raw.terminalHeight !== undefined) p.terminalHeight = Math.round(clampNum(raw.terminalHeight, 120, 800));
     if (raw.appLock !== undefined) p.appLock = !!raw.appLock;
+    /* 批次1：预算 / 价格 / 工具策略（结构化，做安全归一化） */
+    if (raw.costBudget && typeof raw.costBudget === 'object') {
+      var budget = raw.costBudget;
+      p.costBudget = {
+        daily: Math.max(0, Number(budget.daily) || 0),
+        monthly: Math.max(0, Number(budget.monthly) || 0)
+      };
+    }
+    if (raw.costPrice && typeof raw.costPrice === 'object') {
+      var prices = {};
+      var priceKeys = Object.keys(raw.costPrice);
+      for (var pi = 0; pi < priceKeys.length && pi < 50; pi++) {
+        var priceKey = String(priceKeys[pi]).slice(0, 80);
+        var priceVal = raw.costPrice[priceKeys[pi]];
+        if (!priceVal || typeof priceVal !== 'object') continue;
+        prices[priceKey] = {
+          input: Math.max(0, Number(priceVal.input) || 0),
+          output: Math.max(0, Number(priceVal.output) || 0)
+        };
+      }
+      p.costPrice = prices;
+    }
+    if (raw.toolPolicies && typeof raw.toolPolicies === 'object') {
+      var policies = {};
+      var policyKeys = Object.keys(raw.toolPolicies);
+      for (var po = 0; po < policyKeys.length && po < 200; po++) {
+        var toolKey = String(policyKeys[po]).slice(0, 120);
+        var mode = String(raw.toolPolicies[policyKeys[po]] || '');
+        if (mode === 'auto' || mode === 'once' || mode === 'always' || mode === 'deny') policies[toolKey] = mode;
+      }
+      p.toolPolicies = policies;
+    }
     // 安全：apiKey 永远不写入 localStorage
     return p;
   }
@@ -350,6 +390,110 @@
     return msg;
   }
 
+  /* 批次1 v2.6.0：Trace 步骤（每会话 ≤500 条） */
+  var TRACE_TYPES = { thinking: true, tool_call: true, tool_result: true, note: true };
+  var TRACE_MAX = 500;
+
+  function cloneSafe(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'string') return value.slice(0, 2000);
+    try { return JSON.parse(JSON.stringify(value)); } catch (e) { return String(value).slice(0, 2000); }
+  }
+
+  function normalizeTraceStep(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var type = String(raw.type || 'note');
+    if (!TRACE_TYPES[type]) return null;
+    var step = {
+      id: raw.id ? String(raw.id) : uid(),
+      type: type,
+      at: Number(raw.at) || now()
+    };
+    if (raw.chatId !== undefined && raw.chatId !== null) step.chatId = String(raw.chatId);
+    if (type === 'thinking') {
+      step.text = raw.text === null || raw.text === undefined ? '' : String(raw.text).slice(0, 600);
+    } else if (type === 'note') {
+      step.text = raw.text === null || raw.text === undefined ? '' : String(raw.text).slice(0, 600);
+    } else if (type === 'tool_call') {
+      step.name = raw.name === null || raw.name === undefined ? 'unknown' : String(raw.name).slice(0, 120);
+      step.args = raw.args === undefined || raw.args === null ? {} : cloneSafe(raw.args);
+      step.risk = String(raw.risk || 'mid').toLowerCase();
+      if (step.risk !== 'low' && step.risk !== 'mid' && step.risk !== 'high') step.risk = 'mid';
+      var confirmed = String(raw.confirmed || 'auto');
+      if (confirmed !== 'auto' && confirmed !== 'pending' && confirmed !== 'confirmed' && confirmed !== 'denied' && confirmed !== 'replayed') confirmed = 'auto';
+      step.confirmed = confirmed;
+      if (raw.callId) step.callId = String(raw.callId);
+      if (raw.requestId) step.requestId = String(raw.requestId);
+      if (raw.toolCallId) step.toolCallId = String(raw.toolCallId);
+    } else if (type === 'tool_result') {
+      step.name = raw.name === null || raw.name === undefined ? 'unknown' : String(raw.name).slice(0, 120);
+      step.ok = raw.ok !== false;
+      step.summary = raw.summary === null || raw.summary === undefined ? '' : String(raw.summary).slice(0, 600);
+      step.durationMs = Math.max(0, Number(raw.durationMs) || 0);
+      step.confirmed = raw.confirmed === true;
+      if (raw.callId) step.callId = String(raw.callId);
+    }
+    return step;
+  }
+
+  function normalizeTrace(raw) {
+    if (!Array.isArray(raw)) return [];
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var step = normalizeTraceStep(raw[i]);
+      if (step) out.push(step);
+    }
+    return out.length > TRACE_MAX ? out.slice(out.length - TRACE_MAX) : out;
+  }
+
+  /* 批次1：用量/成本聚合 */
+  function emptyUsageBucket() {
+    return { prompt: 0, completion: 0, total: 0, cost: 0, requests: 0 };
+  }
+  function normalizeUsageBucket(raw) {
+    var bucket = emptyUsageBucket();
+    if (!raw || typeof raw !== 'object') return bucket;
+    bucket.prompt = Math.max(0, Number(raw.prompt) || 0);
+    bucket.completion = Math.max(0, Number(raw.completion) || 0);
+    bucket.total = Math.max(0, Number(raw.total) || 0);
+    bucket.cost = Math.max(0, Number(raw.cost) || 0);
+    bucket.requests = Math.max(0, Number(raw.requests) || 0);
+    return bucket;
+  }
+  function normalizeUsageEntry(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    return {
+      prompt: Math.max(0, Number(raw.prompt) || 0),
+      completion: Math.max(0, Number(raw.completion) || 0),
+      total: Math.max(0, Number(raw.total) || 0),
+      cost: Math.max(0, Number(raw.cost) || 0),
+      requests: Math.max(0, Number(raw.requests) || 0)
+    };
+  }
+  function normalizeUsage(raw) {
+    var usage = {
+      total: emptyUsageBucket(),
+      byDay: {},
+      byModel: {},
+      byChat: {},
+      updatedAt: 0
+    };
+    if (!raw || typeof raw !== 'object') return usage;
+    usage.total = normalizeUsageBucket(raw.total);
+    usage.updatedAt = Number(raw.updatedAt) || 0;
+    var groups = ['byDay', 'byModel', 'byChat'];
+    for (var g = 0; g < groups.length; g++) {
+      var source = raw[groups[g]];
+      if (!source || typeof source !== 'object') continue;
+      var keys = Object.keys(source);
+      for (var k = 0; k < keys.length && k < 400; k++) {
+        var entry = normalizeUsageEntry(source[keys[k]]);
+        if (entry) usage[groups[g]][String(keys[k]).slice(0, 120)] = entry;
+      }
+    }
+    return usage;
+  }
+
   function normalizeChat(raw) {
     if (!raw || typeof raw !== 'object') return null;
     var chat = {
@@ -369,6 +513,7 @@
     // v2.0 F1/F4：预设绑定 + 会话级 system prompt（预设提示词复制到会话，便于用户单独修改）
     if (raw.presetId) chat.presetId = String(raw.presetId).slice(0, 80);
     if (raw.systemPrompt) chat.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
+    if (Array.isArray(raw.trace)) chat.trace = normalizeTrace(raw.trace);
     return chat;
   }
 
@@ -403,6 +548,7 @@
     if (Array.isArray(raw.presets)) {
       next.presets = normalizePresets(raw.presets);
     }
+    if (raw.usage !== undefined) next.usage = normalizeUsage(raw.usage);
     var ids = next.chats.map(function (c) { return c.id; });
     if (raw.activeChatId && ids.indexOf(String(raw.activeChatId)) !== -1) {
       next.activeChatId = String(raw.activeChatId);
@@ -761,6 +907,36 @@
     if (patch.workbench !== undefined) state.prefs.workbench = !!patch.workbench;
     if (patch.terminalHeight !== undefined) state.prefs.terminalHeight = Math.round(clampNum(patch.terminalHeight, 120, 800));
     if (patch.appLock !== undefined) state.prefs.appLock = !!patch.appLock;
+    if (patch.costBudget !== undefined && patch.costBudget && typeof patch.costBudget === 'object') {
+      state.prefs.costBudget = {
+        daily: Math.max(0, Number(patch.costBudget.daily) || 0),
+        monthly: Math.max(0, Number(patch.costBudget.monthly) || 0)
+      };
+    }
+    if (patch.costPrice !== undefined && patch.costPrice && typeof patch.costPrice === 'object') {
+      var nextPrices = {};
+      var npKeys = Object.keys(patch.costPrice);
+      for (var npi = 0; npi < npKeys.length && npi < 50; npi++) {
+        var npv = patch.costPrice[npKeys[npi]];
+        if (!npv || typeof npv !== 'object') continue;
+        nextPrices[String(npKeys[npi]).slice(0, 80)] = {
+          input: Math.max(0, Number(npv.input) || 0),
+          output: Math.max(0, Number(npv.output) || 0)
+        };
+      }
+      state.prefs.costPrice = nextPrices;
+    }
+    if (patch.toolPolicies !== undefined && patch.toolPolicies && typeof patch.toolPolicies === 'object') {
+      var nextPolicies = {};
+      var npKeys2 = Object.keys(patch.toolPolicies);
+      for (var npj = 0; npj < npKeys2.length && npj < 200; npj++) {
+        var npm = String(patch.toolPolicies[npKeys2[npj]] || '');
+        if (npm === 'auto' || npm === 'once' || npm === 'always' || npm === 'deny') {
+          nextPolicies[String(npKeys2[npj]).slice(0, 120)] = npm;
+        }
+      }
+      state.prefs.toolPolicies = nextPolicies;
+    }
     // apiKey 不落 localStorage（由原生 SharedPreferences 保存）
     save();
     return getPrefs();
@@ -1033,6 +1209,121 @@
 
   function clearMessages(chatId) {
     return truncateMessages(chatId, 0);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 批次1 v2.6.0：Trace 记录（chat.trace，≤500 条/会话，持久化）
+   * ------------------------------------------------------------------ */
+
+  function getTrace(chatId) {
+    load();
+    var chat = resolveChat(chatId);
+    if (!chat || !Array.isArray(chat.trace)) return [];
+    return chat.trace.slice();
+  }
+
+  function appendTrace(chatId, step) {
+    load();
+    var chat = resolveChat(chatId);
+    if (!chat) return null;
+    var normalized = normalizeTraceStep(step);
+    if (!normalized) return null;
+    if (!Array.isArray(chat.trace)) chat.trace = [];
+    chat.trace.push(normalized);
+    if (chat.trace.length > TRACE_MAX) chat.trace = chat.trace.slice(chat.trace.length - TRACE_MAX);
+    save();
+    return normalized;
+  }
+
+  /** 更新单条 trace 步骤（用于工具确认状态等就地更新） */
+  function updateTrace(chatId, traceId, patch) {
+    load();
+    var chat = resolveChat(chatId);
+    if (!chat || !Array.isArray(chat.trace)) return null;
+    var key = String(traceId);
+    for (var i = 0; i < chat.trace.length; i++) {
+      if (String(chat.trace[i].id) !== key) continue;
+      var step = chat.trace[i];
+      var keys = Object.keys(patch || {});
+      for (var j = 0; j < keys.length; j++) {
+        var prop = keys[j];
+        if (prop === 'id' || prop === 'type' || prop === 'at') continue;
+        if (patch[prop] === undefined) continue;
+        step[prop] = patch[prop];
+      }
+      save();
+      return step;
+    }
+    return null;
+  }
+
+  function clearTrace(chatId) {
+    load();
+    var chat = resolveChat(chatId);
+    if (!chat) return false;
+    chat.trace = [];
+    save();
+    return true;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 批次1 v2.6.0：用量/成本聚合（总量 / 天 / 模型 / 会话）
+   * ------------------------------------------------------------------ */
+
+  function pad2(n) { return n < 10 ? '0' + n : String(n); }
+
+  function dayKey(ts) {
+    var d = new Date(Number(ts) || now());
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  function accumulateUsage(bucket, entry) {
+    bucket.prompt += entry.prompt || 0;
+    bucket.completion += entry.completion || 0;
+    bucket.total += entry.total || ((entry.prompt || 0) + (entry.completion || 0));
+    bucket.cost += entry.cost || 0;
+    bucket.requests += entry.requests === undefined ? 1 : (Number(entry.requests) || 0);
+    return bucket;
+  }
+
+  /**
+   * 记录一次请求用量：{prompt,completion,total,cost,model,chatId,day?,at?}
+   * 返回最新的 usage 快照（JSON 副本）。
+   */
+  function addUsage(entry) {
+    load();
+    var raw = normalizeUsageEntry(entry) || emptyUsageBucket();
+    raw.requests = entry && entry.requests !== undefined ? Math.max(0, Number(entry.requests) || 0) : 1;
+    if (!raw.total) raw.total = raw.prompt + raw.completion;
+    if (!state.usage) state.usage = normalizeUsage(null);
+    var usage = state.usage;
+    accumulateUsage(usage.total, raw);
+    var day = dayKey(entry && (entry.at || entry.day));
+    if (!usage.byDay[day]) usage.byDay[day] = emptyUsageBucket();
+    accumulateUsage(usage.byDay[day], raw);
+    var model = String((entry && entry.model) || 'unknown').slice(0, 120);
+    if (!usage.byModel[model]) usage.byModel[model] = emptyUsageBucket();
+    accumulateUsage(usage.byModel[model], raw);
+    var chatId = entry && entry.chatId ? String(entry.chatId) : '';
+    if (chatId) {
+      if (!usage.byChat[chatId]) usage.byChat[chatId] = emptyUsageBucket();
+      accumulateUsage(usage.byChat[chatId], raw);
+    }
+    usage.updatedAt = now();
+    save();
+    return clone(usage);
+  }
+
+  function getUsage() {
+    load();
+    return clone(state.usage || normalizeUsage(null));
+  }
+
+  function resetUsage() {
+    load();
+    state.usage = normalizeUsage(null);
+    save();
+    return getUsage();
   }
 
   /* ------------------------------------------------------------------ *
@@ -1460,6 +1751,15 @@
     /* v2.0 F3：备份 / 恢复 */
     exportBackupData: exportBackupData,
     replaceData: replaceData,
+
+    /* 批次1 v2.6.0：Trace / 用量成本 */
+    getTrace: getTrace,
+    appendTrace: appendTrace,
+    updateTrace: updateTrace,
+    clearTrace: clearTrace,
+    addUsage: addUsage,
+    getUsage: getUsage,
+    resetUsage: resetUsage,
 
     getPluginEnabled: getPluginEnabled,
     setPluginEnabled: setPluginEnabled,

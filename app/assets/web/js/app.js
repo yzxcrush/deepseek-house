@@ -96,6 +96,31 @@
   var MAX_IMAGE_DATAURL_CHARS = 220000; /* ≈160KB 图片（base64）阈值：前端无法再压缩时提示 */
   var MAX_BUILD_TASKS = 20;
   var VISION_MODEL_RE = /(vision|vl[-_.]|gpt-4o|gpt-4\.1|gpt-4-turbo|claude|gemini|qwen-vl|glm-4v|omni|multimodal)/i;
+  /* 批次1 v2.6.0：Trace / 成本 / 权限策略 / 斜杠命令 */
+  var TRACE_SUMMARY_MAX = 300;
+  var COST_CURRENCY = 'CNY';
+  /* 内置价格表（人民币 / 每 1M tokens；可用 prefs.costPrice 覆盖单个模型） */
+  var DEFAULT_COST_PRICES = {
+    'deepseek-chat': { input: 2.0, output: 8.0 },
+    'deepseek-reasoner': { input: 4.0, output: 16.0 },
+    'deepseek-v3.2': { input: 2.0, output: 8.0 },
+    'deepseek-v4-pro': { input: 4.0, output: 16.0 },
+    'deepseek-v4-flash': { input: 1.0, output: 4.0 },
+    '_default': { input: 2.0, output: 8.0 }
+  };
+  var SLASH_COMMANDS = [
+    { cmd: '/new', desc: '新建会话', usage: '/new' },
+    { cmd: '/clear', desc: '清空当前会话消息', usage: '/clear' },
+    { cmd: '/model', desc: '切换模型（也可 /model list）', usage: '/model <名称>' },
+    { cmd: '/export', desc: '导出当前会话 Markdown', usage: '/export' },
+    { cmd: '/audit', desc: '查看最近审计记录', usage: '/audit [条数]' },
+    { cmd: '/trace', desc: '打开运行轨迹时间线', usage: '/trace' },
+    { cmd: '/cost', desc: '查看用量与成本', usage: '/cost' },
+    { cmd: '/mcp', desc: '查看 MCP 服务器状态', usage: '/mcp' },
+    { cmd: '/workbench', desc: '切换工作台三栏布局', usage: '/workbench [on|off]' },
+    { cmd: '/stop', desc: '停止正在生成的回复', usage: '/stop' },
+    { cmd: '/help', desc: '显示命令帮助', usage: '/help' }
+  ];
   var AUTO_TITLE = false; /* 会话名=智能体名，默认「DeepSeek + 模型型号」，不随首条消息自动改名 */
   var FLUSH_INTERVAL = 50;
   var TOAST_THROTTLE = 700;
@@ -163,7 +188,14 @@
     foregroundActive: false, /* 是否已启动 F7 前台服务 */
     buildTasks: [], /* [{id,toolName,serverId,percent,status,line,lines,updatedAt}] */
     buildTaskByMsg: {}, /* msgId -> buildTask id */
-    buildTaskSeq: 0
+    buildTaskSeq: 0,
+    /* 批次1 v2.6.0：工具权限（once 已确认过）/ 成本告警去重 / trace 渲染节流 */
+    policyConfirmed: {}, /* chatId||tool -> true */
+    costAlerted: {}, /* 'day:YYYY-MM-DD' / 'month:YYYY-MM' -> true */
+    traceRenderTimer: null,
+    traceOpening: false,
+    costOpening: false,
+    toolPolicyOpening: false
   };
 
   var App = { handlers: null, MODEL_FALLBACK: MODEL_FALLBACK, MAX_TOOL_ROUNDS: MAX_TOOL_ROUNDS };
@@ -842,6 +874,28 @@
         setBackDepth(state.nav.from === 'chat' ? 2 : 1);
         return;
       }
+      /* ARCH v2.6.0：轨迹页 → 对话页；成本/工具权限页 → 设置页 */
+      if (uiScreen === 'trace') {
+        closeDrawer();
+        var traceChat = Store.getActiveChat();
+        if (traceChat) {
+          state.nav = { screen: 'chat', drawerOpen: false, from: 'chats' };
+          ui('showScreen', 'chat');
+          setBackDepth(1);
+        } else {
+          showChatsScreen();
+        }
+        return;
+      }
+      if (uiScreen === 'cost' || uiScreen === 'tool-policy') {
+        closeDrawer();
+        if (state.nav.screen !== 'settings') {
+          state.nav = { screen: 'settings', drawerOpen: false, from: state.nav.screen || 'chats' };
+        }
+        ui('showScreen', 'settings');
+        setBackDepth(state.nav.from === 'chat' ? 2 : 1);
+        return;
+      }
     }
     /* ARCH v2 P3：插件面板打开时，硬件返回先关闭面板（面板从聊天页打开，不清空返回栈） */
     if (U && typeof U.isPluginPanelOpen === 'function' && U.isPluginPanelOpen()) {
@@ -1096,7 +1150,15 @@
       onRefreshSecurity: safe(function () { return refreshSecurityInfo(); }, 'onRefreshSecurity'),
       onGetSecurity: safe(function () { return refreshSecurityInfo(); }, 'onGetSecurity'),
       onOpenBuildPanel: safe(function () { return openBuildPanel(); }, 'onOpenBuildPanel'),
-      onRefreshMcpStats: safe(function () { return refreshMcpStatsUI(); }, 'onRefreshMcpStats')
+      onRefreshMcpStats: safe(function () { return refreshMcpStatsUI(); }, 'onRefreshMcpStats'),
+      /* ARCH v2.6.0 批次1：Trace / 成本 / 工具权限 / 审计导出 */
+      onOpenTrace: safe(function (chatId) { return openTracePage(chatId); }, 'onOpenTrace'),
+      onExportTrace: safe(function (chatId) { return exportTraceJson(chatId); }, 'onExportTrace'),
+      onReplayTool: safe(function (traceId) { return replayTool(traceId); }, 'onReplayTool'),
+      onOpenCost: safe(function () { return openCostPage(); }, 'onOpenCost'),
+      onOpenToolPolicies: safe(function () { return openToolPoliciesPage(); }, 'onOpenToolPolicies'),
+      onSaveToolPolicy: safe(function (tool, mode) { return saveToolPolicy(tool, mode); }, 'onSaveToolPolicy'),
+      onExportAudit: safe(function (format) { return exportAudit(format); }, 'onExportAudit')
     };
   }
 
@@ -1341,6 +1403,10 @@
     if (toolCalls && toolCalls.length) finalPatch.toolCalls = toolCalls;
     Store.updateMessage(chatId, aId, finalPatch);
     ui('updateMessage', aId, finalPatch);
+
+    /* ARCH v2.6.0：记录 thinking 摘要 + 累计用量/成本 */
+    try { recordThinkingTrace(chatId, reasoning); } catch (eT) { /* ignore */ }
+    try { recordUsageFromDone(chat, result.usage); } catch (eU) { warn('记录用量失败：' + errText(eU)); }
 
     if (toolCalls && toolCalls.length) {
       Store.touchChat(chatId);
@@ -1681,38 +1747,102 @@
     return toolMsg;
   }
 
-  function execOneTool(chat, toolCall, ctx, index) {
+  function execOneTool(chat, toolCall, ctx, index, opts) {
     var name = toolCall && (toolCall.name || (toolCall.function && toolCall.function.name)) || 'unknown';
     var rawArgs = toolCall
       ? (toolCall.arguments !== undefined ? toolCall.arguments : (toolCall.function ? toolCall.function.arguments : ''))
       : '';
     var args = parseToolArgs(rawArgs);
     var toolCallId = (toolCall && toolCall.id) || ('call_' + index);
-    if (isNativeTool(name)) return execNativeTool(chat, name, args, toolCallId);
-    return execPluginTool(chat, name, args, toolCallId, ctx);
+    if (isNativeTool(name)) return execNativeTool(chat, name, args, toolCallId, opts || {});
+    return execPluginTool(chat, name, args, toolCallId, ctx, opts || {});
   }
 
-  /** 插件工具：保持原有 DSPlugins.runTool 路径 */
-  function execPluginTool(chat, name, args, toolCallId, ctx) {
-    return new Promise(function (resolve) {
-      var resultPromise;
-      try {
-        if (global.DSPlugins && typeof global.DSPlugins.runTool === 'function') {
-          resultPromise = global.DSPlugins.runTool(name, args, ctx);
-        } else {
-          resultPromise = '插件系统不可用（DSPlugins 未加载）';
-        }
-      } catch (e) {
-        resultPromise = '工具执行失败：' + errText(e);
+  /**
+   * 批次1 v2.6.0：执行前解析工具权限策略（prefs.toolPolicies 优先于 native risk）。
+   * resolve {allow, autoAllow, mode, confirmed}：
+   *  - deny → 不执行（本地拒绝 + trace）
+   *  - auto → 直接执行；native tool-confirm 自动允许
+   *  - once → 本会话首次需确认（low 风险在此前置确认；mid/high 交给 native 确认流程，允许后记住）
+   *  - always → 每次确认（low/mid 前置确认；high 交给 native 每次确认）
+   *  - 无显式策略 → 完全沿用原有 risk 流程（autoAllow=false）
+   */
+  function resolveToolPolicy(chat, name, args, risk, opts) {
+    opts = opts || {};
+    if (opts.autoAllow) return Promise.resolve({ allow: true, autoAllow: true, mode: 'replay', confirmed: 'replayed' });
+    var pol = toolPolicyOf(name);
+    var mode = pol.mode;
+    if (mode === 'deny') return Promise.resolve({ allow: false, autoAllow: false, mode: 'deny', confirmed: 'denied' });
+    if (mode === 'auto') return Promise.resolve({ allow: true, autoAllow: true, mode: 'auto', confirmed: 'auto' });
+    var onceKey = policyOnceKey(chat ? chat.id : '', name);
+    if (mode === 'once') {
+      if (state.policyConfirmed[onceKey]) return Promise.resolve({ allow: true, autoAllow: true, mode: 'once', confirmed: 'confirmed' });
+      if (risk === 'low') {
+        return confirmToolByPolicy(name, args, risk).then(function (ok) {
+          if (ok) state.policyConfirmed[onceKey] = true;
+          return { allow: !!ok, autoAllow: !!ok, mode: 'once', confirmed: ok ? 'confirmed' : 'denied' };
+        });
       }
-      Promise.resolve(resultPromise).then(function (result) {
-        var content;
-        if (typeof result === 'string') content = result;
-        else content = safeStringify(result);
-        if (!content) content = '（工具未返回内容）';
-        resolve(appendToolResultMessage(chat, name, args, toolCallId, content, true, 'success', false));
-      }, function (e2) {
-        resolve(appendToolResultMessage(chat, name, args, toolCallId, '工具执行失败：' + errText(e2), false, 'error', false));
+      return Promise.resolve({ allow: true, autoAllow: false, mode: 'once', confirmed: 'pending' });
+    }
+    if (mode === 'always') {
+      if (risk === 'low' || risk === 'mid') {
+        return confirmToolByPolicy(name, args, risk).then(function (ok) {
+          return { allow: !!ok, autoAllow: !!ok, mode: 'always', confirmed: ok ? 'confirmed' : 'denied' };
+        });
+      }
+      return Promise.resolve({ allow: true, autoAllow: false, mode: 'always', confirmed: 'pending' });
+    }
+    return Promise.resolve({ allow: true, autoAllow: false, mode: '', confirmed: 'pending' });
+  }
+
+  /** 策略拒绝：本地 tool 消息 + trace（native 审计只能经 execTool 写，策略拒绝不调用原生） */
+  function appendPolicyDeniedToolMessage(chat, name, args, toolCallId, reason) {
+    var text = '已被工具权限策略禁止执行（' + (reason || name) + '）';
+    recordToolResultTrace(chat, name, false, text, 0, false, null);
+    var msg = appendToolResultMessage(chat, name, args, toolCallId, text, false, 'rejected', false);
+    toast('工具「' + name + '」已被权限策略禁止', true);
+    return msg;
+  }
+
+  /** 插件工具：DSPlugins.runTool 路径 + 策略/轨迹 */
+  function execPluginTool(chat, name, args, toolCallId, ctx, opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var risk = toolRiskOf(name) || 'mid';
+      var startedAt = Date.now();
+      resolveToolPolicy(chat, name, args, risk, opts).then(function (policy) {
+        var callTrace = recordToolCallTrace(chat, name, args, risk, toolCallId, '', policy.confirmed || 'auto');
+        if (!policy.allow) {
+          resolve(appendPolicyDeniedToolMessage(chat, name, args, toolCallId, name));
+          return;
+        }
+        var callTraceId = callTrace ? callTrace.id : '';
+        var resultPromise;
+        try {
+          if (global.DSPlugins && typeof global.DSPlugins.runTool === 'function') {
+            resultPromise = global.DSPlugins.runTool(name, args, ctx);
+          } else {
+            resultPromise = '插件系统不可用（DSPlugins 未加载）';
+          }
+        } catch (e) {
+          resultPromise = '工具执行失败：' + errText(e);
+        }
+        Promise.resolve(resultPromise).then(function (result) {
+          var content;
+          if (typeof result === 'string') content = result;
+          else content = safeStringify(result);
+          if (!content) content = '（工具未返回内容）';
+          recordToolResultTrace(chat, name, true, content, Date.now() - startedAt, false, callTraceId);
+          resolve(appendToolResultMessage(chat, name, args, toolCallId, content, true, 'success', false));
+        }, function (e2) {
+          var text = '工具执行失败：' + errText(e2);
+          recordToolResultTrace(chat, name, false, text, Date.now() - startedAt, false, callTraceId);
+          resolve(appendToolResultMessage(chat, name, args, toolCallId, text, false, 'error', false));
+        });
+      }, function (e3) {
+        var text = '工具策略校验失败：' + errText(e3);
+        resolve(appendToolResultMessage(chat, name, args, toolCallId, text, false, 'error', false));
       });
     });
   }
@@ -1751,7 +1881,10 @@
 
   /** 原生工具：Bridge.execTool → (tool-confirm → UI.confirmRisk → Bridge.confirmTool) → tool-result
    *  P2：构建类 / MCP 工具先 append 一条 running tool 消息（进度条 + 日志流复用同一条消息）。 */
-  function execNativeTool(chat, name, args, toolCallId) {
+  /** 原生工具：Bridge.execTool → (tool-confirm → UI.confirmRisk → Bridge.confirmTool) → tool-result
+   *  P2：构建类 / MCP 工具先 append 一条 running 工具消息；P4 构建任务；v2.6.0：权限策略 + trace。 */
+  function execNativeTool(chat, name, args, toolCallId, opts) {
+    opts = opts || {};
     return new Promise(function (resolve) {
       var B = global.Bridge;
       var requestId = genAgentRequestId('tool');
@@ -1760,6 +1893,13 @@
       var offs = [];
       var timer = null;
       var progressEntry = null;
+      var runningMsg = null;
+      var callTraceId = '';
+      var startedAt = Date.now();
+      var confirmedState = 'pending';
+      var risk = toolRiskOf(name);
+      var onceKey = policyOnceKey(chat ? chat.id : '', name);
+      var policy = null;
 
       function cleanup() {
         if (timer) { clearTimeout(timer); timer = null; }
@@ -1767,6 +1907,11 @@
           try { offs[i](); } catch (e) { /* ignore */ }
         }
         offs = [];
+      }
+
+      function traceConfirmedLabel() {
+        if (confirmedState === 'pending') return 'auto';
+        return confirmedState;
       }
 
       function finish(evt, forcedOk, forcedResult) {
@@ -1780,6 +1925,14 @@
         if (!resultText) resultText = ok ? '（工具未返回内容）' : '工具执行失败';
         var confirmed = evt ? !!evt.confirmed : false;
         var stateText = ok ? 'success' : (String(resultText).indexOf('用户拒绝') !== -1 ? 'rejected' : 'error');
+        /* v2.6.0 trace：tool_result（含耗时/确认状态） */
+        try {
+          var label = traceConfirmedLabel();
+          if (ok && label === 'pending') label = 'auto';
+          if (callTraceId) updateTraceStep(chat.id, callTraceId, { confirmed: label });
+          recordToolResultTrace(chat, name, ok, resultText, Date.now() - startedAt,
+            label === 'confirmed' || label === 'auto' || label === 'replayed', null);
+        } catch (eT) { /* ignore */ }
         if (progressEntry) {
           resolve(finalizeProgressToolMessage(progressEntry, resultText, ok, stateText, confirmed));
         } else {
@@ -1787,63 +1940,107 @@
         }
       }
 
-      /* P2：构建类工具 / MCP 工具先建 running 卡片，供 mcp-progress 映射 */
-      var runningMsg = null;
-      if (isMcpProgressTool(name)) {
-        runningMsg = createRunningToolMessage(chat, name, args, toolCallId);
-        if (runningMsg) progressEntry = findRunningEntry(runningMsg.id);
-      }
-      /* P4：构建类工具聚合到构建任务面板 */
-      if (isBuildToolName(name)) {
-        try { beginBuildTask(name, requestId, runningMsg ? runningMsg.id : '', args); } catch (e0) { warn('创建构建任务失败：' + errText(e0)); }
+      function finishDenied(reasonText) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        try {
+          if (callTraceId) updateTraceStep(chat.id, callTraceId, { confirmed: 'denied' });
+          recordToolResultTrace(chat, name, false, reasonText, Date.now() - startedAt, false, null);
+        } catch (eT) { /* ignore */ }
+        resolve(appendToolResultMessage(chat, name, args, toolCallId, reasonText, false, 'rejected', false));
       }
 
-      offs.push(B.onEvent('tool-result', function (evt) {
-        if (!evt || String(evt.requestId) !== requestId) return;
-        finish(evt);
-      }));
-      offs.push(B.onEvent('tool-confirm', function (evt) {
-        if (!evt || String(evt.requestId) !== requestId) return;
-        if (confirmAsked) return;
-        confirmAsked = true;
-        var tool = evt.tool ? String(evt.tool) : name;
-        var eArgs = evt.args && typeof evt.args === 'object' ? evt.args : args;
-        var risk = evt.risk ? String(evt.risk).toLowerCase() : (state.nativeTools[name] ? state.nativeTools[name].risk : 'high');
-        if (progressEntry) {
-          updateRunningToolMessage(progressEntry, {
-            confirmState: 'pending',
-            content: '等待确认…',
-            progress: { percent: 0, line: '' }
-          });
+      function beginExecution() {
+        if (settled) return;
+        /* P2：构建类工具 / MCP 工具先建 running 卡片，供 mcp-progress 映射 */
+        if (isMcpProgressTool(name)) {
+          runningMsg = createRunningToolMessage(chat, name, args, toolCallId);
+          if (runningMsg) progressEntry = findRunningEntry(runningMsg.id);
         }
-        askToolConfirm(tool, eArgs, risk).then(function (allow) {
-          if (progressEntry && allow) {
+        /* P4：构建类工具聚合到构建任务面板 */
+        if (isBuildToolName(name)) {
+          try { beginBuildTask(name, requestId, runningMsg ? runningMsg.id : '', args); } catch (e0) { warn('创建构建任务失败：' + errText(e0)); }
+        }
+        var callTrace = recordToolCallTrace(chat, name, args, risk, toolCallId, requestId, policy ? policy.confirmed : 'pending');
+        callTraceId = callTrace ? callTrace.id : '';
+
+        offs.push(B.onEvent('tool-result', function (evt) {
+          if (!evt || String(evt.requestId) !== requestId) return;
+          if (evt.confirmed === true && confirmedState === 'pending') confirmedState = 'confirmed';
+          finish(evt);
+        }));
+        offs.push(B.onEvent('tool-confirm', function (evt) {
+          if (!evt || String(evt.requestId) !== requestId) return;
+          if (confirmAsked) return;
+          confirmAsked = true;
+          var tool = evt.tool ? String(evt.tool) : name;
+          var eArgs = evt.args && typeof evt.args === 'object' ? evt.args : args;
+          var evtRisk = evt.risk ? String(evt.risk).toLowerCase() : risk;
+          /* v2.6.0：显式策略 auto / 前置确认通过 / 会话内 once 已确认 → 静默允许 */
+          if (policy && policy.autoAllow) {
+            confirmedState = policy.confirmed || 'confirmed';
+            try { B.confirmTool(requestId, true); } catch (e) { warn('confirmTool 失败：' + errText(e)); }
+            if (progressEntry) {
+              updateRunningToolMessage(progressEntry, {
+                confirmState: 'running',
+                content: '执行中…',
+                progress: { percent: 0, line: '开始执行…' }
+              });
+            }
+            return;
+          }
+          if (progressEntry) {
             updateRunningToolMessage(progressEntry, {
-              confirmState: 'running',
-              content: '执行中…',
-              progress: { percent: 0, line: '开始执行…' }
+              confirmState: 'pending',
+              content: '等待确认…',
+              progress: { percent: 0, line: '' }
             });
           }
-          try { B.confirmTool(requestId, !!allow); } catch (e) { warn('confirmTool 失败：' + errText(e)); }
-          if (!allow) {
-            /* 兜底：原生拒绝后必须回 tool-result；300ms 内未回则本地结束，避免卡住 */
-            setTimeout(function () {
-              if (!settled) finish(null, false, '用户拒绝执行');
-            }, 300);
-          }
-        });
-      }));
-      timer = setTimeout(function () {
-        if (!settled) finish(null, false, '工具执行超时（120 秒）');
-      }, 120000);
+          askToolConfirm(tool, eArgs, evtRisk).then(function (allow) {
+            confirmedState = allow ? 'confirmed' : 'denied';
+            if (allow && policy && policy.mode === 'once') state.policyConfirmed[onceKey] = true;
+            if (progressEntry && allow) {
+              updateRunningToolMessage(progressEntry, {
+                confirmState: 'running',
+                content: '执行中…',
+                progress: { percent: 0, line: '开始执行…' }
+              });
+            }
+            try { B.confirmTool(requestId, !!allow); } catch (e2) { warn('confirmTool 失败：' + errText(e2)); }
+            if (!allow) {
+              /* 兜底：原生拒绝后必须回 tool-result；300ms 内未回则本地结束，避免卡住 */
+              setTimeout(function () {
+                if (!settled) finish(null, false, '用户拒绝执行');
+              }, 300);
+            }
+          });
+        }));
+        timer = setTimeout(function () {
+          if (!settled) finish(null, false, '工具执行超时（120 秒）');
+        }, 120000);
 
-      var started = false;
-      try {
-        started = B.execTool(requestId, name, JSON.stringify(args || {}));
-      } catch (e) {
-        started = false;
+        var started = false;
+        try {
+          started = B.execTool(requestId, name, JSON.stringify(args || {}));
+        } catch (e) {
+          started = false;
+        }
+        if (started === false) finish(null, false, '原生工具执行不可用');
       }
-      if (started === false) finish(null, false, '原生工具执行不可用');
+
+      resolveToolPolicy(chat, name, args, risk, opts).then(function (resolved) {
+        policy = resolved;
+        if (!policy.allow) {
+          var callTrace = recordToolCallTrace(chat, name, args, risk, toolCallId, requestId, 'denied');
+          callTraceId = callTrace ? callTrace.id : '';
+          finishDenied('已被工具权限策略禁止执行（' + name + '）');
+          return;
+        }
+        beginExecution();
+      }, function (e) {
+        finishDenied('工具策略校验失败：' + errText(e));
+      });
     });
   }
 
@@ -1911,10 +2108,13 @@
   function appendNote(chatId, text) {
     var chat = Store.getChat(chatId) || Store.getActiveChat();
     if (!chat) return null;
-    var msg = Store.appendMessage(chat.id, { role: 'note', content: String(text === null || text === undefined ? '' : text) });
+    var content = String(text === null || text === undefined ? '' : text);
+    var msg = Store.appendMessage(chat.id, { role: 'note', content: content });
     if (msg) {
       ui('appendMessage', msg);
       ui('scrollBottom');
+      /* ARCH v2.6.0：备注/压缩/停止等提示也进入 trace */
+      try { recordNoteTrace(chat.id, content); } catch (e) { /* ignore */ }
     }
     return msg;
   }
@@ -3433,6 +3633,11 @@
       '- `/model list` 列出模型目录',
       '- `/model remove <id>` 删除自定义模型',
       '- `/models` 从 API 获取模型列表',
+      '- `/audit` 查看最近审计记录',
+      '- `/trace` 打开运行轨迹时间线',
+      '- `/cost` 查看用量与成本',
+      '- `/mcp` 查看 MCP 服务器状态',
+      '- `/workbench` 切换工作台（可 `/workbench on|off`）',
       '- `/settings` 打开设置'
     ];
     try {
@@ -3508,6 +3713,75 @@
     if (cmd === 'models' || cmd === '模型列表') {
       refreshModelsFromApi({ toast: true });
       return { handled: true };
+    }
+    /* ARCH v2.6.0 批次1：审计 / 轨迹 / 成本 / MCP / 工作台 */
+    if (cmd === 'audit' || cmd === '审计') {
+      var auditLimit = parseInt(args, 10);
+      if (!(auditLimit > 0)) auditLimit = 10;
+      auditLimit = Math.max(1, Math.min(50, auditLimit));
+      var auditItems = [];
+      try { if (global.Bridge && typeof global.Bridge.auditRecent === 'function') auditItems = global.Bridge.auditRecent(auditLimit); } catch (eA) { auditItems = []; }
+      if (!Array.isArray(auditItems) || !auditItems.length) return { handled: true, text: '暂无审计记录。' };
+      var auditLines = ['**最近审计（' + auditItems.length + ' 条）**', ''];
+      for (var ai = 0; ai < auditItems.length; ai++) {
+        var aItem = auditItems[ai] || {};
+        auditLines.push('- `' + (aItem.tool || 'tool') + '` · ' + (aItem.ok === false ? '失败' : '成功') +
+          (aItem.confirmed ? ' · 已确认' : '') + ' · ' + traceSummary(aItem.result, 60));
+      }
+      return { handled: true, text: auditLines.join('\n') };
+    }
+    if (cmd === 'trace' || cmd === '轨迹') {
+      var traceEvents = openTracePage();
+      var U = getUI();
+      if (U && (typeof U.openTracePage === 'function' || typeof U.renderTrace === 'function')) return { handled: true };
+      if (!traceEvents.length) return { handled: true, text: '当前会话暂无轨迹记录。' };
+      var tLines = ['**运行轨迹（最近 ' + Math.min(20, traceEvents.length) + ' 条）**', ''];
+      for (var ti = Math.max(0, traceEvents.length - 20); ti < traceEvents.length; ti++) {
+        var step = traceEvents[ti] || {};
+        if (step.type === 'tool_call') tLines.push('- 工具调用 `' + (step.name || '') + '` · ' + (step.risk || '') + ' · ' + (step.confirmed || ''));
+        else if (step.type === 'tool_result') tLines.push('- 工具结果 `' + (step.name || '') + '` · ' + (step.ok ? '成功' : '失败') + ' · ' + (step.durationMs || 0) + 'ms');
+        else tLines.push('- ' + (step.type === 'thinking' ? '思考' : '备注') + '：' + traceSummary(step.text, 80));
+      }
+      return { handled: true, text: tLines.join('\n') };
+    }
+    if (cmd === 'cost' || cmd === '成本' || cmd === '用量') {
+      var costData = getCostData();
+      var CU = getUI();
+      if (CU && (typeof CU.openCostPage === 'function' || typeof CU.openCostPanel === 'function' || typeof CU.renderCost === 'function')) {
+        openCostPage();
+        return { handled: true };
+      }
+      return {
+        handled: true,
+        text: '**用量与成本（' + costData.currency + '）**\n\n' +
+          '- 今日：¥' + costData.today.cost.toFixed(4) + '（' + costData.today.total + ' tokens / ' + costData.today.requests + ' 次）\n' +
+          '- 本周：¥' + costData.week.cost.toFixed(4) + '\n' +
+          '- 本月：¥' + costData.month.cost.toFixed(4) + '\n' +
+          '- 累计：¥' + costData.total.cost.toFixed(4) +
+          (costData.budget.daily > 0 ? '\n- 日预算：' + costData.percent.daily + '%（¥' + costData.budget.daily + '）' : '') +
+          (costData.budget.monthly > 0 ? '\n- 月预算：' + costData.percent.monthly + '%（¥' + costData.budget.monthly + '）' : '')
+      };
+    }
+    if (cmd === 'mcp') {
+      var mcpList = [];
+      try { mcpList = refreshMcpStatsUI() || []; } catch (eM) { mcpList = state.mcpServers || []; }
+      if (!mcpList.length) return { handled: true, text: '未配置 MCP 服务器。' };
+      var mLines = ['**MCP 服务器（' + mcpList.length + ' 个）**', ''];
+      for (var mi = 0; mi < mcpList.length; mi++) {
+        var srv = mcpList[mi] || {};
+        var srvStatus = (state.mcpStatus[srv.id] || {}).status || 'disconnected';
+        var srvTools = (state.mcpTools[srv.id] || []).length || 0;
+        mLines.push('- `' + (srv.name || srv.id) + '` · ' + srvStatus + ' · 工具 ' + srvTools + ' 个 · ' + (srv.url || ''));
+      }
+      return { handled: true, text: mLines.join('\n') };
+    }
+    if (cmd === 'workbench' || cmd === '工作台') {
+      var want = String(args || '').toLowerCase();
+      var target = null;
+      if (want === 'on' || want === '1' || want === 'true' || want === '开') target = true;
+      else if (want === 'off' || want === '0' || want === 'false' || want === '关') target = false;
+      var next = toggleWorkbench(target);
+      return { handled: true, text: next ? '已开启工作台。' : '已关闭工作台。' };
     }
     return null;
   }
@@ -5493,6 +5767,532 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * ARCH v2.6.0 批次1：Trace / 用量成本 / 工具权限策略 / 审计导出 / 斜杠命令
+   * ------------------------------------------------------------------ */
+
+  function traceSummary(text, max) {
+    var str = String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    var limit = max || TRACE_SUMMARY_MAX;
+    return str.length > limit ? (str.slice(0, limit) + '…') : str;
+  }
+
+  function traceRenderNow(chatId) {
+    if (state.traceRenderTimer) { clearTimeout(state.traceRenderTimer); state.traceRenderTimer = null; }
+    var U = getUI();
+    if (!U || typeof U.renderTrace !== 'function') return;
+    var screen = typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'trace') return;
+    var chat = null;
+    try { chat = chatId ? Store.getChat(chatId) : Store.getActiveChat(); } catch (e) { chat = null; }
+    if (!chat) return;
+    try { U.renderTrace({ chatId: chat.id, chatTitle: chat.title, events: Store.getTrace(chat.id) }); } catch (e2) { warn('UI.renderTrace 异常：' + errText(e2)); }
+  }
+
+  function traceChanged(chatId) {
+    if (state.traceRenderTimer) return;
+    state.traceRenderTimer = setTimeout(function () {
+      state.traceRenderTimer = null;
+      try { traceRenderNow(chatId); } catch (e) { /* ignore */ }
+    }, 150);
+  }
+
+  function appendTraceStep(chatId, step) {
+    var id = String(chatId === null || chatId === undefined ? '' : chatId);
+    if (!id) return null;
+    var saved = null;
+    try { saved = Store.appendTrace(id, step); } catch (e) { warn('记录 trace 失败：' + errText(e)); }
+    if (saved) traceChanged(id);
+    return saved;
+  }
+
+  function updateTraceStep(chatId, traceId, patch) {
+    if (!traceId) return null;
+    var saved = null;
+    try { saved = Store.updateTrace(chatId, traceId, patch); } catch (e) { warn('更新 trace 失败：' + errText(e)); }
+    if (saved) traceChanged(chatId);
+    return saved;
+  }
+
+  function recordThinkingTrace(chatId, reasoning) {
+    var text = String(reasoning === null || reasoning === undefined ? '' : reasoning).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    if (!text) return null;
+    return appendTraceStep(chatId, { type: 'thinking', text: traceSummary(text, 400), at: Date.now() });
+  }
+
+  function recordNoteTrace(chatId, text) {
+    var content = traceSummary(text, 400);
+    if (!content) return null;
+    return appendTraceStep(chatId, { type: 'note', text: content, at: Date.now() });
+  }
+
+  function toolRiskOf(name) {
+    var key = String(name === null || name === undefined ? '' : name);
+    var def = state.nativeTools && state.nativeTools[key];
+    if (def && def.risk) return def.risk;
+    var map = state.mcpToolMap || {};
+    if (map[key] || map[mcpBaseName(key)]) return 'mid';
+    return 'mid';
+  }
+
+  function recordToolCallTrace(chat, name, args, risk, toolCallId, requestId, confirmed) {
+    if (!chat) return null;
+    return appendTraceStep(chat.id, {
+      type: 'tool_call',
+      name: name,
+      args: args === undefined || args === null ? {} : args,
+      risk: risk || 'mid',
+      confirmed: confirmed || 'pending',
+      toolCallId: toolCallId || '',
+      requestId: requestId || '',
+      at: Date.now()
+    });
+  }
+
+  function recordToolResultTrace(chat, name, ok, resultText, durationMs, confirmed, callTraceId) {
+    if (!chat) return null;
+    if (callTraceId) updateTraceStep(chat.id, callTraceId, { confirmed: confirmed ? 'confirmed' : 'denied' });
+    return appendTraceStep(chat.id, {
+      type: 'tool_result',
+      name: name,
+      ok: !!ok,
+      summary: traceSummary(resultText, 400),
+      durationMs: Math.max(0, Number(durationMs) || 0),
+      confirmed: !!confirmed,
+      at: Date.now()
+    });
+  }
+
+  /* ---------------- 用量与成本 ---------------- */
+
+  function priceForModel(model) {
+    var key = String(model === null || model === undefined ? '' : model);
+    var overrides = state.prefs && state.prefs.costPrice ? state.prefs.costPrice : {};
+    if (overrides && overrides[key]) {
+      return { input: Math.max(0, Number(overrides[key].input) || 0), output: Math.max(0, Number(overrides[key].output) || 0) };
+    }
+    if (DEFAULT_COST_PRICES[key]) return DEFAULT_COST_PRICES[key];
+    var keys = Object.keys(DEFAULT_COST_PRICES);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i] === '_default') continue;
+      if (key.indexOf(keys[i]) === 0) return DEFAULT_COST_PRICES[keys[i]];
+    }
+    return DEFAULT_COST_PRICES._default;
+  }
+
+  function costForUsage(model, usage) {
+    var u = usage || {};
+    var prompt = Math.max(0, Number(u.prompt_tokens !== undefined ? u.prompt_tokens : u.prompt) || 0);
+    var completion = Math.max(0, Number(u.completion_tokens !== undefined ? u.completion_tokens : u.completion) || 0);
+    var total = Math.max(0, Number(u.total_tokens !== undefined ? u.total_tokens : u.total) || 0) || (prompt + completion);
+    var price = priceForModel(model);
+    var cost = (prompt / 1000000) * price.input + (completion / 1000000) * price.output;
+    return { prompt: prompt, completion: completion, total: total, cost: Math.round(cost * 1000000) / 1000000 };
+  }
+
+  function roundCostBucket(b) {
+    return {
+      prompt: Math.round(Number(b.prompt) || 0),
+      completion: Math.round(Number(b.completion) || 0),
+      total: Math.round(Number(b.total) || 0),
+      cost: Math.round((Number(b.cost) || 0) * 1000000) / 1000000,
+      requests: Math.round(Number(b.requests) || 0)
+    };
+  }
+
+  function addCostBucket(target, src) {
+    target.prompt += Number(src.prompt) || 0;
+    target.completion += Number(src.completion) || 0;
+    target.total += Number(src.total) || 0;
+    target.cost += Number(src.cost) || 0;
+    target.requests += Number(src.requests) || 0;
+  }
+
+  function costDayKey(ts) {
+    var d = new Date(Number(ts) || Date.now());
+    function p(n) { return n < 10 ? '0' + n : String(n); }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  function recordUsageFromDone(chat, usage) {
+    if (!chat || !usage) return null;
+    var model = chat.model || state.prefs.model || 'unknown';
+    var entry = costForUsage(model, usage);
+    entry.model = model;
+    entry.chatId = chat.id;
+    entry.requests = 1;
+    entry.at = Date.now();
+    var snapshot = null;
+    try { snapshot = Store.addUsage(entry); } catch (e) { warn('记录用量失败：' + errText(e)); }
+    var data = getCostData();
+    var U = getUI();
+    if (U) {
+      var screen = typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+      if (screen === 'cost' && typeof U.renderCost === 'function') {
+        try { U.renderCost(data); } catch (e2) { /* ignore */ }
+      }
+      notifyCostBudget(data, U);
+    }
+    return snapshot;
+  }
+
+  function getCostData() {
+    var empty = { prompt: 0, completion: 0, total: 0, cost: 0, requests: 0 };
+    var usage = { total: empty, byDay: {}, byModel: {}, byChat: {} };
+    try { if (global.Store && typeof global.Store.getUsage === 'function') usage = global.Store.getUsage(); } catch (e) { /* ignore */ }
+    var todayKey = costDayKey(Date.now());
+    var monthPrefix = todayKey.slice(0, 7);
+    var today = { prompt: 0, completion: 0, total: 0, cost: 0, requests: 0 };
+    var month = { prompt: 0, completion: 0, total: 0, cost: 0, requests: 0 };
+    var week = { prompt: 0, completion: 0, total: 0, cost: 0, requests: 0 };
+    var days = usage.byDay || {};
+    var weekKeys = {};
+    for (var w = 0; w < 7; w++) {
+      var dt = new Date();
+      dt.setDate(dt.getDate() - w);
+      weekKeys[costDayKey(dt.getTime())] = true;
+    }
+    Object.keys(days).forEach(function (key) {
+      var bucket = days[key] || {};
+      if (key === todayKey) addCostBucket(today, bucket);
+      if (weekKeys[key]) addCostBucket(week, bucket);
+      if (key.indexOf(monthPrefix) === 0) addCostBucket(month, bucket);
+    });
+    var byModel = {};
+    var models = usage.byModel || {};
+    Object.keys(models).forEach(function (m) { byModel[m] = roundCostBucket(models[m] || {}); });
+    var budget = (state.prefs && state.prefs.costBudget) || { daily: 0, monthly: 0 };
+    var daily = Math.max(0, Number(budget.daily) || 0);
+    var monthly = Math.max(0, Number(budget.monthly) || 0);
+    var percent = {
+      daily: daily > 0 ? Math.round((today.cost / daily) * 1000) / 10 : 0,
+      monthly: monthly > 0 ? Math.round((month.cost / monthly) * 1000) / 10 : 0
+    };
+    var sessionBucket = null;
+    try {
+      var activeChat = Store.getActiveChat();
+      if (activeChat && usage.byChat) sessionBucket = usage.byChat[activeChat.id] || null;
+    } catch (e2) { /* ignore */ }
+    return {
+      today: roundCostBucket(today),
+      week: roundCostBucket(week),
+      month: roundCostBucket(month),
+      total: roundCostBucket(usage.total || empty),
+      byModel: byModel,
+      session: roundCostBucket(sessionBucket || empty),
+      budget: { daily: daily, monthly: monthly },
+      percent: percent,
+      currency: COST_CURRENCY
+    };
+  }
+
+  function notifyCostBudget(data, U) {
+    if (!data) return;
+    var todayKey = costDayKey(Date.now());
+    var monthPrefix = todayKey.slice(0, 7);
+    var over = false;
+    var warn = false;
+    var message = '';
+    if (data.budget.daily > 0 && data.percent.daily >= 100) {
+      over = true;
+      message = '今日成本已超预算（¥' + data.today.cost.toFixed(2) + ' / ¥' + data.budget.daily + '）';
+    } else if (data.budget.monthly > 0 && data.percent.monthly >= 100) {
+      over = true;
+      message = '本月成本已超预算（¥' + data.month.cost.toFixed(2) + ' / ¥' + data.budget.monthly + '）';
+    } else if (data.budget.daily > 0 && data.percent.daily >= 80) {
+      warn = true;
+      message = '今日成本已用 ' + data.percent.daily + '%（预算 ¥' + data.budget.daily + '）';
+    } else if (data.budget.monthly > 0 && data.percent.monthly >= 80) {
+      warn = true;
+      message = '本月成本已用 ' + data.percent.monthly + '%（预算 ¥' + data.budget.monthly + '）';
+    }
+    if (U && typeof U.setCostAlert === 'function') {
+      try { U.setCostAlert({ level: over ? 'over' : (warn ? 'warn' : ''), message: message }); } catch (e) { /* ignore */ }
+    }
+    if (!over && !warn) return;
+    var alertKey = (over ? 'over:' : 'warn:') + (data.budget.daily > 0 ? ('day:' + todayKey) : ('month:' + monthPrefix));
+    if (state.costAlerted[alertKey]) return;
+    state.costAlerted[alertKey] = true;
+    toast(message, true);
+  }
+
+  /* ---------------- 工具权限策略 ---------------- */
+
+  function validToolPolicyMode(mode) {
+    return mode === 'auto' || mode === 'once' || mode === 'always' || mode === 'deny';
+  }
+
+  function defaultPolicyModeForRisk(risk) {
+    if (risk === 'low') return 'auto';
+    if (risk === 'high') return 'always';
+    return 'once';
+  }
+
+  /** 返回 {mode, explicit}；无显式策略时 mode 为空（沿用原有 native risk 流程） */
+  function toolPolicyOf(name) {
+    var map = (state.prefs && state.prefs.toolPolicies) || {};
+    var key = String(name === null || name === undefined ? '' : name);
+    var mode = map[key];
+    if (!mode) mode = map[mcpBaseName(key)];
+    if (validToolPolicyMode(mode)) return { mode: mode, explicit: true };
+    return { mode: '', explicit: false };
+  }
+
+  function policyOnceKey(chatId, name) {
+    return String(chatId || '') + '||' + String(name || '');
+  }
+
+  function getToolPolicies() {
+    var out = [];
+    var seen = Object.create(null);
+    function push(name, source, risk, server) {
+      var key = String(name || '');
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      var pol = toolPolicyOf(key);
+      out.push({
+        tool: key,
+        name: key,
+        source: source || 'builtin',
+        server: server || '',
+        risk: risk || toolRiskOf(key),
+        mode: pol.explicit ? pol.mode : defaultPolicyModeForRisk(risk || toolRiskOf(key)),
+        explicit: !!pol.explicit
+      });
+    }
+    var nativeNames = Object.keys(state.nativeTools || {});
+    for (var i = 0; i < nativeNames.length; i++) push(nativeNames[i], 'builtin', (state.nativeTools[nativeNames[i]] || {}).risk);
+    var mcpIds = Object.keys(state.mcpTools || {});
+    for (var j = 0; j < mcpIds.length; j++) {
+      var tools = state.mcpTools[mcpIds[j]] || [];
+      for (var k = 0; k < tools.length; k++) push(tools[k].name, 'mcp', 'mid', mcpIds[j]);
+    }
+    var explicit = (state.prefs && state.prefs.toolPolicies) || {};
+    var explicitNames = Object.keys(explicit);
+    for (var m = 0; m < explicitNames.length; m++) {
+      push(explicitNames[m], explicitNames[m].indexOf('mcp:') === 0 ? 'mcp' : 'builtin', toolRiskOf(explicitNames[m]));
+    }
+    out.sort(function (a, b) { return a.tool < b.tool ? -1 : (a.tool > b.tool ? 1 : 0); });
+    return out;
+  }
+
+  function saveToolPolicy(tool, mode) {
+    var key = String(tool === null || tool === undefined ? '' : tool).trim();
+    if (!key) { toast('工具名无效', true); return false; }
+    var nextMode = String(mode === null || mode === undefined ? '' : mode).toLowerCase();
+    var map = {};
+    var current = (state.prefs && state.prefs.toolPolicies) || {};
+    var keys = Object.keys(current);
+    for (var i = 0; i < keys.length; i++) map[keys[i]] = current[keys[i]];
+    if (nextMode === '' || nextMode === 'default' || nextMode === 'reset') delete map[key];
+    else if (validToolPolicyMode(nextMode)) map[key] = nextMode;
+    else { toast('未知权限模式：' + mode, true); return false; }
+    state.prefs.toolPolicies = map;
+    try { Store.setPrefs({ toolPolicies: map }); } catch (e) { warn('保存工具权限失败：' + errText(e)); }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ toolPolicies: map }); } catch (e2) { /* ignore */ }
+    var U = getUI();
+    if (U && typeof U.renderToolPolicies === 'function' && typeof U.getScreen === 'function' && String(U.getScreen() || '') === 'tool-policy') {
+      try { U.renderToolPolicies(getToolPolicies()); } catch (e3) { /* ignore */ }
+    }
+    toast('已保存工具权限：' + key + ' → ' + (map[key] || '默认'), true);
+    return true;
+  }
+
+  /** 策略前置确认（auto/once/always 在原生确认之外的补充确认）；返回 Promise<boolean> */
+  function confirmToolByPolicy(name, args, risk) {
+    return askToolConfirm(name, args, risk || 'mid');
+  }
+
+  /* ---------------- Trace 页 / 导出 / 重放 ---------------- */
+
+  function getTrace(chatId) {
+    try {
+      var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+      if (!chat) return [];
+      return Store.getTrace(chat.id);
+    } catch (e) { warn('读取 trace 失败：' + errText(e)); return []; }
+  }
+
+  function openTracePage(chatId) {
+    if (state.traceOpening) return getTrace(chatId);
+    var chat = null;
+    try { chat = chatId ? Store.getChat(chatId) : Store.getActiveChat(); } catch (e) { chat = null; }
+    if (!chat) { toast('没有可查看轨迹的会话', true); return []; }
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'trace' && U && typeof U.openTracePage === 'function') {
+      state.traceOpening = true;
+      try { U.openTracePage(chat.id); } catch (e2) { warn('UI.openTracePage 异常：' + errText(e2)); } finally { state.traceOpening = false; }
+    }
+    var events = Store.getTrace(chat.id);
+    if (U && typeof U.renderTrace === 'function') {
+      try { U.renderTrace({ chatId: chat.id, chatTitle: chat.title, events: events }); } catch (e3) { warn('UI.renderTrace 异常：' + errText(e3)); }
+    }
+    return events;
+  }
+
+  function exportTraceJson(chatId) {
+    var chat = null;
+    try { chat = chatId ? Store.getChat(chatId) : Store.getActiveChat(); } catch (e) { chat = null; }
+    if (!chat) { toast('没有可导出的轨迹', true); return false; }
+    var events = Store.getTrace(chat.id);
+    if (!events.length) { toast('当前会话没有轨迹记录', true); return false; }
+    var payload = {
+      app: BACKUP_APP_ID,
+      version: 1,
+      kind: 'trace',
+      exportedAt: new Date().toISOString(),
+      chatId: chat.id,
+      chatTitle: chat.title || '',
+      model: chat.model || state.prefs.model,
+      trace: events
+    };
+    var json = '';
+    try { json = JSON.stringify(payload, null, 2); } catch (e2) { toast('轨迹序列化失败', true); return false; }
+    var name = 'DeepSeekHouse-trace-' + safeFileName(chat.title || '对话') + '-' + backupDateStamp() + '.json';
+    var B = global.Bridge;
+    if (!B || typeof B.saveTextFile !== 'function') { toast('当前环境不支持导出文件', true); return false; }
+    var ok = false;
+    try { ok = B.saveTextFile(name, json) !== false; } catch (e3) { ok = false; }
+    if (ok) toast('正在导出轨迹（' + events.length + ' 条）…', true);
+    else toast('导出轨迹失败', true);
+    return ok;
+  }
+
+  function replayTool(traceId) {
+    var chat = Store.getActiveChat();
+    if (!chat) { toast('没有可重放的会话', true); return false; }
+    if (state.busy) { toast('正在生成回复，请先停止', true); return false; }
+    var events = Store.getTrace(chat.id);
+    var step = null;
+    var key = String(traceId === null || traceId === undefined ? '' : traceId);
+    for (var i = 0; i < events.length; i++) {
+      if (String(events[i].id) === key && events[i].type === 'tool_call') { step = events[i]; break; }
+    }
+    if (!step) { toast('找不到该工具调用记录', true); return false; }
+    return confirmAsync('重放工具', '将使用原参数重新执行「' + step.name + '」：\n' + safeStringify(step.args || {})).then(function (allow) {
+      if (!allow) return false;
+      appendNote(chat.id, '重放工具：' + step.name);
+      var toolCall = { id: 'replay_' + Date.now().toString(36), name: step.name, arguments: safeStringify(step.args || {}) };
+      var job = execOneTool(chat, toolCall, pluginCtx(chat), 0, { autoAllow: true, replay: true });
+      return Promise.resolve(job).then(function (msg) {
+        ui('scrollBottom', true);
+        refreshChatList();
+        toast('重放完成：' + step.name, true);
+        return true;
+      }, function (e) {
+        toast('重放失败：' + errText(e), true);
+        return false;
+      });
+    });
+  }
+
+  /* ---------------- 成本页 / 工具权限页 ---------------- */
+
+  function openCostPage() {
+    var data = getCostData();
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'cost' && U && (typeof U.openCostPage === 'function' || typeof U.openCostPanel === 'function')) {
+      state.costOpening = true;
+      try {
+        if (typeof U.openCostPage === 'function') U.openCostPage();
+        else U.openCostPanel();
+      } catch (e) { warn('UI.openCostPage 异常：' + errText(e)); } finally { state.costOpening = false; }
+    }
+    if (U && typeof U.renderCost === 'function') {
+      try { U.renderCost(data); } catch (e2) { warn('UI.renderCost 异常：' + errText(e2)); }
+    }
+    notifyCostBudget(data, U);
+    return data;
+  }
+
+  function openToolPoliciesPage() {
+    var list = getToolPolicies();
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'tool-policy' && U && (typeof U.openToolPolicyPage === 'function' || typeof U.openToolPoliciesPage === 'function')) {
+      state.toolPolicyOpening = true;
+      try {
+        if (typeof U.openToolPolicyPage === 'function') U.openToolPolicyPage();
+        else U.openToolPoliciesPage();
+      } catch (e) { warn('UI.openToolPolicyPage 异常：' + errText(e)); } finally { state.toolPolicyOpening = false; }
+    }
+    if (U && typeof U.renderToolPolicies === 'function') {
+      try { U.renderToolPolicies(list); } catch (e2) { warn('UI.renderToolPolicies 异常：' + errText(e2)); }
+    }
+    return list;
+  }
+
+  /* ---------------- 审计导出 ---------------- */
+
+  function csvEscape(value) {
+    var text = String(value === null || value === undefined ? '' : value);
+    if (/[",\n\r]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
+    return text;
+  }
+
+  function formatAuditTime(ts) {
+    var d = new Date(Number(ts) || Date.now());
+    function p(n) { return n < 10 ? '0' + n : String(n); }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function exportAudit(format) {
+    var fmt = String(format === null || format === undefined ? 'json' : format).toLowerCase();
+    if (fmt !== 'json' && fmt !== 'csv') fmt = 'json';
+    var items = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.auditRecent === 'function') items = global.Bridge.auditRecent(200);
+    } catch (e) { warn('读取审计记录失败：' + errText(e)); }
+    if (!Array.isArray(items)) items = [];
+    if (!items.length) { toast('没有可导出的审计记录', true); return false; }
+    var content = '';
+    if (fmt === 'csv') {
+      var lines = ['时间,工具,参数,结果,成功,已确认'];
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i] || {};
+        lines.push([
+          csvEscape(formatAuditTime(item.ts)),
+          csvEscape(item.tool),
+          csvEscape(item.args),
+          csvEscape(item.result),
+          item.ok === false ? 'false' : 'true',
+          item.confirmed ? 'true' : 'false'
+        ].join(','));
+      }
+      content = '\ufeff' + lines.join('\r\n');
+    } else {
+      var payload = {
+        app: BACKUP_APP_ID,
+        version: 1,
+        kind: 'audit',
+        exportedAt: new Date().toISOString(),
+        count: items.length,
+        items: items
+      };
+      try { content = JSON.stringify(payload, null, 2); } catch (e2) { toast('审计序列化失败', true); return false; }
+    }
+    var name = 'DeepSeekHouse-audit-' + backupDateStamp() + '.' + fmt;
+    var B = global.Bridge;
+    if (!B || typeof B.saveTextFile !== 'function') { toast('当前环境不支持导出文件', true); return false; }
+    var ok = false;
+    try { ok = B.saveTextFile(name, content) !== false; } catch (e3) { ok = false; }
+    if (ok) toast('正在导出审计（' + items.length + ' 条 · ' + fmt.toUpperCase() + '）…', true);
+    else toast('导出审计失败', true);
+    return ok;
+  }
+
+  /* ---------------- 斜杠命令 ---------------- */
+
+  function getSlashCommands() {
+    var out = [];
+    for (var i = 0; i < SLASH_COMMANDS.length; i++) {
+      out.push({ cmd: SLASH_COMMANDS[i].cmd, desc: SLASH_COMMANDS[i].desc, usage: SLASH_COMMANDS[i].usage });
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -5663,6 +6463,51 @@
   App.onSharedEvent = safe(function (evt) { return onSharedEvent(evt); }, 'App.onSharedEvent');
   App.refreshMcpStats = safe(function () { return refreshMcpStatsUI(); }, 'App.refreshMcpStats');
   App.refreshAfterStoreLoad = safe(function () { refreshAfterStoreLoad(); return true; }, 'App.refreshAfterStoreLoad');
+
+  /* ARCH v2.6.0 批次1 对外接口 */
+  App.getTrace = function (chatId) { return getTrace(chatId); };
+  App.exportTraceJson = safe(function (chatId) { return exportTraceJson(chatId); }, 'App.exportTraceJson');
+  App.replayTool = safe(function (traceId) { return replayTool(traceId); }, 'App.replayTool');
+  App.openTracePage = safe(function (chatId) { return openTracePage(chatId); }, 'App.openTracePage');
+  App.clearTrace = safe(function (chatId) {
+    try {
+      var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+      return chat ? Store.clearTrace(chat.id) : false;
+    } catch (e) { return false; }
+  }, 'App.clearTrace');
+  App.getSlashCommands = function () { return getSlashCommands(); };
+  App.getCostData = function () { return getCostData(); };
+  App.getUsageData = function () {
+    try { if (global.Store && typeof global.Store.getUsage === 'function') return global.Store.getUsage(); } catch (e) { /* ignore */ }
+    return null;
+  };
+  App.resetUsage = safe(function () {
+    try { return global.Store && typeof global.Store.resetUsage === 'function' ? global.Store.resetUsage() : null; } catch (e) { return null; }
+  }, 'App.resetUsage');
+  App.openCostPage = safe(function () { return openCostPage(); }, 'App.openCostPage');
+  App.saveCostBudget = safe(function (budget) {
+    if (!budget || typeof budget !== 'object') return false;
+    var next = {
+      daily: Math.max(0, Number(budget.daily) || 0),
+      monthly: Math.max(0, Number(budget.monthly) || 0)
+    };
+    state.prefs.costBudget = next;
+    try { Store.setPrefs({ costBudget: next }); } catch (e) { return false; }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ costBudget: next }); } catch (e2) { /* ignore */ }
+    notifyCostBudget(getCostData(), getUI());
+    return true;
+  }, 'App.saveCostBudget');
+  App.saveCostPrice = safe(function (prices) {
+    if (!prices || typeof prices !== 'object') return false;
+    state.prefs.costPrice = prices;
+    try { Store.setPrefs({ costPrice: prices }); } catch (e) { return false; }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ costPrice: prices }); } catch (e2) { /* ignore */ }
+    return true;
+  }, 'App.saveCostPrice');
+  App.getToolPolicies = function () { return getToolPolicies(); };
+  App.saveToolPolicy = safe(function (tool, mode) { return saveToolPolicy(tool, mode); }, 'App.saveToolPolicy');
+  App.openToolPoliciesPage = safe(function () { return openToolPoliciesPage(); }, 'App.openToolPoliciesPage');
+  App.exportAudit = safe(function (format) { return exportAudit(format); }, 'App.exportAudit');
   App.getFilePreview = function () { return state.filePreview; };
   App.confirmTool = safe(function (allow) {
     if (typeof state.pendingConfirm === 'function') { state.pendingConfirm(!!allow); return true; }

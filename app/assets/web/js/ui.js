@@ -187,8 +187,35 @@
     buildPanelOpen: false,
     security: {
       appLock: false,
-      encrypted: false
-    , rootMode: false, rootMessage: ''}
+      encrypted: false,
+      rootMode: false,
+      rootMessage: ''
+    },
+    /* 批次 1 v2.6.0：轨迹 / 成本 / 工具权限 / 斜杠命令 */
+    trace: {
+      events: [],
+      chatId: null,
+      chatTitle: '',
+      query: '',
+      loaded: false
+    },
+    cost: {
+      data: null,
+      alert: null,
+      loaded: false
+    },
+    toolPolicies: {
+      list: [],
+      loaded: false
+    },
+    slash: {
+      open: false,
+      commands: [],
+      filtered: [],
+      index: 0,
+      query: '',
+      custom: null
+    }
   };
 
   var WORKBENCH_KEY = 'dsh.workbench';
@@ -1194,10 +1221,12 @@
     else if (state.screen === 'chat') base = 1;
     else if (state.screen === 'settings' || state.screen === 'plugins' || state.screen === 'agents' ||
              state.screen === 'audit' || state.screen === 'mcp' || state.screen === 'market' ||
-             state.screen === 'memory') base = 2;
+             state.screen === 'memory' || state.screen === 'trace' || state.screen === 'cost' ||
+             state.screen === 'tool-policy') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen || state.buildPanelOpen ||
+      state.slash.open ||
       isModalOpen(r('install-modal')) || isModalOpen(r('confirm-modal')) || isModalOpen(r('rename-modal')) ||
       isModalOpen(r('risk-modal')) || isModalOpen(r('backup-modal')) || isModalOpen(r('file-preview-modal')) ||
       isModalOpen(r('mcp-form-modal')) || isModalOpen(r('memory-item-modal')) ||
@@ -3887,6 +3916,803 @@
     }
   }
 
+  /* ================================================================== *
+   * 批次 1 · v2.6.0：运行轨迹
+   * events: [{id,type,at|ts,text?,name|tool,args,risk,confirmed,ok,summary,durationMs}]
+   * ================================================================== */
+  function traceTypeKey(type) {
+    var value = String(type == null ? '' : type).toLowerCase().replace(/-/g, '_');
+    if (value === 'user' || value === 'human') return 'user';
+    if (value === 'thinking' || value === 'reasoning' || value === 'thought') return 'thinking';
+    if (value === 'tool_call' || value === 'toolcall' || value === 'tool') return 'tool_call';
+    if (value === 'tool_result' || value === 'toolresult' || value === 'result') return 'tool_result';
+    if (value === 'assistant' || value === 'message') return 'assistant';
+    return 'note';
+  }
+
+  var TRACE_META = {
+    user: { label: '用户', badge: 'user' },
+    thinking: { label: '思考', badge: 'thinking' },
+    assistant: { label: '回复', badge: 'note' },
+    tool_call: { label: '工具调用', badge: 'tool_call' },
+    tool_result: { label: '工具结果', badge: 'tool_result' },
+    note: { label: '注记', badge: 'note' }
+  };
+
+  function traceTextOf(event) {
+    if (!event) return '';
+    if (event.text != null) return String(event.text);
+    if (event.content != null) return String(event.content);
+    if (event.summary != null) return String(event.summary);
+    return '';
+  }
+
+  function traceToolOf(event) {
+    if (!event) return '';
+    return event.name != null ? String(event.name) : (event.tool != null ? String(event.tool) : '');
+  }
+
+  function traceTimeText(value) {
+    var date = toDate(value);
+    if (!date) return '';
+    return pad2(date.getHours()) + ':' + pad2(date.getMinutes()) + ':' + pad2(date.getSeconds());
+  }
+
+  function traceDurationText(ms) {
+    var value = Number(ms);
+    if (!isFinite(value) || value < 0) return '';
+    if (value < 1000) return Math.round(value) + 'ms';
+    if (value < 60000) return (value / 1000).toFixed(1) + 's';
+    return Math.floor(value / 60000) + 'm' + Math.round((value % 60000) / 1000) + 's';
+  }
+
+  function traceSearchText(event) {
+    var parts = [
+      traceTypeKey(event.type),
+      traceTextOf(event),
+      traceToolOf(event),
+      event.summary != null ? String(event.summary) : '',
+      event.result != null ? String(event.result) : '',
+      event.args != null ? toolArgsText(event.args) : '',
+      event.risk != null ? String(event.risk) : '',
+      event.confirmed != null ? String(event.confirmed) : ''
+    ];
+    return parts.join(' ').toLowerCase();
+  }
+
+  function normalizeTraceEvents(data) {
+    var events = [];
+    var chatId = '';
+    var chatTitle = '';
+    if (Array.isArray(data)) {
+      events = data;
+    } else if (data && typeof data === 'object') {
+      if (Array.isArray(data.events)) events = data.events;
+      else if (Array.isArray(data.trace)) events = data.trace;
+      if (data.chatId != null) chatId = String(data.chatId);
+      if (data.chatTitle != null) chatTitle = String(data.chatTitle);
+    }
+    var list = [];
+    events.forEach(function (event, index) {
+      if (!event || typeof event !== 'object') return;
+      list.push({
+        raw: event,
+        id: event.id != null ? String(event.id) : ('trace_' + index),
+        type: traceTypeKey(event.type),
+        at: event.at != null ? event.at : event.ts,
+        text: traceTextOf(event),
+        tool: traceToolOf(event),
+        args: event.args,
+        risk: event.risk != null ? String(event.risk) : '',
+        confirmed: event.confirmed != null ? String(event.confirmed) : '',
+        ok: event.ok,
+        summary: event.summary != null ? String(event.summary) : '',
+        result: event.result,
+        durationMs: event.durationMs != null ? event.durationMs : event.duration
+      });
+    });
+    return { events: list, chatId: chatId, chatTitle: chatTitle };
+  }
+
+  function traceFilteredEvents() {
+    var query = String(state.trace.query || '').trim().toLowerCase();
+    var list = state.trace.events || [];
+    if (!query) return list.slice();
+    return list.filter(function (event) {
+      return traceSearchText(event.raw).indexOf(query) >= 0;
+    });
+  }
+
+  function traceConfirmedLabel(value) {
+    var key = String(value == null ? '' : value).toLowerCase();
+    if (key === 'auto') return '自动';
+    if (key === 'pending') return '等待确认';
+    if (key === 'confirmed') return '已确认';
+    if (key === 'denied' || key === 'rejected') return '已拒绝';
+    return value ? String(value) : '';
+  }
+
+  function buildTraceNode(event) {
+    var meta = TRACE_META[event.type] || TRACE_META.note;
+    var failed = (event.type === 'tool_result' && event.ok === false) ||
+      String(event.confirmed || '').toLowerCase() === 'denied';
+    var node = el('div', 'trace-item trace-item--' + event.type + (failed ? ' is-fail' : ''));
+    node.setAttribute('data-trace-id', event.id);
+    node.appendChild(el('span', 'trace-dot'));
+
+    var card = el('div', 'trace-card');
+    var head = el('div', 'trace-head');
+    head.appendChild(makeText('span', 'trace-time', traceTimeText(event.at)));
+    var badgeClass = 'trace-badge trace-badge--' + meta.badge + (event.type === 'tool_result' && event.ok === false ? ' trace-badge--fail' : '');
+    head.appendChild(makeText('span', badgeClass, meta.label));
+    var title = event.tool || event.text || meta.label;
+    head.appendChild(makeText('span', 'trace-title', title));
+    card.appendChild(head);
+
+    var metaRow = null;
+    function chip(text, cls) {
+      if (!metaRow) metaRow = el('div', 'trace-meta');
+      metaRow.appendChild(makeText('span', 'trace-chip' + (cls ? ' ' + cls : ''), text));
+    }
+    if (event.type === 'tool_call') {
+      if (event.risk) chip('风险 ' + event.risk.toUpperCase(), 'trace-chip--' + event.risk.toLowerCase());
+      if (event.confirmed) chip(traceConfirmedLabel(event.confirmed), String(event.confirmed).toLowerCase() === 'denied' ? 'trace-chip--fail' : '');
+    }
+    if (event.type === 'tool_result') {
+      chip(event.ok === false ? '失败' : '成功', event.ok === false ? 'trace-chip--fail' : 'trace-chip--ok');
+      var duration = traceDurationText(event.durationMs);
+      if (duration) chip('耗时 ' + duration);
+      if (event.confirmed) chip(traceConfirmedLabel(event.confirmed));
+    }
+    if (event.type === 'thinking') chip('思考片段');
+    if (event.summary && event.summary !== event.text) chip(truncate(event.summary.replace(/\s+/g, ' ').trim(), 40));
+    if (metaRow) card.appendChild(metaRow);
+
+    if (event.type === 'thinking' || event.type === 'user' || event.type === 'assistant' || event.type === 'note') {
+      if (event.text) card.appendChild(makeText('div', 'trace-text', truncate(event.text, 1200)));
+    }
+
+    if (event.type === 'tool_call') {
+      var argsText = toolArgsText(event.args);
+      if (argsText) card.appendChild(traceDetailsNode('参数', argsText));
+    }
+    if (event.type === 'tool_result') {
+      var resultText = event.result != null ? String(event.result) : (event.summary || '');
+      if (resultText) card.appendChild(traceDetailsNode('结果', resultText));
+    }
+
+    if (event.type === 'tool_call' || event.type === 'tool_result') {
+      var replay = document.createElement('button');
+      replay.type = 'button';
+      replay.className = 'trace-replay';
+      replay.setAttribute('data-action', 'replay-tool');
+      replay.setAttribute('data-trace-id', event.id);
+      replay.textContent = '重放';
+      card.appendChild(replay);
+    }
+
+    node.appendChild(card);
+    return node;
+  }
+
+  function traceDetailsNode(label, text) {
+    var details = document.createElement('details');
+    details.className = 'trace-details';
+    var summary = document.createElement('summary');
+    summary.appendChild(makeText('span', 'tool-details-label', label));
+    summary.appendChild(makeText('span', 'tool-args-summary', truncate(String(text).replace(/\s+/g, ' ').trim(), 80)));
+    var caret = el('span', 'tool-details-caret');
+    caret.innerHTML = ICON.chevronDown;
+    summary.appendChild(caret);
+    var pre = el('pre', 'trace-code');
+    pre.textContent = String(text);
+    details.appendChild(summary);
+    details.appendChild(pre);
+    return details;
+  }
+
+  function renderTraceList() {
+    var box = r('trace-list');
+    var filtered = traceFilteredEvents();
+    if (box) {
+      box.textContent = '';
+      filtered.forEach(function (event) {
+        box.appendChild(buildTraceNode(event));
+      });
+    }
+    var empty = r('trace-empty');
+    if (empty) empty.hidden = filtered.length > 0;
+    var count = r('trace-count');
+    if (count) {
+      var total = (state.trace.events || []).length;
+      var title = state.trace.chatTitle ? state.trace.chatTitle : '当前会话';
+      count.textContent = state.trace.query
+        ? ('搜索「' + state.trace.query + '」· ' + filtered.length + '/' + total + ' 条')
+        : (title + ' · ' + total + ' 条事件');
+    }
+    var clear = r('trace-search-clear');
+    if (clear) clear.hidden = !state.trace.query;
+  }
+
+  function renderTrace(data) {
+    var normalized = normalizeTraceEvents(data);
+    if (Array.isArray(data) || (data && typeof data === 'object' && (Array.isArray(data.events) || Array.isArray(data.trace)))) {
+      state.trace.events = normalized.events;
+    }
+    if (normalized.chatId) state.trace.chatId = normalized.chatId;
+    if (normalized.chatTitle) state.trace.chatTitle = normalized.chatTitle;
+    state.trace.loaded = true;
+    renderTraceList();
+    return state.trace.events;
+  }
+
+  function openTracePage(chatId) {
+    if (chatId != null && String(chatId) !== '') state.trace.chatId = String(chatId);
+    showScreenImpl('trace');
+    var input = r('trace-search');
+    if (input) input.value = state.trace.query || '';
+    if (!invoke('onOpenTrace', state.trace.chatId || undefined)) renderTraceList();
+  }
+
+  function searchTrace(keyword) {
+    state.trace.query = keyword == null ? '' : String(keyword);
+    var input = r('trace-search');
+    if (input && input.value !== state.trace.query) input.value = state.trace.query;
+    renderTraceList();
+  }
+
+  function replayToolTrace(traceId) {
+    if (!traceId) return;
+    if (!invoke('onReplayTool', traceId)) UI.toast('轨迹重放服务尚未就绪');
+  }
+
+  /* ================================================================== *
+   * 批次 1 · v2.6.0：用量与成本
+   * ================================================================== */
+  var COST_CURRENCY_SYMBOL = { CNY: '¥', USD: '$', EUR: '€', JPY: 'JP¥', GBP: '£' };
+
+  function costNumber(value) {
+    var n = Number(value);
+    return isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function formatTokenCount(value) {
+    var n = costNumber(value);
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+    if (n >= 10000) return (n / 1000).toFixed(1) + 'k';
+    return String(Math.round(n));
+  }
+
+  function formatCostValue(value, currency) {
+    var n = costNumber(value);
+    var symbol = COST_CURRENCY_SYMBOL[String(currency || 'CNY').toUpperCase()] || '';
+    if (n === 0) return symbol + '0.00';
+    if (n < 0.01) return symbol + n.toFixed(4);
+    return symbol + n.toFixed(2);
+  }
+
+  function normalizeCostPeriod(period) {
+    if (period == null) return { tokens: 0, cost: 0, requests: 0 };
+    if (typeof period === 'number') return { tokens: costNumber(period), cost: 0, requests: 0 };
+    var tokens = costNumber(period.tokens);
+    if (!tokens) tokens = costNumber(period.promptTokens) + costNumber(period.completionTokens);
+    if (!tokens) tokens = costNumber(period.prompt_tokens) + costNumber(period.completion_tokens);
+    return {
+      tokens: tokens,
+      cost: costNumber(period.cost != null ? period.cost : period.estimatedCost),
+      requests: costNumber(period.requests != null ? period.requests : period.count)
+    };
+  }
+
+  function normalizeCostData(data) {
+    var src = data && typeof data === 'object' ? data : {};
+    var currency = src.currency ? String(src.currency).toUpperCase() : 'CNY';
+    var today = normalizeCostPeriod(src.today || { tokens: src.todayTokens, cost: src.todayCost });
+    var week = normalizeCostPeriod(src.week || { tokens: src.weekTokens, cost: src.weekCost });
+    var month = normalizeCostPeriod(src.month || { tokens: src.monthTokens, cost: src.monthCost });
+
+    var models = [];
+    var rawModels = src.byModel != null ? src.byModel : src.models;
+    if (Array.isArray(rawModels)) {
+      rawModels.forEach(function (item, index) {
+        if (!item || typeof item !== 'object') return;
+        models.push({
+          model: item.model != null ? String(item.model) : ('model_' + index),
+          tokens: costNumber(item.tokens),
+          cost: costNumber(item.cost),
+          requests: costNumber(item.requests)
+        });
+      });
+    } else if (rawModels && typeof rawModels === 'object') {
+      Object.keys(rawModels).forEach(function (key) {
+        var item = rawModels[key];
+        if (item && typeof item === 'object') {
+          models.push({
+            model: String(key),
+            tokens: costNumber(item.tokens),
+            cost: costNumber(item.cost),
+            requests: costNumber(item.requests)
+          });
+        } else {
+          models.push({ model: String(key), tokens: costNumber(item), cost: 0, requests: 0 });
+        }
+      });
+    }
+    models.sort(function (a, b) { return b.cost - a.cost || b.tokens - a.tokens; });
+
+    var budgetSrc = src.budget && typeof src.budget === 'object' ? src.budget : {};
+    var percentSrc = src.percent && typeof src.percent === 'object' ? src.percent : {};
+    var budgets = [];
+    function addBudget(key, label, limitValue, usedCost, percentValue) {
+      var limit = costNumber(limitValue);
+      if (!limit) return;
+      var used = costNumber(usedCost);
+      var percent = percentValue != null ? costNumber(percentValue) : (used / limit) * 100;
+      budgets.push({
+        key: key,
+        label: label,
+        limit: limit,
+        used: used,
+        percent: Math.max(0, Math.min(500, Math.round(percent)))
+      });
+    }
+    addBudget('daily', '今日预算', budgetSrc.daily != null ? budgetSrc.daily : budgetSrc.dailyLimit, today.cost, percentSrc.daily);
+    addBudget('monthly', '本月预算', budgetSrc.monthly != null ? budgetSrc.monthly : budgetSrc.monthlyLimit, month.cost, percentSrc.monthly);
+
+    var alert = null;
+    budgets.forEach(function (budget) {
+      if (budget.percent > 100) alert = { level: 'over', message: budget.label + '已超限 ' + budget.percent + '%' };
+      else if (budget.percent >= 80 && !alert) alert = { level: 'warn', message: budget.label + '已使用 ' + budget.percent + '%' };
+    });
+    if (src.alert && typeof src.alert === 'object') {
+      alert = { level: src.alert.level === 'over' ? 'over' : 'warn', message: src.alert.message != null ? String(src.alert.message) : '' };
+    }
+
+    return {
+      currency: currency,
+      today: today,
+      week: week,
+      month: month,
+      models: models,
+      budgets: budgets,
+      alert: alert
+    };
+  }
+
+  function renderCostPeriods(cost) {
+    var box = r('cost-periods');
+    if (!box) return;
+    box.textContent = '';
+    var periods = [
+      { label: '今日', data: cost.today },
+      { label: '本周', data: cost.week },
+      { label: '本月', data: cost.month }
+    ];
+    periods.forEach(function (item) {
+      var card = el('div', 'cost-period');
+      card.appendChild(makeText('span', 'cost-period-label', item.label));
+      card.appendChild(makeText('div', 'cost-period-tokens', formatTokenCount(item.data.tokens)));
+      card.appendChild(makeText('div', 'cost-period-cost', formatCostValue(item.data.cost, cost.currency)));
+      box.appendChild(card);
+    });
+  }
+
+  function renderCostModels(cost) {
+    var box = r('cost-models');
+    if (!box) return;
+    box.textContent = '';
+    var maxCost = 0;
+    cost.models.forEach(function (item) { if (item.cost > maxCost) maxCost = item.cost; });
+    cost.models.forEach(function (item) {
+      var card = el('div', 'cost-model');
+      var head = el('div', 'cost-model-head');
+      head.appendChild(makeText('span', 'cost-model-name', item.model));
+      head.appendChild(makeText('span', 'cost-model-cost', formatCostValue(item.cost, cost.currency)));
+      card.appendChild(head);
+      var metaText = formatTokenCount(item.tokens) + ' tokens';
+      if (item.requests) metaText += ' · ' + item.requests + ' 次请求';
+      card.appendChild(makeText('div', 'cost-model-meta', metaText));
+      var track = el('div', 'cost-share-track');
+      var fill = el('div', 'cost-share-fill');
+      var share = maxCost > 0 ? Math.round((item.cost / maxCost) * 100) : 0;
+      fill.style.width = share + '%';
+      track.appendChild(fill);
+      card.appendChild(track);
+      box.appendChild(card);
+    });
+    var empty = r('cost-empty');
+    if (empty) {
+      var hasData = cost.models.length > 0 || cost.today.tokens > 0 || cost.week.tokens > 0 || cost.month.tokens > 0;
+      empty.hidden = hasData || cost.budgets.length > 0;
+    }
+  }
+
+  function renderCostBudgets(cost) {
+    var box = r('cost-budget');
+    if (!box) return;
+    box.textContent = '';
+    if (!cost.budgets.length) {
+      box.appendChild(makeText('div', 'cost-budget-row', '尚未设置预算'));
+      return;
+    }
+    cost.budgets.forEach(function (budget) {
+      var row = el('div', 'cost-budget');
+      var head = el('div', 'cost-budget-row');
+      head.appendChild(makeText('span', 'cost-budget-label', budget.label));
+      head.appendChild(makeText('span', 'cost-budget-value',
+        formatCostValue(budget.used, cost.currency) + ' / ' + formatCostValue(budget.limit, cost.currency) + ' · ' + budget.percent + '%'));
+      row.appendChild(head);
+      var track = el('div', 'cost-budget-track');
+      var fill = el('div', 'cost-budget-fill');
+      fill.style.width = Math.min(100, budget.percent) + '%';
+      if (budget.percent > 100) fill.classList.add('is-over');
+      else if (budget.percent >= 80) fill.classList.add('is-warn');
+      track.appendChild(fill);
+      row.appendChild(track);
+      box.appendChild(row);
+    });
+  }
+
+  function renderCostAlert(alert) {
+    var box = r('cost-alert');
+    if (!box) return;
+    if (!alert || !alert.message) {
+      box.hidden = true;
+      box.textContent = '';
+      box.classList.remove('is-over');
+      return;
+    }
+    box.hidden = false;
+    box.textContent = alert.message;
+    box.classList.toggle('is-over', alert.level === 'over');
+  }
+
+  function renderCostPanels() {
+    var data = state.cost.data;
+    if (!data) {
+      var periods = r('cost-periods');
+      if (periods) periods.textContent = '';
+      var models = r('cost-models');
+      if (models) models.textContent = '';
+      var budget = r('cost-budget');
+      if (budget) budget.textContent = '';
+      var empty = r('cost-empty');
+      if (empty) empty.hidden = false;
+      renderCostAlert(null);
+      return;
+    }
+    renderCostPeriods(data);
+    renderCostModels(data);
+    renderCostBudgets(data);
+    renderCostAlert(state.cost.alert || data.alert);
+    var count = r('cost-count');
+    if (count) {
+      count.textContent = '今日 ' + formatTokenCount(data.today.tokens) + ' tokens · ' +
+        formatCostValue(data.today.cost, data.currency) + ' · 本月 ' + formatCostValue(data.month.cost, data.currency);
+    }
+    var label = r('set-cost-label');
+    if (label) label.textContent = '今日 ' + formatCostValue(data.today.cost, data.currency);
+  }
+
+  function renderCost(data) {
+    state.cost.data = normalizeCostData(data);
+    state.cost.alert = state.cost.data.alert;
+    state.cost.loaded = true;
+    renderCostPanels();
+    return state.cost.data;
+  }
+
+  function openCostPage() {
+    showScreenImpl('cost');
+    if (!invoke('onOpenCost')) renderCostPanels();
+  }
+
+  function setCostAlert(info) {
+    if (!info || typeof info !== 'object') {
+      state.cost.alert = null;
+      renderCostAlert(null);
+      return null;
+    }
+    state.cost.alert = { level: info.level === 'over' ? 'over' : 'warn', message: info.message == null ? '' : String(info.message) };
+    renderCostAlert(state.cost.alert);
+    return state.cost.alert;
+  }
+
+  /* ================================================================== *
+   * 批次 1 · v2.6.0：工具权限策略
+   * ================================================================== */
+  var POLICY_MODES = [
+    { key: 'auto', label: '自动' },
+    { key: 'once', label: '首次确认' },
+    { key: 'always', label: '每次确认' },
+    { key: 'deny', label: '禁止' }
+  ];
+
+  function normalizeToolMode(mode) {
+    var value = String(mode == null ? '' : mode).toLowerCase();
+    if (value === 'auto' || value === 'allow' || value === 'always_allow') return 'auto';
+    if (value === 'once' || value === 'first' || value === 'ask_once') return 'once';
+    if (value === 'always' || value === 'ask' || value === 'every' || value === 'confirm') return 'always';
+    if (value === 'deny' || value === 'block' || value === 'never') return 'deny';
+    return 'auto';
+  }
+
+  function normalizeToolPolicyList(list) {
+    var out = [];
+    (Array.isArray(list) ? list : []).forEach(function (item, index) {
+      if (!item) return;
+      if (typeof item === 'string') item = { tool: item };
+      if (typeof item !== 'object') return;
+      var tool = item.tool != null ? String(item.tool) : (item.name != null ? String(item.name) : '');
+      if (!tool) return;
+      var source = item.source === 'mcp' ? 'mcp'
+        : (item.source === 'builtin' ? 'builtin'
+          : (tool.indexOf('mcp:') === 0 || tool.indexOf('mcp_') === 0 || tool.indexOf(':') > 0 ? 'mcp' : 'builtin'));
+      out.push({
+        tool: tool,
+        name: item.name != null ? String(item.name) : tool,
+        source: source,
+        server: item.server != null ? String(item.server) : (item.serverId != null ? String(item.serverId) : ''),
+        risk: item.risk != null ? String(item.risk).toLowerCase() : '',
+        mode: normalizeToolMode(item.mode),
+        explicit: item.explicit === true
+      });
+    });
+    return out;
+  }
+
+  function buildToolPolicyRow(item) {
+    var row = el('div', 'tool-policy-row');
+    row.setAttribute('data-tool', item.tool);
+    var head = el('div', 'tool-policy-head');
+    head.appendChild(makeText('span', 'tool-policy-name', item.name || item.tool));
+    if (item.risk) head.appendChild(makeText('span', 'tool-policy-risk tool-policy-risk--' + item.risk, item.risk.toUpperCase()));
+    head.appendChild(makeText('span', 'tool-policy-source', item.source === 'mcp' ? 'MCP' : '内置'));
+    row.appendChild(head);
+
+    var modes = el('div', 'policy-modes');
+    POLICY_MODES.forEach(function (mode) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'policy-mode' + (mode.key === item.mode ? ' is-active' : '') + (mode.key === 'deny' ? ' policy-mode--danger' : '');
+      btn.setAttribute('data-action', 'tool-policy');
+      btn.setAttribute('data-tool', item.tool);
+      btn.setAttribute('data-mode', mode.key);
+      btn.textContent = mode.label;
+      modes.appendChild(btn);
+    });
+    row.appendChild(modes);
+    return row;
+  }
+
+  function renderToolPolicyRows() {
+    var builtinBox = r('tool-policy-list');
+    var mcpBox = r('tool-policy-mcp-list');
+    var builtin = [];
+    var mcpItems = [];
+    (state.toolPolicies.list || []).forEach(function (item) {
+      if (item.source === 'mcp') mcpItems.push(item);
+      else builtin.push(item);
+    });
+    if (builtinBox) {
+      builtinBox.textContent = '';
+      builtin.forEach(function (item) { builtinBox.appendChild(buildToolPolicyRow(item)); });
+    }
+    if (mcpBox) {
+      mcpBox.textContent = '';
+      mcpItems.forEach(function (item) { mcpBox.appendChild(buildToolPolicyRow(item)); });
+    }
+    var mcpLabel = r('tool-policy-mcp-label');
+    if (mcpLabel) mcpLabel.hidden = mcpItems.length === 0;
+    var total = (state.toolPolicies.list || []).length;
+    var empty = r('tool-policy-empty');
+    if (empty) empty.hidden = total > 0;
+    var count = r('tool-policy-count');
+    if (count) count.textContent = total ? (total + ' 个工具 · 点击切换策略') : '自动 / 首次确认 / 每次确认 / 禁止';
+    var label = r('set-tool-policy-label');
+    if (label) label.textContent = total ? (total + ' 个工具') : '自动 / 确认 / 禁止';
+  }
+
+  function renderToolPolicies(list) {
+    state.toolPolicies.list = normalizeToolPolicyList(list);
+    state.toolPolicies.loaded = true;
+    renderToolPolicyRows();
+    return state.toolPolicies.list;
+  }
+
+  function openToolPolicyPage() {
+    showScreenImpl('tool-policy');
+    if (!invoke('onOpenToolPolicies')) renderToolPolicyRows();
+  }
+
+  function setToolPolicyMode(tool, mode) {
+    var key = String(tool == null ? '' : tool);
+    var next = normalizeToolMode(mode);
+    var target = null;
+    (state.toolPolicies.list || []).forEach(function (item) {
+      if (item.tool === key) target = item;
+    });
+    if (!target) return false;
+    var previous = target.mode;
+    target.mode = next;
+    target.explicit = true;
+    renderToolPolicyRows();
+    if (!invoke('onSaveToolPolicy', key, next)) {
+      target.mode = previous;
+      renderToolPolicyRows();
+      UI.toast('工具权限服务尚未就绪');
+      return false;
+    }
+    return true;
+  }
+
+  /* ================================================================== *
+   * 批次 1 · v2.6.0：斜杠命令面板
+   * ================================================================== */
+  var DEFAULT_SLASH_COMMANDS = [
+    { cmd: '/new', desc: '新建会话' },
+    { cmd: '/clear', desc: '清空当前会话' },
+    { cmd: '/model', desc: '选择或切换模型' },
+    { cmd: '/export', desc: '导出当前会话 Markdown' },
+    { cmd: '/audit', desc: '查看审计日志' },
+    { cmd: '/trace', desc: '查看运行轨迹' },
+    { cmd: '/cost', desc: '查看用量与成本' },
+    { cmd: '/mcp', desc: '管理 MCP 服务器' },
+    { cmd: '/workbench', desc: '切换工作台三栏' },
+    { cmd: '/stop', desc: '停止当前生成' },
+    { cmd: '/help', desc: '查看全部命令' },
+    { cmd: '/settings', desc: '打开设置' },
+    { cmd: '/models', desc: '从 API 刷新模型列表' }
+  ];
+
+  function normalizeSlashCommands(commands) {
+    var out = [];
+    var seen = {};
+    (Array.isArray(commands) ? commands : []).forEach(function (item) {
+      if (item == null) return;
+      if (typeof item === 'string') item = { cmd: item };
+      if (typeof item !== 'object') return;
+      var cmd = item.cmd != null ? String(item.cmd) : (item.name != null ? String(item.name) : (item.command != null ? String(item.command) : ''));
+      cmd = cmd.trim();
+      if (!cmd) return;
+      if (cmd.charAt(0) !== '/') cmd = '/' + cmd;
+      if (seen[cmd]) return;
+      seen[cmd] = true;
+      out.push({
+        cmd: cmd,
+        desc: item.desc != null ? String(item.desc) : (item.description != null ? String(item.description) : ''),
+        usage: item.usage != null ? String(item.usage) : ''
+      });
+    });
+    return out;
+  }
+
+  function slashCommandSource() {
+    if (state.slash.custom) return state.slash.custom;
+    try {
+      if (window.App && typeof window.App.getSlashCommands === 'function') {
+        var list = normalizeSlashCommands(window.App.getSlashCommands());
+        if (list.length) return list;
+      }
+    } catch (err) { /* 静默 */ }
+    return normalizeSlashCommands(DEFAULT_SLASH_COMMANDS);
+  }
+
+  function slashQueryFromComposer() {
+    var input = r('composer-input');
+    if (!input) return null;
+    var value = String(input.value || '');
+    var match = /^\/([^\s]*)$/.exec(value);
+    if (!match) return null;
+    return match[1].toLowerCase();
+  }
+
+  function renderSlashMenu() {
+    var box = r('slash-list');
+    if (!box) return;
+    var query = String(state.slash.query || '').toLowerCase();
+    var list = state.slash.commands.filter(function (command) {
+      if (!query) return true;
+      return command.cmd.toLowerCase().indexOf('/' + query) === 0 ||
+        command.cmd.toLowerCase().indexOf(query) >= 0 ||
+        command.desc.toLowerCase().indexOf(query) >= 0;
+    });
+    state.slash.filtered = list;
+    if (state.slash.index >= list.length) state.slash.index = Math.max(0, list.length - 1);
+    box.textContent = '';
+    list.forEach(function (command, index) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'slash-item' + (index === state.slash.index ? ' is-active' : '');
+      item.setAttribute('data-action', 'slash-pick');
+      item.setAttribute('data-index', String(index));
+      item.appendChild(makeText('span', 'slash-cmd', command.cmd));
+      item.appendChild(makeText('span', 'slash-desc', command.desc || command.usage || ''));
+      box.appendChild(item);
+    });
+    var menu = r('slash-menu');
+    if (menu) {
+      menu.hidden = list.length === 0;
+      if (list.length) positionSlashMenu();
+    }
+  }
+
+  function positionSlashMenu() {
+    var menu = r('slash-menu');
+    var composer = r('composer');
+    if (!menu || !composer) return;
+    var height = composer.offsetHeight || 62;
+    menu.style.bottom = (height + 8) + 'px';
+  }
+
+  function openSlashMenu(commands) {
+    state.slash.commands = normalizeSlashCommands(commands || slashCommandSource());
+    state.slash.open = true;
+    state.slash.index = 0;
+    state.slash.query = slashQueryFromComposer() || '';
+    var menu = r('slash-menu');
+    if (menu) {
+      menu.hidden = false;
+      menu.setAttribute('aria-hidden', 'false');
+    }
+    renderSlashMenu();
+  }
+
+  function closeSlashMenu() {
+    state.slash.open = false;
+    state.slash.filtered = [];
+    state.slash.index = 0;
+    var menu = r('slash-menu');
+    if (menu) {
+      menu.hidden = true;
+      menu.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  function moveSlashMenu(delta) {
+    var count = state.slash.filtered.length;
+    if (!count) return;
+    state.slash.index = (state.slash.index + delta + count) % count;
+    renderSlashMenu();
+    var active = document.querySelector('#slash-list .slash-item.is-active');
+    if (active && active.scrollIntoView) {
+      try { active.scrollIntoView({ block: 'nearest' }); } catch (err) { /* 静默 */ }
+    }
+  }
+
+  function pickSlashCommand(index) {
+    var position = Number(index);
+    var command = state.slash.filtered[position];
+    if (!command) return;
+    var input = r('composer-input');
+    if (input) {
+      input.value = command.cmd + ' ';
+      autosize();
+      try { input.focus(); } catch (err) { /* 静默 */ }
+    }
+    closeSlashMenu();
+  }
+
+  function updateSlashFromComposer() {
+    var query = slashQueryFromComposer();
+    if (query === null) {
+      if (state.slash.open) closeSlashMenu();
+      return;
+    }
+    if (!state.slash.open) openSlashMenu();
+    else {
+      state.slash.query = query;
+      state.slash.index = 0;
+      renderSlashMenu();
+    }
+  }
+
+  function setSlashCommands(commands) {
+    state.slash.custom = normalizeSlashCommands(commands);
+    if (state.slash.open) openSlashMenu(state.slash.custom);
+    return state.slash.custom;
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -3902,7 +4728,10 @@
     audit: 'screen-audit',
     mcp: 'screen-mcp',
     market: 'screen-market',
-    memory: 'screen-memory'
+    memory: 'screen-memory',
+    trace: 'screen-trace',
+    cost: 'screen-cost',
+    'tool-policy': 'screen-tool-policy'
   };
 
   function syncBottomNav(name) {
@@ -3945,7 +4774,7 @@
     closeAttachmentSheet();
     closeBuildPanel();
     closeImageViewer();
-    if (name !== 'chat') closeEmojiPanel();
+    if (name !== 'chat') { closeEmojiPanel(); closeSlashMenu(); }
     if (name === 'settings') refreshSettingsStats();
     syncDepth();
   }
@@ -5563,6 +6392,18 @@
       if (typeof state.cb.onCloseMcp === 'function') invoke('onCloseMcp');
       return;
     }
+    /* 批次 1 v2.6.0：轨迹返回对话页；成本/工具权限返回设置页 */
+    if (state.screen === 'trace') {
+      showScreenImpl('chat');
+      if (typeof state.cb.onCloseTrace === 'function') invoke('onCloseTrace');
+      return;
+    }
+    if (state.screen === 'cost' || state.screen === 'tool-policy') {
+      showScreenImpl('settings');
+      if (state.screen === 'cost' && typeof state.cb.onCloseCost === 'function') invoke('onCloseCost');
+      if (state.screen === 'tool-policy' && typeof state.cb.onCloseToolPolicies === 'function') invoke('onCloseToolPolicies');
+      return;
+    }
     /* ARCH v2 P3：插件市场 / 记忆返回设置页 */
     if (state.screen === 'market' || state.screen === 'memory') {
       var closeKey = state.screen === 'market' ? 'onCloseMarket' : 'onCloseMemory';
@@ -5601,6 +6442,8 @@
     if (state.screen === 'audit') { showScreenImpl('profile'); return true; }
     if (state.screen === 'mcp') { showScreenImpl('settings'); return true; }
     if (state.screen === 'market' || state.screen === 'memory') { showScreenImpl('settings'); return true; }
+    if (state.screen === 'trace') { showScreenImpl('chat'); return true; }
+    if (state.screen === 'cost' || state.screen === 'tool-policy') { showScreenImpl('settings'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -5879,6 +6722,37 @@
       case 'close-image-viewer':
         closeImageViewer();
         break;
+      /* -------- 批次1 v2.6.0：轨迹 / 成本 / 工具权限 / 审计导出 / 斜杠命令 -------- */
+      case 'open-trace':
+        openTracePage();
+        break;
+      case 'export-trace':
+        if (!invoke('onExportTrace')) UI.toast('轨迹导出服务尚未就绪');
+        break;
+      case 'replay-tool':
+        replayToolTrace(node.getAttribute('data-trace-id'));
+        break;
+      case 'clear-trace-search':
+        searchTrace('');
+        break;
+      case 'open-cost':
+        openCostPage();
+        break;
+      case 'open-tool-policies':
+        openToolPolicyPage();
+        break;
+      case 'tool-policy':
+        setToolPolicyMode(node.getAttribute('data-tool'), node.getAttribute('data-mode'));
+        break;
+      case 'export-audit-json':
+        if (!invoke('onExportAudit', 'json')) UI.toast('审计导出服务尚未就绪');
+        break;
+      case 'export-audit-csv':
+        if (!invoke('onExportAudit', 'csv')) UI.toast('审计导出服务尚未就绪');
+        break;
+      case 'slash-pick':
+        pickSlashCommand(node.getAttribute('data-index'));
+        break;
       case 'open-backup':
         openModal(r('backup-modal'));
         break;
@@ -6066,6 +6940,10 @@
 
     if (state.menuOpen && !target.closest('#longpress')) closeMenu();
 
+    if (state.slash.open && !target.closest('#slash-menu') && !target.closest('#composer')) {
+      closeSlashMenu();
+    }
+
     var shareNode = target.closest('[data-share-id]');
     if (shareNode) {
       invoke('onShareChat', shareNode.getAttribute('data-share-id'));
@@ -6104,6 +6982,11 @@
     if (!target) return;
     if (target.id === 'composer-input') {
       autosize();
+      updateSlashFromComposer();
+      return;
+    }
+    if (target.id === 'trace-search') {
+      searchTrace(target.value);
       return;
     }
     if (target.id === 'search-input') {
@@ -6159,6 +7042,23 @@
       return;
     }
     if (target.id === 'composer-input') {
+      if (state.slash.open) {
+        if (key === 'ArrowDown' || key === 'ArrowUp') {
+          event.preventDefault();
+          moveSlashMenu(key === 'ArrowDown' ? 1 : -1);
+          return;
+        }
+        if (key === 'Escape') {
+          event.preventDefault();
+          closeSlashMenu();
+          return;
+        }
+        if ((key === 'Enter' || key === 'Tab') && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          pickSlashCommand(state.slash.index);
+          return;
+        }
+      }
       if (key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         handleSend();
@@ -6370,7 +7270,16 @@
       'workbench-refresh', 'terminal-resize',
       'composer-images', 'attachment-sheet', 'image-viewer', 'image-viewer-img',
       'build-panel', 'build-panel-title', 'build-tasks', 'build-empty',
-      'set-applock', 'set-encryption-status', 'set-rootmode', 'set-root-status'
+      'set-applock', 'set-encryption-status', 'set-rootmode', 'set-root-status',
+      /* 批次1 v2.6.0：轨迹 / 成本 / 工具权限 / 斜杠命令 / 审计导出 */
+      'trace-toggle', 'screen-trace', 'trace-count', 'trace-export', 'trace-search',
+      'trace-search-wrap', 'trace-search-clear', 'trace-list', 'trace-empty',
+      'screen-cost', 'cost-count', 'cost-alert', 'cost-periods', 'cost-models', 'cost-empty', 'cost-budget',
+      'set-cost-row', 'set-cost-label',
+      'screen-tool-policy', 'tool-policy-count', 'tool-policy-list', 'tool-policy-mcp-list',
+      'tool-policy-mcp-label', 'tool-policy-empty', 'set-tool-policy-row', 'set-tool-policy-label',
+      'audit-export-json', 'audit-export-csv',
+      'slash-menu', 'slash-list'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -6978,10 +7887,32 @@
   UI.setSecurityInfo = setSecurityInfo;
   UI.refreshSettingsStats = refreshSettingsStats;
 
+  /* 批次 1 · v2.6.0：轨迹 / 成本 / 工具权限 / 斜杠命令 */
+  UI.renderTrace = function (events) { return renderTrace(events); };
+  UI.openTracePage = openTracePage;
+  UI.searchTrace = searchTrace;
+  UI.getTraceEvents = function () { return state.trace.events.slice(); };
+  UI.renderCost = function (data) { return renderCost(data); };
+  UI.openCostPage = openCostPage;
+  UI.openCostPanel = openCostPage;
+  UI.setCostAlert = setCostAlert;
+  UI.getCostData = function () { return state.cost.data; };
+  UI.renderToolPolicies = function (list) { return renderToolPolicies(list); };
+  UI.openToolPolicyPage = openToolPolicyPage;
+  UI.openToolPoliciesPage = openToolPolicyPage;
+  UI.setToolPolicyMode = setToolPolicyMode;
+  UI.openSlashMenu = openSlashMenu;
+  UI.closeSlashMenu = closeSlashMenu;
+  UI.isSlashMenuOpen = function () { return !!state.slash.open; };
+  UI.setSlashCommands = setSlashCommands;
+  UI.renderSlashCommands = setSlashCommands;
+  UI.getSlashCommands = function () { return (state.slash.custom || slashCommandSource()).slice(); };
+  UI.pickSlashCommand = pickSlashCommand;
+
   /* 液态玻璃 / 毛玻璃 */
   UI.setGlassMode = function (mode) { return applyGlassMode(mode); };
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '2.5.5';
+  UI.version = '2.6.0';
 })();
