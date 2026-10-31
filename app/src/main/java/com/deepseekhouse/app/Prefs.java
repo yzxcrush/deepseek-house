@@ -33,6 +33,8 @@ public final class Prefs {
     public static final String KEY_MCP_SERVERS = "mcpServers";
     /** ARCH v2 P3：house-plugins 目录插件的 enabled 状态（JSON 对象 fileName→bool）。 */
     public static final String KEY_PLUGIN_ENABLED = "housePluginEnabled";
+    /** v3.0.0：Bot 配置 JSON 数组 [{id,type,name,enabled,token,accessToken,baseUrl,...}]。 */
+    public static final String KEY_BOTS = "bots";
 
     public static final String DEFAULT_BASE_URL = "https://api.deepseek.com";
     public static final String DEFAULT_MODEL = "deepseek-chat";
@@ -167,6 +169,19 @@ public final class Prefs {
     public void setPluginEnabledJson(String json) {
         String value = json == null || json.trim().isEmpty() ? "{}" : json.trim();
         sp.edit().putString(KEY_PLUGIN_ENABLED, value).apply();
+    }
+
+    // ---------------------------------------------------------------- v3.0.0 Bot 配置
+
+    /** Bot 配置原始 JSON 数组；缺省 "[]"。token/accessToken 仅在此与原生层出现，不写日志。 */
+    public String getBotsJson() {
+        String value = sp.getString(KEY_BOTS, "[]");
+        return value == null || value.trim().isEmpty() ? "[]" : value;
+    }
+
+    public void setBotsJson(String json) {
+        String value = json == null || json.trim().isEmpty() ? "[]" : json.trim();
+        sp.edit().putString(KEY_BOTS, value).apply();
     }
 
     // ---------------------------------------------------------------- 写

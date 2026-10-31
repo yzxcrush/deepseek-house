@@ -99,7 +99,11 @@
     'image-picked': true,
     'image-error': true,
     'app-state': true,
-    'shared': true
+    'shared': true,
+    /* v3.0.0：Bot 事件 */
+    'bot-status': true,
+    'bot-message': true,
+    'bot-sent': true
   };
 
   var eventWaiters = Object.create(null); // type -> [{predicate, finish}]
@@ -1118,6 +1122,246 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * v3.0.0：Bot 集成 —— mock 实现（内存配置 + 模拟收发事件）
+   * 注意：mock token 仅用于本地演示，绝不写入任何日志。
+   * ------------------------------------------------------------------ */
+
+  var mockBots = [
+    {
+      id: 'mock.telegram', type: 'telegram', name: '演示 Telegram Bot',
+      token: '123456:mock-token', accessToken: '', baseUrl: '',
+      enabled: true, autoReply: false, whitelist: [], systemPrompt: '',
+      cooldownSec: 8, hourlyLimit: 60,
+      status: 'stopped', running: false, recentCount: 0, createdAt: 0
+    },
+    {
+      id: 'mock.onebot', type: 'onebot', name: '演示 QQ OneBot',
+      token: '', accessToken: 'mock-access-token', baseUrl: 'http://127.0.0.1:3000',
+      enabled: false, autoReply: false, whitelist: [], systemPrompt: '',
+      cooldownSec: 8, hourlyLimit: 60,
+      status: 'stopped', running: false, recentCount: 0, createdAt: 0
+    }
+  ];
+  var mockBotMessages = []; /* [{botId,chatId,from,fromName,text,at,direction,ok,messageId,error}] */
+  var mockBotSeq = 0;
+
+  function defaultMockBotsSeed() {
+    return [
+      {
+        id: 'mock.telegram', type: 'telegram', name: '演示 Telegram Bot',
+        token: '123456:mock-token', accessToken: '', baseUrl: '',
+        enabled: true, autoReply: false, whitelist: [], systemPrompt: '',
+        cooldownSec: 8, hourlyLimit: 60,
+        status: 'stopped', running: false, recentCount: 0, createdAt: 0
+      },
+      {
+        id: 'mock.onebot', type: 'onebot', name: '演示 QQ OneBot',
+        token: '', accessToken: 'mock-access-token', baseUrl: 'http://127.0.0.1:3000',
+        enabled: false, autoReply: false, whitelist: [], systemPrompt: '',
+        cooldownSec: 8, hourlyLimit: 60,
+        status: 'stopped', running: false, recentCount: 0, createdAt: 0
+      }
+    ];
+  }
+
+  function mockBotFind(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    for (var i = 0; i < mockBots.length; i++) if (mockBots[i].id === key) return mockBots[i];
+    return null;
+  }
+
+  function mockBotPublic(bot) {
+    var copy = {};
+    var keys = Object.keys(bot);
+    for (var i = 0; i < keys.length; i++) copy[keys[i]] = bot[keys[i]];
+    copy.recentCount = mockBotRecentCount(bot.id);
+    copy.running = !!bot.running;
+    return copy;
+  }
+
+  function mockBotListPublic() {
+    var out = [];
+    for (var i = 0; i < mockBots.length; i++) out.push(mockBotPublic(mockBots[i]));
+    return out;
+  }
+
+  function mockBotSave(config) {
+    if (!config || typeof config !== 'object') return false;
+    var type = String(config.type || 'telegram') === 'onebot' ? 'onebot' : 'telegram';
+    var target = mockBotFind(config.id);
+    if (!target) {
+      mockBotSeq++;
+      target = {
+        id: String(config.id || ('bot' + Date.now().toString(36) + mockBotSeq)),
+        type: type, name: String(config.name || (type === 'onebot' ? 'QQ Bot' : 'Telegram Bot')).slice(0, 80),
+        token: '', accessToken: '', baseUrl: '', enabled: false, autoReply: false,
+        whitelist: [], systemPrompt: '', cooldownSec: 8, hourlyLimit: 60,
+        status: 'stopped', running: false, createdAt: Date.now()
+      };
+      mockBots.push(target);
+    }
+    target.type = type;
+    if (config.name !== undefined) target.name = String(config.name || target.name).slice(0, 80);
+    if (config.token !== undefined && String(config.token) !== '') target.token = String(config.token).slice(0, 600);
+    if (config.accessToken !== undefined && String(config.accessToken) !== '') target.accessToken = String(config.accessToken).slice(0, 600);
+    if (config.baseUrl !== undefined) target.baseUrl = String(config.baseUrl || '').slice(0, 300);
+    if (target.type === 'onebot' && !target.baseUrl) target.baseUrl = 'http://127.0.0.1:3000';
+    if (config.enabled !== undefined) target.enabled = !!config.enabled;
+    if (config.autoReply !== undefined) target.autoReply = !!config.autoReply;
+    if (Array.isArray(config.whitelist)) target.whitelist = config.whitelist.slice(0, 50).map(function (v) { return String(v); });
+    if (config.systemPrompt !== undefined) target.systemPrompt = String(config.systemPrompt || '').slice(0, 4000);
+    if (config.cooldownSec !== undefined) target.cooldownSec = Math.max(3, Math.min(300, Math.round(Number(config.cooldownSec) || 8)));
+    if (config.hourlyLimit !== undefined) target.hourlyLimit = Math.max(1, Math.min(600, Math.round(Number(config.hourlyLimit) || 60)));
+    target.updatedAt = Date.now();
+    return true;
+  }
+
+  function mockBotDelete(id) {
+    var bot = mockBotFind(id);
+    if (!bot) return true;
+    var idx = mockBots.indexOf(bot);
+    if (idx >= 0) mockBots.splice(idx, 1);
+    for (var i = mockBotMessages.length - 1; i >= 0; i--) {
+      if (mockBotMessages[i].botId === bot.id) mockBotMessages.splice(i, 1);
+    }
+    return true;
+  }
+
+  function mockBotRecentCount(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    var count = 0;
+    for (var i = 0; i < mockBotMessages.length; i++) if (mockBotMessages[i].botId === key) count++;
+    return count;
+  }
+
+  function mockBotRecent(id, limit) {
+    var key = String(id === null || id === undefined ? '' : id);
+    var max = Math.max(1, Math.min(200, parseInt(limit, 10) || 50));
+    var out = [];
+    for (var i = mockBotMessages.length - 1; i >= 0 && out.length < max; i--) {
+      if (mockBotMessages[i].botId === key) out.push(mockBotMessages[i]);
+    }
+    return out;
+  }
+
+  function mockBotStatus(botId, status, message) {
+    emitAgentLater(10, { type: 'bot-status', botId: String(botId || ''), status: String(status || 'stopped'), message: String(message || '') });
+  }
+
+  function mockBotStart(id) {
+    var bot = mockBotFind(id);
+    if (!bot) { mockBotStatus(id, 'error', '机器人不存在'); return false; }
+    bot.running = true;
+    bot.status = 'connected';
+    mockBotStatus(bot.id, 'connected', bot.type === 'telegram' ? ('@' + bot.name.replace(/\s+/g, '_')) : 'QQ 已连接');
+    return true;
+  }
+
+  function mockBotStop(id) {
+    var bot = mockBotFind(id);
+    if (!bot) return false;
+    bot.running = false;
+    bot.status = 'stopped';
+    mockBotStatus(bot.id, 'stopped', '已停止');
+    return true;
+  }
+
+  function mockBotTest(id) {
+    var bot = mockBotFind(id);
+    if (!bot) { mockBotStatus(id, 'error', '机器人不存在'); return false; }
+    var invalid = (bot.type === 'telegram' && /invalid/i.test(String(bot.token || ''))) ||
+      (bot.type === 'onebot' && /invalid/i.test(String(bot.accessToken || '')));
+    if (invalid) { mockBotStatus(bot.id, 'error', '连接失败：凭证无效'); return false; }
+    if (bot.type === 'telegram' && !bot.token) { mockBotStatus(bot.id, 'error', '缺少 Telegram Bot Token'); return false; }
+    mockBotStatus(bot.id, 'connected', bot.type === 'telegram' ? ('@' + bot.name.replace(/\s+/g, '_')) : 'QQ 已连接');
+    return true;
+  }
+
+  function mockBotSend(botId, chatId, text) {
+    var bot = mockBotFind(botId);
+    var cid = String(chatId === null || chatId === undefined ? '' : chatId);
+    var content = String(text === null || text === undefined ? '' : text);
+    if (!bot) {
+      emitAgentLater(10, { type: 'bot-sent', botId: String(botId || ''), chatId: cid, ok: false, messageId: '', error: '机器人不存在' });
+      return false;
+    }
+    if (!cid) {
+      emitAgentLater(10, { type: 'bot-sent', botId: bot.id, chatId: '', ok: false, messageId: '', error: '缺少会话/收件人' });
+      return false;
+    }
+    mockBotSeq++;
+    var message = {
+      botId: bot.id, chatId: cid, from: 'me', fromName: '我', text: content,
+      at: Date.now(), direction: 'out', ok: true, messageId: 'mock-msg-' + mockBotSeq
+    };
+    mockBotMessages.push(message);
+    if (mockBotMessages.length > 400) mockBotMessages.shift();
+    emitAgentLater(10, { type: 'bot-sent', botId: bot.id, chatId: cid, ok: true, messageId: message.messageId, error: '' });
+    return true;
+  }
+
+  function mockBotReceive(botId, chatId, text, from, fromName) {
+    var bot = mockBotFind(botId);
+    var cid = String(chatId === null || chatId === undefined ? '' : chatId);
+    if (!bot || !cid) return false;
+    mockBotSeq++;
+    var message = {
+      botId: bot.id, chatId: cid,
+      from: String(from === null || from === undefined ? '10001' : from),
+      fromName: String(fromName === null || fromName === undefined ? '用户' : fromName),
+      text: String(text === null || text === undefined ? '' : text),
+      at: Date.now(), direction: 'in'
+    };
+    mockBotMessages.push(message);
+    if (mockBotMessages.length > 400) mockBotMessages.shift();
+    emitAgentLater(10, {
+      type: 'bot-message', botId: bot.id, chatId: message.chatId,
+      from: message.from, fromName: message.fromName, text: message.text, at: message.at
+    });
+    return true;
+  }
+
+  function normalizeBotFront(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var type = String(raw.type || 'telegram').toLowerCase() === 'onebot' ? 'onebot' : 'telegram';
+    var id = raw.id === undefined || raw.id === null ? '' : String(raw.id);
+    if (!id) return null;
+    var whitelist = [];
+    if (Array.isArray(raw.whitelist)) {
+      for (var i = 0; i < raw.whitelist.length && whitelist.length < 50; i++) {
+        var cid = String(raw.whitelist[i] === undefined || raw.whitelist[i] === null ? '' : raw.whitelist[i]).replace(/^\s+|\s+$/g, '');
+        if (cid) whitelist.push(cid.slice(0, 120));
+      }
+    }
+    var num = function (value, min, max, def) {
+      var n = Number(value);
+      if (!isFinite(n)) n = def;
+      return Math.max(min, Math.min(max, Math.round(n)));
+    };
+    return {
+      id: id,
+      type: type,
+      name: String(raw.name === undefined || raw.name === null ? '' : raw.name).slice(0, 80) || (type === 'onebot' ? 'QQ Bot' : 'Telegram Bot'),
+      token: String(raw.token === undefined || raw.token === null ? '' : raw.token).slice(0, 600),
+      accessToken: String(raw.accessToken === undefined || raw.accessToken === null ? '' : raw.accessToken).slice(0, 600),
+      baseUrl: String(raw.baseUrl === undefined || raw.baseUrl === null ? '' : raw.baseUrl).slice(0, 300),
+      enabled: !!raw.enabled,
+      autoReply: !!raw.autoReply,
+      whitelist: whitelist,
+      systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 4000),
+      cooldownSec: num(raw.cooldownSec !== undefined ? raw.cooldownSec : 8, 3, 300, 8),
+      hourlyLimit: num(raw.hourlyLimit !== undefined ? raw.hourlyLimit : 60, 1, 600, 60),
+      status: String(raw.status || 'stopped'),
+      running: !!raw.running,
+      recentCount: Math.max(0, parseInt(raw.recentCount, 10) || 0),
+      message: raw.message ? String(raw.message) : '',
+      botUsername: raw.botUsername ? String(raw.botUsername) : '',
+      createdAt: Math.max(0, Number(raw.createdAt) || 0),
+      updatedAt: Math.max(0, Number(raw.updatedAt) || 0)
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
    * ARCH v2.8.0 批次3：图片保存 / 壁纸 —— mock 实现
    * ------------------------------------------------------------------ */
 
@@ -1625,6 +1869,31 @@
     clearWallpaper: ['clearWallpaper', 'removeWallpaper'],
     wallpaperInfo: ['wallpaperInfo']
   };
+
+  /* v3.0.0：Bot 原生方法名探测（旧原生缺方法时回落 mock） */
+  var BOT_NATIVE_METHODS = {
+    botsList: ['botsList'],
+    botSave: ['botSave'],
+    botDelete: ['botDelete'],
+    botStart: ['botStart'],
+    botStop: ['botStop'],
+    botTest: ['botTest'],
+    botSend: ['botSend'],
+    botRecent: ['botRecent']
+  };
+
+  function botNativeName(op) {
+    if (!hasNative) return '';
+    var names = BOT_NATIVE_METHODS[op] || [];
+    for (var i = 0; i < names.length; i++) {
+      if (hasNativeMethod(names[i])) return names[i];
+    }
+    return '';
+  }
+
+  function botHasMethod(op) {
+    return !!botNativeName(op);
+  }
 
   function b3NativeName(op) {
     if (!hasNative) return '';
@@ -2996,6 +3265,122 @@
     },
 
     /* ------------------------------------------------------------------ *
+     * v3.0.0：Bot 集成（原生未就绪时内存 mock）
+     * ------------------------------------------------------------------ */
+    /** botsList() → 归一化 bot 数组（含 status/running/recentCount；token 由原生单独返回） */
+    botsList: function () {
+      var name = botNativeName('botsList');
+      var raw = null;
+      if (name) raw = callNative(name, [], true);
+      else raw = mockBotListPublic();
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length; i++) {
+        var bot = normalizeBotFront(raw[i]);
+        if (bot) out.push(bot);
+      }
+      return out;
+    },
+
+    /** botSave(configObj|json) → boolean（新增/修改同一入口；空 token 表示保持原值由 App 拼好） */
+    botSave: function (config) {
+      var payload = '';
+      if (typeof config === 'string') payload = config;
+      else {
+        try { payload = JSON.stringify(config || {}); } catch (e) { warn('botSave 参数序列化失败'); return false; }
+      }
+      var name = botNativeName('botSave');
+      if (name) {
+        var raw = callNative(name, [payload], false);
+        if (raw === true) return true;
+        if (raw === false || raw === null || raw === undefined) return false;
+        var str = String(raw).replace(/^\s+|\s+$/g, '');
+        if (str === 'true') return true;
+        var parsed = parseJSON(str, null);
+        if (parsed && typeof parsed === 'object') return parsed.ok !== false;
+        return false;
+      }
+      var obj = null;
+      try { obj = JSON.parse(payload); } catch (e2) { return false; }
+      return mockBotSave(obj);
+    },
+
+    botDelete: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = botNativeName('botDelete');
+      if (name) {
+        try { callNative(name, [key], false); return true; } catch (e) { warn('botDelete 失败：' + (e && e.message)); return false; }
+      }
+      return mockBotDelete(key);
+    },
+
+    botStart: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = botNativeName('botStart');
+      if (name) { try { callNative(name, [key], false); return true; } catch (e) { warn('botStart 失败：' + (e && e.message)); return false; } }
+      return mockBotStart(key);
+    },
+
+    botStop: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = botNativeName('botStop');
+      if (name) { try { callNative(name, [key], false); return true; } catch (e) { warn('botStop 失败：' + (e && e.message)); return false; } }
+      return mockBotStop(key);
+    },
+
+    botTest: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = botNativeName('botTest');
+      if (name) { try { callNative(name, [key], false); return true; } catch (e) { warn('botTest 失败：' + (e && e.message)); return false; } }
+      return mockBotTest(key);
+    },
+
+    botSend: function (botId, chatId, text) {
+      var id = String(botId === null || botId === undefined ? '' : botId);
+      var cid = String(chatId === null || chatId === undefined ? '' : chatId);
+      var content = String(text === null || text === undefined ? '' : text);
+      if (!id || !cid || !content) return false;
+      var name = botNativeName('botSend');
+      if (name) { try { callNative(name, [id, cid, content], false); return true; } catch (e) { warn('botSend 失败：' + (e && e.message)); return false; } }
+      return mockBotSend(id, cid, content);
+    },
+
+    botRecent: function (botId, limit) {
+      var id = String(botId === null || botId === undefined ? '' : botId);
+      if (!id) return [];
+      var max = Math.max(1, Math.min(200, parseInt(limit, 10) || 50));
+      var name = botNativeName('botRecent');
+      var raw = null;
+      if (name) raw = callNative(name, [id, max], true);
+      else raw = mockBotRecent(id, max);
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length; i++) {
+        var msg = raw[i];
+        if (!msg || typeof msg !== 'object') continue;
+        out.push({
+          id: msg.id ? String(msg.id) : (msg.messageId ? String(msg.messageId) : ''),
+          botId: msg.botId ? String(msg.botId) : id,
+          chatId: msg.chatId === undefined || msg.chatId === null ? '' : String(msg.chatId),
+          from: msg.from === undefined || msg.from === null ? '' : String(msg.from),
+          fromName: msg.fromName === undefined || msg.fromName === null ? '' : String(msg.fromName),
+          text: msg.text === undefined || msg.text === null ? '' : String(msg.text),
+          at: Number(msg.at !== undefined ? msg.at : msg.ts) || 0,
+          ts: Number(msg.at !== undefined ? msg.at : msg.ts) || 0,
+          direction: String(msg.direction || 'in') === 'out' ? 'out' : 'in',
+          ok: msg.ok !== false,
+          messageId: msg.messageId ? String(msg.messageId) : '',
+          error: msg.error ? String(msg.error) : ''
+        });
+      }
+      return out;
+    },
+
+    /* ------------------------------------------------------------------ *
      * ARCH v2 P3：记忆（session_summary + memory_kv）
      * ------------------------------------------------------------------ */
     memoryGetSummaries: function () {
@@ -3286,6 +3671,9 @@
       mockSnapshots = [];
       mockSnapshotSeq = 0;
       mockB3 = { wallpaper: '', images: [] };
+      mockBots = defaultMockBotsSeed();
+      mockBotMessages = [];
+      mockBotSeq = 0;
       return true;
     }
   };
@@ -3313,6 +3701,18 @@
     save: function (server) { return mockMcpSave(server); },
     remove: function (id) { return mockMcpDelete(id); },
     reset: function () { mockSeedMcp(); return true; }
+  };
+
+  /* v3.0.0：Bot mock 调试/QA 入口（仅测试使用） */
+  Bridge.__mockBot = {
+    list: function () { return mockBotListPublic(); },
+    recent: function (id, limit) { return mockBotRecent(id, limit); },
+    receive: function (botId, chatId, text, from, fromName) { return mockBotReceive(botId, chatId, text, from, fromName); },
+    start: function (id) { return mockBotStart(id); },
+    stop: function (id) { return mockBotStop(id); },
+    test: function (id) { return mockBotTest(id); },
+    send: function (botId, chatId, text) { return mockBotSend(botId, chatId, text); },
+    reset: function () { mockBots = defaultMockBotsSeed(); mockBotMessages = []; mockBotSeq = 0; return true; }
   };
 
   /* ARCH v2.8.0 批次3：图片/壁纸 mock 调试入口（仅测试使用） */

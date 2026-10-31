@@ -251,7 +251,14 @@
     quote: null,
     edit: { msgId: null },
     chatSearch: { keyword: '', matches: [], index: 0 },
-    locale: 'zh'
+    locale: 'zh',
+    /* v3.0.0：Bot 集成 */
+    bots: {
+      list: [],
+      messages: {},
+      currentId: null,
+      form: { id: null, type: 'telegram', editing: false }
+    }
   };
 
   var WORKBENCH_KEY = 'dsh.workbench';
@@ -1271,7 +1278,7 @@
              state.screen === 'audit' || state.screen === 'mcp' || state.screen === 'market' ||
              state.screen === 'memory' || state.screen === 'trace' || state.screen === 'cost' ||
              state.screen === 'tool-policy' || state.screen === 'snapshots' ||
-             state.screen === 'appearance') base = 2;
+             state.screen === 'appearance' || state.screen === 'bots') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen || state.buildPanelOpen ||
@@ -1282,7 +1289,8 @@
       isModalOpen(r('attachment-sheet')) || isModalOpen(r('image-viewer')) ||
       isModalOpen(r('pin-modal')) || isModalOpen(r('pin-setup-modal')) || isModalOpen(r('password-modal')) ||
       isModalOpen(r('edit-message-modal')) || isModalOpen(r('market-detail-modal')) ||
-      isModalOpen(r('market-url-install-modal')) || isModalOpen(r('market-code-modal'));
+      isModalOpen(r('market-url-install-modal')) || isModalOpen(r('market-code-modal')) ||
+      isModalOpen(r('bot-form-modal')) || isModalOpen(r('bot-detail-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1320,7 +1328,8 @@
     if (isModalOpen(r('edit-message-modal'))) closeEditMessage();
     ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal',
       'mcp-form-modal', 'memory-item-modal', 'pin-modal', 'pin-setup-modal', 'password-modal',
-      'edit-message-modal', 'market-detail-modal', 'market-url-install-modal', 'market-code-modal'].forEach(function (id) {
+      'edit-message-modal', 'market-detail-modal', 'market-url-install-modal', 'market-code-modal',
+      'bot-form-modal', 'bot-detail-modal'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -6534,6 +6543,611 @@
     return state.chatSearch.matches.slice();
   }
 
+  /* ================================================================== *
+   * v3.0.0：Bot 集成（Telegram / QQ OneBot）
+   * ================================================================== */
+  var BOT_TYPE_LABELS = { telegram: 'Telegram Bot', onebot: 'QQ OneBot' };
+
+  function normalizeBotType(type) {
+    return String(type == null ? '' : type).toLowerCase() === 'onebot' ? 'onebot' : 'telegram';
+  }
+
+  function normalizeBotStatus(value) {
+    var status = '';
+    var message = '';
+    if (value && typeof value === 'object') {
+      status = value.status == null ? '' : String(value.status);
+      message = value.message == null ? '' : String(value.message);
+    } else if (value != null) {
+      status = String(value);
+    }
+    var key = status.toLowerCase().replace(/-/g, '_');
+    if (key === 'connected' || key === 'online' || key === 'ok' || key === 'ready') return { key: 'connected', message: message };
+    if (key === 'connecting' || key === 'pending' || key === 'starting') return { key: 'connecting', message: message };
+    if (key === 'error' || key === 'failed' || key === 'invalid') return { key: 'error', message: message };
+    if (key === 'stopped' || key === 'disabled' || key === 'offline') return { key: 'stopped', message: message };
+    if (key === 'disconnected' || key === 'closed') return { key: 'disconnected', message: message };
+    return { key: 'idle', message: message };
+  }
+
+  function botStatusLabel(key) {
+    if (key === 'connected') return '已连接';
+    if (key === 'connecting') return '连接中…';
+    if (key === 'error') return '连接失败';
+    if (key === 'stopped') return '已停止';
+    if (key === 'disconnected') return '已断开';
+    return '未连接';
+  }
+
+  function botStatusClass(key) {
+    var allowed = { connected: 1, connecting: 1, error: 1, stopped: 1, disconnected: 1, idle: 1 };
+    return 'is-' + (allowed[key] ? key : 'idle');
+  }
+
+  function normalizeBot(item) {
+    if (!item || typeof item !== 'object') return null;
+    var type = normalizeBotType(item.type);
+    var status = normalizeBotStatus(item.status);
+    var whitelist = [];
+    if (Array.isArray(item.whitelist)) {
+      item.whitelist.forEach(function (id) { if (id != null && String(id).trim() !== '') whitelist.push(String(id).trim()); });
+    } else if (typeof item.whitelist === 'string') {
+      whitelist = item.whitelist.split(',').map(function (id) { return id.trim(); }).filter(Boolean);
+    }
+    var recentCount = Number(item.recentCount != null ? item.recentCount : item.messageCount);
+    return {
+      id: item.id != null ? String(item.id) : '',
+      type: type,
+      name: item.name ? String(item.name) : BOT_TYPE_LABELS[type],
+      enabled: item.enabled !== false,
+      autoReply: item.autoReply === true || item.auto_reply === true,
+      status: status.key,
+      statusMessage: status.message,
+      baseUrl: item.baseUrl ? String(item.baseUrl) : '',
+      whitelist: whitelist,
+      cooldownSec: Number(item.cooldownSec) || 8,
+      hourlyLimit: Number(item.hourlyLimit) || 60,
+      systemPrompt: item.systemPrompt != null ? String(item.systemPrompt) : (item.prompt != null ? String(item.prompt) : ''),
+      recentCount: isFinite(recentCount) && recentCount > 0 ? recentCount : 0,
+      recentMessages: Array.isArray(item.recentMessages) ? item.recentMessages : [],
+      tokenMasked: item.tokenMasked ? String(item.tokenMasked) : '',
+      accessTokenMasked: item.accessTokenMasked ? String(item.accessTokenMasked) : ''
+    };
+  }
+
+  function normalizeBotMessage(msg, fallbackBotId) {
+    if (!msg || typeof msg !== 'object') return null;
+    var direction = String(msg.direction || '').toLowerCase() === 'out' ? 'out' : 'in';
+    return {
+      id: msg.id != null ? String(msg.id) : ('botmsg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)),
+      botId: msg.botId != null ? String(msg.botId) : (fallbackBotId != null ? String(fallbackBotId) : ''),
+      chatId: msg.chatId != null ? String(msg.chatId) : '',
+      from: msg.from != null ? String(msg.from) : (msg.sender != null ? String(msg.sender) : ''),
+      fromName: msg.fromName != null ? String(msg.fromName) : (msg.senderName != null ? String(msg.senderName) : (msg.from != null ? String(msg.from) : (msg.sender != null ? String(msg.sender) : ''))),
+      text: msg.text != null ? String(msg.text) : (msg.content != null ? String(msg.content) : ''),
+      at: msg.at != null ? msg.at : (msg.ts != null ? msg.ts : (msg.time != null ? msg.time : Date.now())),
+      direction: direction
+    };
+  }
+
+  function botTimeText(value) {
+    var date = toDate(value);
+    if (!date) return '';
+    var now = new Date();
+    var sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    var time = pad2(date.getHours()) + ':' + pad2(date.getMinutes());
+    return sameDay ? time : ((date.getMonth() + 1) + '/' + date.getDate() + ' ' + time);
+  }
+
+  function findBot(id) {
+    var key = String(id == null ? '' : id);
+    var found = null;
+    (state.bots.list || []).forEach(function (bot) {
+      if (bot.id === key) found = bot;
+    });
+    return found;
+  }
+
+  function updateBotsLabels() {
+    var list = state.bots.list || [];
+    var enabled = 0;
+    var auto = 0;
+    list.forEach(function (bot) {
+      if (bot.enabled) enabled += 1;
+      if (bot.enabled && bot.autoReply) auto += 1;
+    });
+    var count = r('bots-count');
+    if (count) {
+      count.textContent = list.length
+        ? (list.length + ' 个机器人 · ' + enabled + ' 已启用' + (auto ? ' · ' + auto + ' 自动回复' : ''))
+        : '在对话框里接入 Telegram Bot / QQ OneBot';
+    }
+    var label = r('set-bots-label');
+    if (label) label.textContent = list.length ? (list.length + ' 个机器人') : 'Telegram / QQ OneBot';
+    var empty = r('bots-empty');
+    if (empty) empty.hidden = list.length > 0;
+  }
+
+  function buildBotCard(bot) {
+    var card = el('div', 'bot-card');
+    card.setAttribute('data-bot-id', bot.id);
+    var head = el('div', 'bot-card-head');
+    var icon = makeText('span', 'bot-card-icon', bot.type === 'telegram' ? '✈' : 'Q');
+    head.appendChild(icon);
+    var main = el('div', 'bot-card-main');
+    var nameRow = el('div', 'bot-card-name-row');
+    nameRow.appendChild(makeText('span', 'bot-card-name', bot.name));
+    nameRow.appendChild(makeText('span', 'bot-card-type', BOT_TYPE_LABELS[bot.type]));
+    main.appendChild(nameRow);
+    var sub = el('div', 'bot-card-sub');
+    var dot = el('span', 'bot-status-dot bot-card-status-dot ' + botStatusClass(bot.status));
+    sub.appendChild(dot);
+    sub.appendChild(makeText('span', 'bot-status-text', botStatusLabel(bot.status)));
+    sub.appendChild(makeText('span', 'bot-card-recent', ' · 最近 ' + bot.recentCount + ' 条消息'));
+    main.appendChild(sub);
+    head.appendChild(main);
+    var switchLabel = document.createElement('label');
+    switchLabel.className = 'switch bot-card-switch';
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'bot-toggle';
+    checkbox.setAttribute('data-bot-id', bot.id);
+    checkbox.checked = !!bot.enabled;
+    checkbox.setAttribute('aria-label', '启用机器人');
+    switchLabel.appendChild(checkbox);
+    switchLabel.appendChild(el('span', 'switch-track'));
+    head.appendChild(switchLabel);
+    card.appendChild(head);
+
+    var meta = el('div', 'bot-card-meta');
+    if (bot.autoReply) meta.appendChild(makeText('span', 'bot-meta-chip is-on', '自动回复'));
+    else meta.appendChild(makeText('span', 'bot-meta-chip', '自动回复关闭'));
+    meta.appendChild(makeText('span', 'bot-meta-chip', bot.type === 'onebot' ? (bot.baseUrl || '未配置 Base URL') : 'Telegram Bot API'));
+    if (bot.whitelist.length) meta.appendChild(makeText('span', 'bot-meta-chip', '白名单 ' + bot.whitelist.length));
+    card.appendChild(meta);
+
+    var actions = el('div', 'bot-card-actions');
+    function addAction(action, label, cls) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bot-act' + (cls ? ' ' + cls : '');
+      btn.setAttribute('data-action', action);
+      btn.setAttribute('data-id', bot.id);
+      btn.textContent = label;
+      actions.appendChild(btn);
+    }
+    addAction('bot-detail', '详情', 'bot-act--primary');
+    addAction('bot-edit', '编辑');
+    addAction('bot-test', '测试连接');
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderBots(list) {
+    state.bots.list = (Array.isArray(list) ? list : []).map(normalizeBot).filter(Boolean);
+    var box = r('bots-list');
+    if (box) {
+      box.textContent = '';
+      state.bots.list.forEach(function (bot) { box.appendChild(buildBotCard(bot)); });
+    }
+    updateBotsLabels();
+    return state.bots.list;
+  }
+
+  function openBotsPage() {
+    showScreenImpl('bots');
+    if (!invoke('onOpenBots')) renderBots(state.bots.list);
+  }
+
+  function setBotFormType(type) {
+    var value = normalizeBotType(type);
+    state.bots.form.type = value;
+    var buttons = document.querySelectorAll('#bot-type-list [data-type]');
+    Array.prototype.forEach.call(buttons, function (button) {
+      var active = button.getAttribute('data-type') === value;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    var telegramGroup = r('bot-field-telegram');
+    if (telegramGroup) telegramGroup.hidden = value !== 'telegram';
+    var onebotGroup = r('bot-field-onebot');
+    if (onebotGroup) onebotGroup.hidden = value !== 'onebot';
+  }
+
+  function botFormError(text) {
+    var error = r('bot-form-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function botFormStatus(text, kind) {
+    var status = r('bot-form-status');
+    if (!status) return;
+    var message = text == null ? '' : String(text);
+    status.textContent = message;
+    status.hidden = !message;
+    status.classList.remove('is-error', 'is-ok');
+    if (kind === 'error') status.classList.add('is-error');
+    else if (kind === 'ok') status.classList.add('is-ok');
+  }
+
+  function openBotForm(cfg) {
+    var bot = cfg && typeof cfg === 'object' ? normalizeBot(cfg) : null;
+    state.bots.form = { id: bot ? bot.id : null, type: bot ? bot.type : 'telegram', editing: !!bot };
+    var title = r('bot-form-title');
+    if (title) title.textContent = bot ? '编辑机器人' : '添加机器人';
+    setVal('bot-field-name', bot ? bot.name : '');
+    setVal('bot-field-token', '');
+    setVal('bot-field-onebot-token', '');
+    setVal('bot-field-onebot-base', bot && bot.baseUrl ? bot.baseUrl : 'http://127.0.0.1:3000');
+    var tokenInput = r('bot-field-token');
+    if (tokenInput) tokenInput.placeholder = bot ? '留空保持不变（仅保存在本机）' : '123456789:AA…（从 @BotFather 获取）';
+    var onebotTokenInput = r('bot-field-onebot-token');
+    if (onebotTokenInput) onebotTokenInput.placeholder = bot ? '留空保持不变（可留空）' : '可留空（OneBot 未设置 token 时）';
+    var enabled = r('bot-field-enabled');
+    if (enabled) enabled.checked = bot ? !!bot.enabled : true;
+    var auto = r('bot-field-auto-reply');
+    if (auto) auto.checked = bot ? !!bot.autoReply : false;
+    setVal('bot-field-cooldown', bot ? String(bot.cooldownSec) : '8');
+    setVal('bot-field-limit', bot ? String(bot.hourlyLimit) : '60');
+    setVal('bot-field-prompt', bot ? bot.systemPrompt : '');
+    setVal('bot-field-whitelist', bot ? bot.whitelist.join(', ') : '');
+    setBotFormType(bot ? bot.type : 'telegram');
+    botFormError('');
+    botFormStatus('');
+    openModal(r('bot-form-modal'));
+    setTimeout(function () {
+      var field = r('bot-field-name');
+      if (!field) return;
+      try { field.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function closeBotForm() {
+    closeModal(r('bot-form-modal'));
+    botFormError('');
+    botFormStatus('');
+  }
+
+  function collectBotForm() {
+    var whitelistInput = r('bot-field-whitelist');
+    var whitelist = whitelistInput
+      ? String(whitelistInput.value || '').split(/[,，\s]+/).map(function (id) { return id.trim(); }).filter(Boolean)
+      : [];
+    var cooldown = Number(r('bot-field-cooldown') ? r('bot-field-cooldown').value : 8);
+    var limit = Number(r('bot-field-limit') ? r('bot-field-limit').value : 60);
+    return {
+      id: state.bots.form.id || undefined,
+      type: state.bots.form.type || 'telegram',
+      name: String((r('bot-field-name') || {}).value || '').trim(),
+      token: String((r('bot-field-token') || {}).value || '').trim(),
+      accessToken: String((r('bot-field-onebot-token') || {}).value || '').trim(),
+      baseUrl: String((r('bot-field-onebot-base') || {}).value || '').trim(),
+      enabled: !!(r('bot-field-enabled') && r('bot-field-enabled').checked),
+      autoReply: !!(r('bot-field-auto-reply') && r('bot-field-auto-reply').checked),
+      cooldownSec: isFinite(cooldown) ? Math.max(1, Math.min(3600, Math.round(cooldown))) : 8,
+      hourlyLimit: isFinite(limit) ? Math.max(1, Math.min(600, Math.round(limit))) : 60,
+      systemPrompt: String((r('bot-field-prompt') || {}).value || ''),
+      whitelist: whitelist
+    };
+  }
+
+  function validateBotForm(cfg) {
+    if (!cfg.name) return '请填写机器人名称';
+    if (cfg.type === 'telegram' && !state.bots.form.id && !cfg.token) return '请填写 Telegram Bot Token（从 @BotFather 获取）';
+    if (cfg.type === 'onebot') {
+      if (!cfg.baseUrl) return '请填写 OneBot Base URL';
+      if (!/^https?:\/\//i.test(cfg.baseUrl)) return 'Base URL 需以 http:// 或 https:// 开头';
+    }
+    return '';
+  }
+
+  function saveBotForm() {
+    var cfg = collectBotForm();
+    var error = validateBotForm(cfg);
+    if (error) { botFormError(error); return; }
+    botFormError('');
+    botFormStatus('正在保存并连接…');
+    var result = callHandler('onBotSave', cfg);
+    if (result === undefined) {
+      botFormStatus('');
+      botFormError('Bot 服务尚未就绪');
+      return;
+    }
+    Promise.resolve(result).then(function (done) {
+      if (done === false) {
+        botFormStatus('');
+        botFormError('保存失败，请检查 Token / Base URL');
+        return;
+      }
+      var botId = (done && typeof done === 'object' && done.id != null) ? String(done.id) : cfg.id;
+      if (botId && typeof state.cb.onBotAutoReply === 'function') {
+        invoke('onBotAutoReply', botId, {
+          autoReply: cfg.autoReply,
+          cooldownSec: cfg.cooldownSec,
+          hourlyLimit: cfg.hourlyLimit,
+          whitelist: cfg.whitelist,
+          systemPrompt: cfg.systemPrompt
+        });
+      }
+      closeBotForm();
+      UI.toast('机器人已保存并连接');
+    }, function () {
+      botFormStatus('');
+      botFormError('保存失败，请检查 Token / Base URL');
+    });
+  }
+
+  function testBotForm() {
+    var cfg = collectBotForm();
+    var error = validateBotForm(cfg);
+    if (error) { botFormError(error); return; }
+    botFormError('');
+    botFormStatus('正在测试连接…');
+    var result = state.bots.form.id
+      ? callHandler('onBotTest', state.bots.form.id, cfg)
+      : callHandler('onBotTest', null, cfg);
+    if (result === undefined) {
+      botFormStatus('');
+      botFormError('Bot 服务尚未就绪');
+      return;
+    }
+    Promise.resolve(result).then(function (res) {
+      var ok = res === true || (res && typeof res === 'object' && res.ok === true);
+      var message = res && typeof res === 'object' && res.message ? String(res.message) : '';
+      if (ok || res === undefined) botFormStatus('连接成功' + (message ? '：' + message : ''), 'ok');
+      else botFormStatus('连接失败' + (message ? '：' + message : '，请检查 Token / Base URL'), 'error');
+    }, function (err) {
+      botFormStatus('连接失败：' + errText(err), 'error');
+    });
+  }
+
+  function toggleBot(id, enabled) {
+    var bot = findBot(id);
+    if (!bot) return;
+    var result = callHandler('onBotToggle', bot.id, !!enabled);
+    if (result === undefined) {
+      UI.toast('Bot 服务尚未就绪');
+      renderBots(state.bots.list);
+      return;
+    }
+    bot.enabled = !!enabled;
+    updateBotsLabels();
+    Promise.resolve(result).then(function (ok) {
+      if (ok === false) {
+        bot.enabled = !enabled;
+        renderBots(state.bots.list);
+        UI.toast(enabled ? '启用失败' : '停用失败');
+      }
+    }, function () {
+      bot.enabled = !enabled;
+      renderBots(state.bots.list);
+    });
+  }
+
+  function normalizeBotMessages(list, botId) {
+    return (Array.isArray(list) ? list : []).map(function (msg) { return normalizeBotMessage(msg, botId); }).filter(Boolean);
+  }
+
+  function renderBotMessages(list) {
+    var botId = state.bots.currentId;
+    var messages = normalizeBotMessages(list, botId);
+    if (botId) state.bots.messages[botId] = messages;
+    var box = r('bot-detail-messages');
+    if (box) {
+      box.textContent = '';
+      messages.forEach(function (msg) {
+        var row = el('div', 'bot-message' + (msg.direction === 'out' ? ' is-out' : ''));
+        var head = el('div', 'bot-message-head');
+        head.appendChild(makeText('span', 'bot-message-from', msg.fromName || (msg.direction === 'out' ? '我' : msg.from || '对方')));
+        head.appendChild(makeText('span', 'bot-message-time', botTimeText(msg.at)));
+        row.appendChild(head);
+        row.appendChild(makeText('div', 'bot-message-text', msg.text || ''));
+        box.appendChild(row);
+      });
+    }
+    var empty = r('bot-detail-messages-empty');
+    if (empty) empty.hidden = messages.length > 0;
+    if (box) box.hidden = messages.length === 0;
+    updateBotDetailCount();
+    return messages;
+  }
+
+  function updateBotDetailCount() {
+    var count = r('bot-detail-count');
+    var bot = state.bots.currentId ? findBot(state.bots.currentId) : null;
+    if (count) {
+      var list = state.bots.currentId ? (state.bots.messages[state.bots.currentId] || []) : [];
+      count.textContent = list.length + ' 条消息' + (bot && bot.whitelist.length ? ' · 白名单 ' + bot.whitelist.length : '');
+    }
+    var sub = r('bot-detail-sub');
+    if (sub && bot) sub.textContent = BOT_TYPE_LABELS[bot.type] + (bot.baseUrl ? ' · ' + bot.baseUrl : '');
+  }
+
+  function updateBotDetailHeader() {
+    var bot = state.bots.currentId ? findBot(state.bots.currentId) : null;
+    var name = r('bot-detail-name');
+    var status = r('bot-detail-status');
+    var dot = r('bot-detail-status-dot');
+    if (name) name.textContent = bot ? bot.name : '机器人';
+    if (status) status.textContent = bot ? (botStatusLabel(bot.status) + (bot.statusMessage ? ' · ' + bot.statusMessage : '')) : '未连接';
+    if (dot) {
+      dot.className = 'bot-status-dot ' + botStatusClass(bot ? bot.status : 'idle');
+    }
+    updateBotDetailCount();
+    return bot;
+  }
+
+  function openBotDetail(id) {
+    var bot = findBot(id);
+    if (!bot) return false;
+    state.bots.currentId = bot.id;
+    state.bots.messages[bot.id] = normalizeBotMessages(bot.recentMessages, bot.id);
+    updateBotDetailHeader();
+    renderBotMessages(state.bots.messages[bot.id]);
+    var error = r('bot-detail-error');
+    if (error) { error.textContent = ''; error.hidden = true; }
+    setVal('bot-detail-send-text', '');
+    setVal('bot-detail-chat-id', '');
+    openModal(r('bot-detail-modal'));
+    if (typeof state.cb.onOpenBotDetail === 'function') invoke('onOpenBotDetail', bot.id);
+    else if (typeof state.cb.onBotFetchMessages === 'function') invoke('onBotFetchMessages', bot.id);
+    return true;
+  }
+
+  function closeBotDetail() {
+    closeModal(r('bot-detail-modal'));
+    state.bots.currentId = null;
+  }
+
+  function setBotStatus(id, statusOrObj) {
+    var bot = findBot(id);
+    var status = normalizeBotStatus(statusOrObj);
+    if (!bot) return status;
+    bot.status = status.key;
+    bot.statusMessage = status.message;
+    var box = r('bots-list');
+    if (box) {
+      var card = box.querySelector('.bot-card[data-bot-id="' + String(bot.id).replace(/"/g, '\\"') + '"]');
+      if (card) {
+        var dot = card.querySelector('.bot-card-status-dot');
+        if (dot) dot.className = 'bot-status-dot bot-card-status-dot ' + botStatusClass(status.key);
+        var text = card.querySelector('.bot-status-text');
+        if (text) text.textContent = botStatusLabel(status.key);
+      }
+    }
+    if (state.bots.currentId === bot.id) updateBotDetailHeader();
+    return status;
+  }
+
+  function appendBotMessage(msg) {
+    var normalized = normalizeBotMessage(msg, state.bots.currentId);
+    if (!normalized || !normalized.botId) return null;
+    var bot = findBot(normalized.botId);
+    if (bot) {
+      bot.recentCount += 1;
+      var listEl = r('bots-list');
+      if (listEl) {
+        var card = listEl.querySelector('.bot-card[data-bot-id="' + String(bot.id).replace(/"/g, '\\"') + '"]');
+        if (card) {
+          var recent = card.querySelector('.bot-card-recent');
+          if (recent) recent.textContent = ' · 最近 ' + bot.recentCount + ' 条消息';
+        }
+      }
+    }
+    var bucket = state.bots.messages[normalized.botId] || (state.bots.messages[normalized.botId] = []);
+    bucket.push(normalized);
+    if (bucket.length > 50) bucket.splice(0, bucket.length - 50);
+    if (state.bots.currentId === normalized.botId) {
+      var box = r('bot-detail-messages');
+      if (box) {
+        box.hidden = false;
+        var row = el('div', 'bot-message' + (normalized.direction === 'out' ? ' is-out' : ''));
+        var head = el('div', 'bot-message-head');
+        head.appendChild(makeText('span', 'bot-message-from', normalized.fromName || (normalized.direction === 'out' ? '我' : normalized.from || '对方')));
+        head.appendChild(makeText('span', 'bot-message-time', botTimeText(normalized.at)));
+        row.appendChild(head);
+        row.appendChild(makeText('div', 'bot-message-text', normalized.text || ''));
+        box.appendChild(row);
+        var empty = r('bot-detail-messages-empty');
+        if (empty) empty.hidden = true;
+        try { box.scrollTop = box.scrollHeight; } catch (err) { /* 静默 */ }
+      }
+      updateBotDetailCount();
+    }
+    return normalized;
+  }
+
+  function botDetailError(text) {
+    var error = r('bot-detail-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function sendBotTest() {
+    var botId = state.bots.currentId;
+    var bot = botId ? findBot(botId) : null;
+    if (!bot) return;
+    var textInput = r('bot-detail-send-text');
+    var chatInput = r('bot-detail-chat-id');
+    var text = textInput ? String(textInput.value || '').trim() : '';
+    var chatId = chatInput ? String(chatInput.value || '').trim() : '';
+    if (!text) {
+      botDetailError('请输入要发送的测试消息');
+      return;
+    }
+    botDetailError('');
+    var result = callHandler('onBotSend', bot.id, chatId, text);
+    if (result === undefined) {
+      botDetailError('Bot 服务尚未就绪');
+      return;
+    }
+    Promise.resolve(result).then(function (res) {
+      var ok = res === true || (res && typeof res === 'object' && res.ok === true) || res === undefined;
+      if (!ok) {
+        botDetailError((res && res.message) ? String(res.message) : '发送失败，请检查连接与 chatId');
+        return;
+      }
+      if (textInput) textInput.value = '';
+      UI.toast('测试消息已发送');
+    }, function (err) {
+      botDetailError('发送失败：' + errText(err));
+    });
+  }
+
+  function deleteBotFromDetail() {
+    var bot = state.bots.currentId ? findBot(state.bots.currentId) : null;
+    if (!bot) return;
+    confirmDialog('删除机器人', '确定删除「' + bot.name + '」吗？其 Token 与本机消息记录会一并移除。').then(function (ok) {
+      if (!ok) return;
+      var result = callHandler('onBotDelete', bot.id);
+      if (result === undefined) {
+        UI.toast('Bot 服务尚未就绪');
+        return;
+      }
+      closeBotDetail();
+      state.bots.list = state.bots.list.filter(function (item) { return item.id !== bot.id; });
+      renderBots(state.bots.list);
+      UI.toast('机器人已删除');
+    });
+  }
+
+  function openBotChatFromDetail() {
+    var bot = state.bots.currentId ? findBot(state.bots.currentId) : null;
+    if (!bot) return;
+    var chatInput = r('bot-detail-chat-id');
+    var chatId = chatInput ? String(chatInput.value || '').trim() : '';
+    var result = callHandler('onOpenBotChat', bot.id, chatId);
+    if (result === undefined) {
+      UI.toast('打开会话服务尚未就绪');
+    } else {
+      Promise.resolve(result).then(function (ok) {
+        if (ok === false) UI.toast('打开会话失败');
+      }, function () { UI.toast('打开会话失败'); });
+    }
+  }
+
+  function editBotFromDetail() {
+    var bot = state.bots.currentId ? findBot(state.bots.currentId) : null;
+    if (!bot) return;
+    closeBotDetail();
+    openBotForm(bot);
+  }
+
+  function handleBotAutoReplyToggle(checked) {
+    var auto = r('bot-field-auto-reply');
+    if (!checked) return;
+    confirmDialog('开启自动回复', '自动回复仅限合规 Bot API（Telegram 官方 Bot / QQ OneBot）；请勿用于真人账号骚扰、欺诈或违反平台规则的行为。确定开启吗？').then(function (ok) {
+      if (!ok && auto) auto.checked = false;
+    });
+  }
+
   /* ------------------------------------------------------------------ *
    * 屏幕切换
    * ------------------------------------------------------------------ */
@@ -6554,7 +7168,8 @@
     cost: 'screen-cost',
     'tool-policy': 'screen-tool-policy',
     snapshots: 'screen-snapshots',
-    appearance: 'screen-appearance'
+    appearance: 'screen-appearance',
+    bots: 'screen-bots'
   };
 
   function syncBottomNav(name) {
@@ -8273,6 +8888,11 @@
       if (typeof state.cb.onCloseAppearance === 'function') invoke('onCloseAppearance');
       return;
     }
+    if (state.screen === 'bots') {
+      showScreenImpl('settings');
+      if (typeof state.cb.onCloseBots === 'function') invoke('onCloseBots');
+      return;
+    }
     if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') {
       var closeSnapKey = state.screen === 'snapshots' ? 'onCloseSnapshots' : (state.screen === 'cost' ? 'onCloseCost' : 'onCloseToolPolicies');
       var snapScreen = state.screen;
@@ -8315,6 +8935,8 @@
     if (isModalOpen(r('market-detail-modal'))) { closeMarketDetail(); return true; }
     if (isModalOpen(r('market-url-install-modal'))) { closeModal(r('market-url-install-modal')); return true; }
     if (isModalOpen(r('market-code-modal'))) { closeModal(r('market-code-modal')); return true; }
+    if (isModalOpen(r('bot-form-modal'))) { closeBotForm(); return true; }
+    if (isModalOpen(r('bot-detail-modal'))) { closeBotDetail(); return true; }
     var searchBar = r('chat-search-in');
     if (searchBar && !searchBar.hidden) { closeChatSearch(); return true; }
     if (state.pluginPanelOpen) { closePluginPanel(); return true; }
@@ -8330,6 +8952,7 @@
     if (state.screen === 'trace') { showScreenImpl('chat'); return true; }
     if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') { showScreenImpl('settings'); return true; }
     if (state.screen === 'appearance') { showScreenImpl('settings'); return true; }
+    if (state.screen === 'bots') { showScreenImpl('settings'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -8576,6 +9199,63 @@
         break;
       case 'market-reset-source':
         resetOfficialMarketSource();
+        break;
+      /* -------- v3.0.0：Bot 集成 -------- */
+      case 'open-bots':
+        openBotsPage();
+        break;
+      case 'bot-add':
+        openBotForm();
+        break;
+      case 'bot-detail':
+        openBotDetail(node.getAttribute('data-id'));
+        break;
+      case 'bot-edit': {
+        var editId = node.getAttribute('data-id');
+        var editBot = editId ? findBot(editId) : (state.bots.currentId ? findBot(state.bots.currentId) : null);
+        if (editBot) {
+          if (isModalOpen(r('bot-detail-modal'))) closeBotDetail();
+          openBotForm(editBot);
+        }
+        break;
+      }
+      case 'bot-test': {
+        var testId = node.getAttribute('data-id') || state.bots.currentId;
+        var testBot = findBot(testId);
+        if (testBot) {
+          var testResult = callHandler('onBotTest', testBot.id, testBot);
+          if (testResult === undefined) UI.toast('Bot 服务尚未就绪');
+          else Promise.resolve(testResult).then(function (res) {
+            var ok = res === true || (res && typeof res === 'object' && res.ok === true);
+            UI.toast(ok ? '连接成功' : ((res && res.message) ? String(res.message) : '连接失败'));
+          }, function () { UI.toast('连接失败'); });
+        }
+        break;
+      }
+      case 'bot-delete':
+        deleteBotFromDetail();
+        break;
+      case 'bot-open-chat':
+        openBotChatFromDetail();
+        break;
+      case 'close-bot-detail':
+        closeBotDetail();
+        break;
+      case 'bot-send-test':
+        sendBotTest();
+        break;
+      case 'bot-form-save':
+        saveBotForm();
+        break;
+      case 'bot-form-test':
+        testBotForm();
+        break;
+      case 'bot-form-cancel':
+      case 'close-bot-form':
+        closeBotForm();
+        break;
+      case 'bot-type':
+        setBotFormType(node.getAttribute('data-type'));
         break;
       case 'market-install':
         installMarketItem(node.getAttribute('data-id'));
@@ -9066,6 +9746,15 @@
       setMarketSort(target.value);
       return;
     }
+    /* v3.0.0：Bot 启用开关 / 自动回复风险确认 */
+    if (target.classList && target.classList.contains('bot-toggle')) {
+      toggleBot(target.getAttribute('data-bot-id'), target.checked);
+      return;
+    }
+    if (target.id === 'bot-field-auto-reply') {
+      handleBotAutoReplyToggle(!!target.checked);
+      return;
+    }
     /* 批次3：液态玻璃滑块（松手/change 时保存） */
     if (target.id === 'appearance-glass-intensity' || target.id === 'appearance-glass-speed') {
       if (!invoke('onSetGlassOptions', {
@@ -9144,6 +9833,13 @@
       if (key === 'Enter') {
         event.preventDefault();
         submitMcpForm();
+      }
+      return;
+    }
+    if (target.id === 'bot-detail-send-text') {
+      if (key === 'Enter') {
+        event.preventDefault();
+        sendBotTest();
       }
       return;
     }
@@ -9252,6 +9948,8 @@
     bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
     bindModalBackdrop(r('mcp-form-modal'), function () { closeMcpForm(); });
     bindModalBackdrop(r('memory-item-modal'), function () { closeMemoryItemForm(); });
+    bindModalBackdrop(r('bot-form-modal'), function () { closeBotForm(); });
+    bindModalBackdrop(r('bot-detail-modal'), function () { closeBotDetail(); });
     bindModalBackdrop(r('market-detail-modal'), function () { closeMarketDetail(); });
     bindModalBackdrop(r('market-url-install-modal'), function () { closeModal(r('market-url-install-modal')); });
     bindModalBackdrop(r('market-code-modal'), function () { closeModal(r('market-code-modal')); });
@@ -9387,7 +10085,16 @@
       'market-detail-progress', 'market-detail-progress-fill', 'market-detail-progress-text',
       'market-detail-error', 'market-detail-actions',
       'market-url-install-modal', 'market-install-url', 'market-install-url-error',
-      'market-code-modal', 'market-code-input', 'market-code-risk', 'market-code-error'
+      'market-code-modal', 'market-code-input', 'market-code-risk', 'market-code-error',
+      /* v3.0.0：Bot 集成 */
+      'screen-bots', 'bots-count', 'bots-list', 'bots-empty', 'set-bots-row', 'set-bots-label',
+      'bot-form-modal', 'bot-form-title', 'bot-type-list', 'bot-field-name', 'bot-field-token',
+      'bot-field-onebot-token', 'bot-field-onebot-base', 'bot-field-telegram', 'bot-field-onebot',
+      'bot-field-enabled', 'bot-field-auto-reply', 'bot-field-cooldown', 'bot-field-limit',
+      'bot-field-prompt', 'bot-field-whitelist', 'bot-form-error', 'bot-form-status',
+      'bot-detail-modal', 'bot-detail-name', 'bot-detail-sub', 'bot-detail-status',
+      'bot-detail-status-dot', 'bot-detail-count', 'bot-detail-messages', 'bot-detail-messages-empty',
+      'bot-detail-send-text', 'bot-detail-chat-id', 'bot-detail-error'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -10068,6 +10775,24 @@
   UI.setMarketSort = setMarketSort;
   UI.openMarketUrlInstall = openMarketUrlInstall;
   UI.openMarketCodeInstall = openMarketCodeInstall;
+  /* v3.0.0：Bot 集成 */
+  UI.renderBots = function (list) { return renderBots(list); };
+  UI.openBotsPage = openBotsPage;
+  UI.openBotForm = openBotForm;
+  UI.openBotDetail = openBotDetail;
+  UI.closeBotDetail = closeBotDetail;
+  UI.renderBotMessages = function (list) { return renderBotMessages(list); };
+  UI.setBotStatus = setBotStatus;
+  UI.appendBotMessage = appendBotMessage;
+  UI.getBots = function () { return (state.bots.list || []).slice(); };
+  UI.getBotState = function () {
+    return {
+      list: (state.bots.list || []).slice(),
+      currentId: state.bots.currentId,
+      messages: state.bots.currentId ? (state.bots.messages[state.bots.currentId] || []).slice() : []
+    };
+  };
+
   UI.getMarketState = function () {
     return {
       items: (state.market.items || []).slice(),
@@ -10085,5 +10810,5 @@
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '2.9.0';
+  UI.version = '3.0.0';
 })();

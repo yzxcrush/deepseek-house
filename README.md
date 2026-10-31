@@ -49,7 +49,7 @@
 
 ## 📦 安装
 
-1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-2.9.0.apk`
+1. 从 [Releases](../../releases) 下载 `DeepSeekHouse-3.0.0.apk`
 2. 手机允许「安装未知来源应用」后安装
 3. 打开 App → 填入 DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/api_keys)）→ 开始使用
 
@@ -69,7 +69,7 @@ ANDROID_JAR=/path/to/android.jar bash scripts/build.sh
 ANDROID_HOME=$ANDROID_HOME bash scripts/build.sh
 ```
 
-产物：`dist/DeepSeekHouse-2.9.0.apk`
+产物：`dist/DeepSeekHouse-3.0.0.apk`
 
 ### 云端构建（GitHub Actions）
 
@@ -97,6 +97,16 @@ CI 会自动：静态契约检查 → JS 语法/冒烟测试 → 构建 APK → 
 - 开启后：App 内置终端、AI 的 `run_shell` 工具通过 `/system/bin/su -c` 执行，可读写 root 路径
 - 前提：设备已 root（KernelSU/Magisk），并在 root 管理器里**允许「DeepSeek House」**（未授权时开关会提示并保持关闭）
 - 也可不改 App：用 `su` 启动 `termux-mcp/server.py`，通过 MCP 的 `run_shell` 获得 root（见 termux-mcp/README.md）
+
+## 🤖 Bot 集成（v3.0.0）
+
+- **设置 → 机器人 → 添加机器人**，在弹窗里填 Token / Key：
+  - **Telegram Bot**：填 @BotFather 给的 token → 保存并连接 → 显示 @bot 用户名
+  - **QQ OneBot**：填本地 OneBot 服务（NapCat / Shamrock 等）的 Base URL 与 Access Token
+- 连接后：AI 获得 `bot_send_message` / `bot_get_recent` / `bot_list_targets` 工具，可主动发消息、读取最近消息、按会话回复
+- **自动回复**（默认关闭）：机器人收到消息后自动调 DeepSeek 生成回复；支持白名单、每会话冷却（默认 8s）、每小时上限（默认 60 条），需二次确认风险提示
+- Token 仅存本机设备私有存储，列表/日志均掩码，备份自动剔除
+- 说明：Telegram 为官方 Bot API（合规）；QQ 走 OneBot（NapCat/Shamrock 等），仅支持主动发送/查询，接收需 OneBot 端反向 WS/HTTP（后续可加）；不做个人 QQ 号协议外挂
 
 ## 🛍 官方插件市场（market/）
 

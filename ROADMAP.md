@@ -31,7 +31,8 @@
 - [ ] 附件解析（PDF/Word/Excel/代码/图片 OCR）
 - [ ] 历史导入（ChatGPT/DeepSeek 导出 JSON）
 
-## 批次 5 · v3.0.0 — 系统集成与自动化
+## 批次 5 · v3.0.0 — 系统集成与自动化（Bot 集成已提前落地）
+- [x] Bot 集成：Telegram Bot / QQ OneBot（Token 对话框 + AI 收发 + 自动回复）
 - [ ] 通知内快捷回复（RemoteInput）
 - [ ] 语音输入 + TTS 朗读
 - [ ] 桌面小组件（新对话 / 最近会话 / 构建状态）

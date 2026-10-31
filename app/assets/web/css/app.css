@@ -8398,3 +8398,419 @@ html.glass-frost .market-search {
   -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
   backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
 }
+
+/* ==========================================================================
+   v3.0.0：Bot 集成（Telegram / QQ OneBot）
+   ========================================================================== */
+
+.screen--bots {
+  z-index: 20;
+}
+
+.bots-scroll {
+  padding-bottom: calc(26px + var(--safe-bottom));
+}
+
+.bots-actions {
+  display: flex;
+  margin: 2px 12px 10px;
+}
+
+.bots-add-btn {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 42px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.bots-add-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 12px 4px;
+}
+
+.bot-card {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 15px;
+  background-color: rgba(31, 31, 31, 0.9);
+}
+
+.bot-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.bot-card-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background-color: rgba(81, 122, 246, 0.14);
+  color: #9db6ff;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.bot-card-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bot-card-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bot-card-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bot-card-type {
+  flex: none;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.bot-card-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  color: #8b8b8b;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.bot-card-sub .bot-status-text {
+  color: #8b8b8b;
+}
+
+.bot-status-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #5a5a5a;
+}
+
+.bot-status-dot.is-connected { background-color: #4fd05b; box-shadow: 0 0 0 3px rgba(79, 208, 91, 0.16); }
+.bot-status-dot.is-connecting { background-color: #f0b256; }
+.bot-status-dot.is-error { background-color: #e05d5d; }
+.bot-status-dot.is-stopped,
+.bot-status-dot.is-disconnected,
+.bot-status-dot.is-idle { background-color: #6f6f6f; }
+
+.bot-card-switch {
+  flex: none;
+}
+
+.bot-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.bot-meta-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: #8b8b8b;
+  font-size: 10.5px;
+  line-height: 1.7;
+}
+
+.bot-meta-chip.is-on {
+  background-color: rgba(79, 208, 91, 0.13);
+  color: #8fe897;
+}
+
+.bot-card-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.bot-act {
+  padding: 6px 12px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #c7c7c7;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.bot-act--primary {
+  background-color: rgba(81, 122, 246, 0.18);
+  color: #cfe0ff;
+}
+
+.bot-act--danger {
+  background-color: rgba(224, 93, 93, 0.14);
+  color: #f08c8c;
+}
+
+.bots-empty {
+  position: static;
+  padding: 38px 24px;
+}
+
+.bots-tip {
+  margin-bottom: 8px;
+}
+
+/* ---------- 添加 / 编辑机器人 ---------- */
+.bot-form-panel {
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.bot-type-list {
+  display: flex;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.bot-type {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background-color: rgba(31, 31, 31, 0.9);
+  color: #8b8b8b;
+  font-size: 12.5px;
+}
+
+.bot-type.is-active {
+  border-color: var(--accent);
+  background-color: rgba(81, 122, 246, 0.16);
+  color: #fff;
+}
+
+.bot-type-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background-color: rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+}
+
+.bot-risk-hint {
+  margin: 2px 0 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: rgba(240, 178, 86, 0.08);
+  color: #f0b256;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.bot-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.bot-privacy-note {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: rgba(79, 208, 91, 0.06);
+  color: #8fe897;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.bot-form-status {
+  margin-top: 7px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background-color: rgba(81, 122, 246, 0.1);
+  color: #cfe0ff;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.bot-form-status.is-error {
+  background-color: rgba(224, 93, 93, 0.1);
+  color: #f08c8c;
+}
+
+.bot-form-status.is-ok {
+  background-color: rgba(79, 208, 91, 0.1);
+  color: #8fe897;
+}
+
+/* ---------- 机器人详情 ---------- */
+.bot-detail-panel {
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.bot-detail-panel .modal-body {
+  overflow-y: auto;
+}
+
+.bot-detail-head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bot-detail-sub {
+  color: #8b8b8b;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.bot-detail-status-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.bot-detail-status-text {
+  flex: 1 1 auto;
+  color: #c7c7c7;
+  font-size: 12.5px;
+}
+
+.bot-detail-count {
+  flex: none;
+  color: #8b8b8b;
+  font-size: 11px;
+}
+
+.bot-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 34vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.bot-message {
+  padding: 7px 9px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.bot-message.is-out {
+  background-color: rgba(81, 122, 246, 0.1);
+}
+
+.bot-message-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.bot-message-from {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accent-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bot-message-time {
+  flex: none;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+.bot-message-text {
+  color: #d6d6d6;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bot-messages-empty {
+  padding: 16px 4px;
+  color: #8b8b8b;
+  font-size: 12px;
+}
+
+.bot-send-box {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--divider);
+}
+
+.bot-send-box > .input {
+  margin-bottom: 6px;
+}
+
+.bot-send-row {
+  display: flex;
+  gap: 6px;
+}
+
+.bot-send-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bot-send-btn {
+  flex: none;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+/* 液态玻璃 */
+html.glass-liquid .bot-card,
+html.glass-frost .bot-card,
+html.glass-liquid .bot-type,
+html.glass-frost .bot-type {
+  background-color: rgba(31, 31, 31, 0.72);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}

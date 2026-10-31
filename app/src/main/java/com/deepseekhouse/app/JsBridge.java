@@ -23,6 +23,7 @@ import com.deepseekhouse.app.agent.ToolExecutor;
 import com.deepseekhouse.app.agent.ToolRegistry;
 import com.deepseekhouse.app.agent.Workspace;
 import com.deepseekhouse.app.agent.WorkspaceSnapshot;
+import com.deepseekhouse.app.bot.BotManager;
 import com.deepseekhouse.app.mcp.McpManager;
 import com.deepseekhouse.app.media.MediaManager;
 import com.deepseekhouse.app.memory.MemoryDb;
@@ -78,6 +79,11 @@ import java.util.regex.Pattern;
  * <p>批次3 v2.8.0 追加：壁纸 {@link #saveWallpaper(String, String)} / {@link #getWallpaper()} /
  * {@link #clearWallpaper()} / {@link #wallpaperInfo()}；保存图片到相册 {@link #saveImage(String, String)}
  * （API 29+ MediaStore Pictures/DeepSeekHouse，低版本 app 外部目录兜底）。</p>
+ *
+ * <p>v3.0.0 追加：Telegram Bot / OneBot 集成 {@link #botsList()} / {@link #botSave(String)} /
+ * {@link #botDelete(String)} / {@link #botStart(String)} / {@link #botStop(String)} /
+ * {@link #botTest(String)} / {@link #botSend(String, String, String)} / {@link #botRecent(String, int)}
+ * （bot-status / bot-message / bot-sent 事件）。</p>
  */
 public final class JsBridge {
 
@@ -109,6 +115,8 @@ public final class JsBridge {
     private final WorkspaceSnapshot snapshots;
     /** 批次3 v2.8.0：壁纸存取 + 图片保存到相册（IO 在 media 内部后台线程）。 */
     private final MediaManager media;
+    /** v3.0.0：Bot 配置/启停/收发（Telegram 长轮询 + OneBot 发送）。 */
+    private final BotManager bots;
     private final ExecutorService toolPool;
     /** requestId → 等待确认的工具调用（confirmTool 消费）。 */
     private final Map<String, PendingTool> pendingTools = new ConcurrentHashMap<>();
@@ -190,6 +198,13 @@ public final class JsBridge {
         this.snapshots = new WorkspaceSnapshot(activity, this.workspace);
         // 批次3 v2.8.0：壁纸 + 图片保存
         this.media = new MediaManager(activity);
+        // v3.0.0：Bot 集成（Telegram/OneBot；页面就绪后自动启动 enabled 的 bot）
+        this.bots = new BotManager(activity, prefs, new BotManager.EventSink() {
+            @Override
+            public void emit(String json) {
+                emitEvent(json);
+            }
+        });
     }
 
     /** Activity 销毁时释放网络线程池与事件通道。 */
@@ -218,6 +233,11 @@ public final class JsBridge {
         }
         try {
             media.close();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        try {
+            bots.shutdown();
         } catch (Throwable ignored) {
             // 忽略
         }
@@ -1185,6 +1205,101 @@ public final class JsBridge {
         return o.toString();
     }
 
+    // ============================================================ v3.0.0 Bot 集成
+
+    /** SPEC botsList：Bot 配置 + 运行时状态 JSON 数组（含 token 供编辑回填，不写日志）。 */
+    @JavascriptInterface
+    public String botsList() {
+        try {
+            return bots.listJson();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** SPEC botSave：新增/更新 Bot 配置（无 id 自动生成）；非法返回 false。 */
+    @JavascriptInterface
+    public boolean botSave(String json) {
+        try {
+            return bots.save(json);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC botDelete：停止并删除 Bot。 */
+    @JavascriptInterface
+    public void botDelete(String id) {
+        try {
+            bots.delete(id);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** SPEC botStart：异步连接；Telegram 启动 getUpdates 长轮询。 */
+    @JavascriptInterface
+    public void botStart(String id) {
+        try {
+            bots.start(id);
+        } catch (Throwable t) {
+            emitBotStatus(id, "error", "启动失败：" + describe(t));
+        }
+    }
+
+    /** SPEC botStop：停止轮询并取消在途请求。 */
+    @JavascriptInterface
+    public void botStop(String id) {
+        try {
+            bots.stop(id);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** SPEC botTest：连接测试（getMe / get_login_info），异步 emit bot-status。 */
+    @JavascriptInterface
+    public void botTest(String id) {
+        try {
+            bots.test(id);
+        } catch (Throwable t) {
+            emitBotStatus(id, "error", "测试失败：" + describe(t));
+        }
+    }
+
+    /** SPEC botSend：异步发送文本；结束 emit bot-sent（失败也发）。 */
+    @JavascriptInterface
+    public void botSend(String botId, String chatId, String text) {
+        try {
+            bots.send(botId, chatId, text);
+        } catch (Throwable t) {
+            emitBotStatus(botId, "error", "发送失败：" + describe(t));
+        }
+    }
+
+    /** SPEC botRecent：最近消息 JSON 数组（新→旧，默认 50 / 上限 200）。 */
+    @JavascriptInterface
+    public String botRecent(String botId, int limit) {
+        try {
+            return bots.recentJson(botId, limit);
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    private void emitBotStatus(String botId, String status, String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("type", "bot-status");
+            o.put("botId", botId == null ? "" : botId);
+            o.put("status", status == null ? "error" : status);
+            o.put("message", message == null ? "" : message);
+        } catch (JSONException ignored) {
+            return;
+        }
+        emitEvent(o.toString());
+    }
+
     // ------------------------------------------------------------ P1 内部工具
 
     private void submitTool(final Runnable task) {
@@ -1562,6 +1677,12 @@ public final class JsBridge {
             mcp.onPageReady();
         } catch (Throwable ignored) {
             // MCP 自动连接失败不影响首屏
+        }
+        // v3.0.0：页面就绪后自动启动 enabled 的 bot（保证 bot-* 事件不丢）
+        try {
+            bots.onPageReady();
+        } catch (Throwable ignored) {
+            // Bot 自动启动失败不影响首屏
         }
     }
 

@@ -92,7 +92,9 @@
     locale: 'zh',
     /* 批次4 v2.9.0：插件市场源 */
     marketSource: 'official',
-    marketUrl: ''
+    marketUrl: '',
+    /* v3.0.0：机器人配置（token 仅本机；备份会剔除） */
+    bots: []
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -197,7 +199,8 @@
       glassSpeed: DEFAULT_PREFS.glassSpeed,
       locale: DEFAULT_PREFS.locale,
       marketSource: DEFAULT_PREFS.marketSource,
-      marketUrl: DEFAULT_PREFS.marketUrl
+      marketUrl: DEFAULT_PREFS.marketUrl,
+      bots: []
     };
   }
 
@@ -271,6 +274,50 @@
     return out;
   }
 
+  /** v3.0.0：机器人配置归一化（type/name/token/baseUrl/autoReply/whitelist/限流） */
+  function normalizeBotConfig(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var type = String(raw.type || 'telegram').toLowerCase() === 'onebot' ? 'onebot' : 'telegram';
+    var id = raw.id === undefined || raw.id === null ? '' : String(raw.id).slice(0, 120);
+    var name = String(raw.name === undefined || raw.name === null ? '' : raw.name).slice(0, 80);
+    if (!name) name = type === 'onebot' ? 'QQ Bot' : 'Telegram Bot';
+    var baseUrl = String(raw.baseUrl === undefined || raw.baseUrl === null ? '' : raw.baseUrl).slice(0, 300);
+    if (type === 'onebot' && !baseUrl) baseUrl = 'http://127.0.0.1:3000';
+    var whitelist = [];
+    if (Array.isArray(raw.whitelist)) {
+      for (var i = 0; i < raw.whitelist.length && whitelist.length < 50; i++) {
+        var chatId = String(raw.whitelist[i] === undefined || raw.whitelist[i] === null ? '' : raw.whitelist[i]).replace(/^\s+|\s+$/g, '');
+        if (chatId) whitelist.push(chatId.slice(0, 120));
+      }
+    }
+    return {
+      id: id,
+      type: type,
+      name: name,
+      token: String(raw.token === undefined || raw.token === null ? '' : raw.token).slice(0, 600),
+      accessToken: String(raw.accessToken === undefined || raw.accessToken === null ? '' : raw.accessToken).slice(0, 600),
+      baseUrl: baseUrl,
+      enabled: !!raw.enabled,
+      autoReply: !!raw.autoReply,
+      whitelist: whitelist,
+      systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 4000),
+      cooldownSec: Math.round(clampNum(raw.cooldownSec !== undefined ? raw.cooldownSec : 8, 3, 300)),
+      hourlyLimit: Math.round(clampNum(raw.hourlyLimit !== undefined ? raw.hourlyLimit : 60, 1, 600)),
+      createdAt: Math.max(0, Number(raw.createdAt) || 0),
+      updatedAt: Math.max(0, Number(raw.updatedAt) || 0)
+    };
+  }
+
+  function normalizeBots(raw) {
+    if (!Array.isArray(raw)) return [];
+    var out = [];
+    for (var i = 0; i < raw.length && out.length < 20; i++) {
+      var bot = normalizeBotConfig(raw[i]);
+      if (bot) out.push(bot);
+    }
+    return out;
+  }
+
   /** 批次2：PIN 归一化（PBKDF2 参数/失败次数/锁定时间） */
   function normalizeAppPin(raw) {
     var out = { enabled: false, salt: '', hash: '', iterations: 100000, failures: 0, lockUntil: 0 };
@@ -306,6 +353,7 @@
     if (raw.glassIntensity !== undefined) p.glassIntensity = Math.round(clampNum(raw.glassIntensity, 0, 100));
     if (raw.glassSpeed !== undefined) p.glassSpeed = Math.round(clampNum(raw.glassSpeed, 0.2, 3) * 10) / 10;
     if (raw.locale === 'zh' || raw.locale === 'en') p.locale = raw.locale;
+    if (raw.bots !== undefined) p.bots = normalizeBots(raw.bots);
     if (raw.marketSource === 'official' || raw.marketSource === 'custom') p.marketSource = raw.marketSource;
     if (raw.marketUrl !== undefined) p.marketUrl = String(raw.marketUrl === null ? '' : raw.marketUrl).slice(0, 500);
     if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
@@ -984,6 +1032,7 @@
     if (patch.glassIntensity !== undefined) state.prefs.glassIntensity = Math.round(clampNum(patch.glassIntensity, 0, 100));
     if (patch.glassSpeed !== undefined) state.prefs.glassSpeed = Math.round(clampNum(patch.glassSpeed, 0.2, 3) * 10) / 10;
     if (patch.locale !== undefined) state.prefs.locale = String(patch.locale) === 'en' ? 'en' : 'zh';
+    if (patch.bots !== undefined) state.prefs.bots = normalizeBots(patch.bots);
     if (patch.marketSource !== undefined) state.prefs.marketSource = String(patch.marketSource) === 'custom' ? 'custom' : 'official';
     if (patch.marketUrl !== undefined) state.prefs.marketUrl = String(patch.marketUrl === null ? '' : patch.marketUrl).slice(0, 500);
     if (patch.systemPrompt !== undefined) state.prefs.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
@@ -1654,6 +1703,20 @@
     delete prefs.apiKey;
     /* 批次2：PIN 凭据不进入备份（防止迁移后锁定/泄露） */
     delete prefs.appPin;
+    /* v3.0.0：机器人 token/accessToken 不进入备份明文 */
+    if (Array.isArray(prefs.bots)) {
+      prefs.bots = prefs.bots.map(function (bot) {
+        if (!bot || typeof bot !== 'object') return null;
+        var copy = {};
+        Object.keys(bot).forEach(function (key) {
+          if (key === 'token' || key === 'accessToken' || key === 'appId' || key === 'secret') return;
+          copy[key] = bot[key];
+        });
+        copy.token = '';
+        copy.accessToken = '';
+        return copy;
+      }).filter(Boolean);
+    }
     var enabled = {};
     var source = state.plugins && state.plugins.enabled ? state.plugins.enabled : {};
     var ekeys = Object.keys(source);
