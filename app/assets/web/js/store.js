@@ -258,7 +258,7 @@
       id: raw.id ? String(raw.id).slice(0, 80) : ('preset-' + uid()),
       name: name.slice(0, 40),
       description: raw.description === null || raw.description === undefined ? '' : String(raw.description).slice(0, 160),
-      systemPrompt: raw.systemPrompt === null || raw.systemPrompt === undefined ? '' : String(raw.systemPrompt).slice(0, 16000),
+      systemPrompt: raw.systemPrompt === null || raw.systemPrompt === undefined ? '' : String(raw.systemPrompt).slice(0, 1000000),
       builtin: !!raw.builtin
     };
     if (raw.model !== null && raw.model !== undefined) {
@@ -326,7 +326,7 @@
       name: name.slice(0, 40),
       emoji: String(raw.emoji === undefined || raw.emoji === null ? '' : raw.emoji).slice(0, 16),
       description: String(raw.description === undefined || raw.description === null ? '' : raw.description).slice(0, 160),
-      systemPrompt: String(raw.systemPrompt === undefined || raw.systemPrompt === null ? '' : raw.systemPrompt).slice(0, 16000),
+      systemPrompt: String(raw.systemPrompt === undefined || raw.systemPrompt === null ? '' : raw.systemPrompt).slice(0, 1000000),
       greeting: String(raw.greeting === undefined || raw.greeting === null ? '' : raw.greeting).slice(0, 2000),
       model: raw.model ? String(raw.model).slice(0, 80) : '',
       temperature: Math.max(0, Math.min(2, temperature)),
@@ -380,7 +380,7 @@
       /* v3.2.0：qqbot 支持 WS 接收，自动回复与其它类型一致 */
       autoReply: !!raw.autoReply,
       whitelist: whitelist,
-      systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 4000),
+      systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 1000000),
       cooldownSec: Math.round(clampNum(raw.cooldownSec !== undefined ? raw.cooldownSec : 8, 3, 300)),
       hourlyLimit: Math.round(clampNum(raw.hourlyLimit !== undefined ? raw.hourlyLimit : 60, 1, 600)),
       keyId: raw.keyId ? String(raw.keyId).slice(0, 120) : '',
@@ -441,7 +441,7 @@
     if (raw.personas !== undefined) p.personas = normalizePersonas(raw.personas);
     if (raw.marketSource === 'official' || raw.marketSource === 'custom') p.marketSource = raw.marketSource;
     if (raw.marketUrl !== undefined) p.marketUrl = String(raw.marketUrl === null ? '' : raw.marketUrl).slice(0, 500);
-    if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
+    if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 1000000);
     if (raw.contextBudget !== undefined) p.contextBudget = Math.round(clampNum(raw.contextBudget, 500, 200000));
     if (raw.workbench !== undefined) p.workbench = !!raw.workbench;
     if (raw.terminalHeight !== undefined) p.terminalHeight = Math.round(clampNum(raw.terminalHeight, 120, 800));
@@ -701,7 +701,7 @@
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     var name = String(raw.name === undefined || raw.name === null ? '' : raw.name).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
     var emoji = String(raw.emoji === undefined || raw.emoji === null ? '' : raw.emoji).slice(0, 16);
-    var systemPrompt = String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 16000);
+    var systemPrompt = String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 1000000);
     var greeting = String(raw.greeting === undefined || raw.greeting === null ? '' : raw.greeting).slice(0, 2000);
     var model = raw.model ? String(raw.model).trim().slice(0, 80) : '';
     var temperature = raw.temperature === undefined || raw.temperature === null ? null : Number(raw.temperature);
@@ -732,10 +732,10 @@
     if (raw.presetId) chat.presetId = String(raw.presetId).slice(0, 80);
     if (raw.keyId) chat.keyId = String(raw.keyId).slice(0, 120);
     if (raw.personaId) chat.personaId = String(raw.personaId).slice(0, 80);
-    if (raw.personaPrompt) chat.personaPrompt = String(raw.personaPrompt).slice(0, 16000);
+    if (raw.personaPrompt) chat.personaPrompt = String(raw.personaPrompt).slice(0, 1000000);
     var inlinePersona = normalizeInlinePersona(raw.persona);
     if (inlinePersona) chat.persona = inlinePersona;
-    if (raw.systemPrompt) chat.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
+    if (raw.systemPrompt) chat.systemPrompt = String(raw.systemPrompt).slice(0, 1000000);
     if (Array.isArray(raw.trace)) chat.trace = normalizeTrace(raw.trace);
     if (raw.lastSnapshotId) chat.lastSnapshotId = String(raw.lastSnapshotId).slice(0, 120);
     if (raw.lastSnapshotCount !== undefined && raw.lastSnapshotCount !== null) chat.lastSnapshotCount = Math.max(0, parseInt(raw.lastSnapshotCount, 10) || 0);
@@ -1166,7 +1166,7 @@
     if (patch.personas !== undefined) state.prefs.personas = normalizePersonas(patch.personas);
     if (patch.marketSource !== undefined) state.prefs.marketSource = String(patch.marketSource) === 'custom' ? 'custom' : 'official';
     if (patch.marketUrl !== undefined) state.prefs.marketUrl = String(patch.marketUrl === null ? '' : patch.marketUrl).slice(0, 500);
-    if (patch.systemPrompt !== undefined) state.prefs.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
+    if (patch.systemPrompt !== undefined) state.prefs.systemPrompt = String(patch.systemPrompt).slice(0, 1000000);
     if (patch.contextBudget !== undefined) state.prefs.contextBudget = Math.round(clampNum(patch.contextBudget, 500, 200000));
     if (patch.workbench !== undefined) state.prefs.workbench = !!patch.workbench;
     if (patch.terminalHeight !== undefined) state.prefs.terminalHeight = Math.round(clampNum(patch.terminalHeight, 120, 800));
@@ -1308,8 +1308,8 @@
     if (opts.keyId) chat.keyId = String(opts.keyId).slice(0, 120);
     else if (state.prefs && state.prefs.defaultKeyId) chat.keyId = String(state.prefs.defaultKeyId).slice(0, 120);
     if (opts.personaId) chat.personaId = String(opts.personaId).slice(0, 80);
-    if (opts.personaPrompt) chat.personaPrompt = String(opts.personaPrompt).slice(0, 16000);
-    if (opts.systemPrompt) chat.systemPrompt = String(opts.systemPrompt).slice(0, 16000);
+    if (opts.personaPrompt) chat.personaPrompt = String(opts.personaPrompt).slice(0, 1000000);
+    if (opts.systemPrompt) chat.systemPrompt = String(opts.systemPrompt).slice(0, 1000000);
     if (opts.temperature !== undefined) chat.temperature = Math.max(0, Math.min(2, Number(opts.temperature) || 1));
     state.chats.push(chat);
     state.activeChatId = chat.id;
@@ -1365,7 +1365,7 @@
     if (patch.unread !== undefined) chat.unread = Math.max(0, parseInt(patch.unread, 10) || 0);
     if (patch.archived !== undefined) chat.archived = !!patch.archived;
     if (patch.presetId !== undefined) chat.presetId = patch.presetId ? String(patch.presetId).slice(0, 80) : '';
-    if (patch.systemPrompt !== undefined) chat.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
+    if (patch.systemPrompt !== undefined) chat.systemPrompt = String(patch.systemPrompt).slice(0, 1000000);
     if (patch.keyId !== undefined) chat.keyId = patch.keyId ? String(patch.keyId).slice(0, 120) : '';
     if (patch.personaId !== undefined) chat.personaId = patch.personaId ? String(patch.personaId).slice(0, 80) : '';
     if (patch.persona !== undefined) {
@@ -1376,7 +1376,7 @@
         else delete chat.persona;
       }
     }
-    if (patch.personaPrompt !== undefined) chat.personaPrompt = String(patch.personaPrompt || '').slice(0, 16000);
+    if (patch.personaPrompt !== undefined) chat.personaPrompt = String(patch.personaPrompt || '').slice(0, 1000000);
     if (patch.temperature !== undefined) chat.temperature = Math.max(0, Math.min(2, Number(patch.temperature) || 1));
     if (patch.lastSnapshotId !== undefined) chat.lastSnapshotId = patch.lastSnapshotId ? String(patch.lastSnapshotId).slice(0, 120) : '';
     if (patch.lastSnapshotCount !== undefined) chat.lastSnapshotCount = Math.max(0, parseInt(patch.lastSnapshotCount, 10) || 0);

@@ -854,7 +854,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '3.4.0' }
+      { label: '版本', value: '3.4.1' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -3703,7 +3703,7 @@
     if (patch.maxTokens !== undefined) next.maxTokens = Math.round(clampNum(patch.maxTokens, 16, 8192));
     if (patch.stream !== undefined) next.stream = !!patch.stream;
     if (patch.theme !== undefined) next.theme = patch.theme === 'light' ? 'light' : 'dark';
-    if (patch.systemPrompt !== undefined) next.systemPrompt = String(patch.systemPrompt || '').slice(0, 16000);
+    if (patch.systemPrompt !== undefined) next.systemPrompt = String(patch.systemPrompt || '').slice(0, 1000000);
     if (patch.contextBudget !== undefined) next.contextBudget = Math.round(clampNum(patch.contextBudget, 500, 200000));
 
     Store.setPrefs(next);
@@ -8275,7 +8275,7 @@
       enabled: !!raw.enabled,
       autoReply: !!raw.autoReply,
       whitelist: Array.isArray(raw.whitelist) ? raw.whitelist.slice(0, 50).map(function (v) { return String(v); }) : [],
-      systemPrompt: String(raw.systemPrompt || '').slice(0, 4000),
+      systemPrompt: String(raw.systemPrompt || '').slice(0, 1000000),
       keyId: String(raw.keyId || '').slice(0, 120),
       personaId: String(raw.personaId || '').slice(0, 120),
       cooldownSec: Math.max(3, Math.min(300, Math.round(Number(raw.cooldownSec) || 8))),
@@ -8868,7 +8868,7 @@
     if (source.autoReply !== undefined) bot.autoReply = !!source.autoReply;
     if (source.cooldownSec !== undefined) bot.cooldownSec = Math.max(3, Math.min(300, Math.round(Number(source.cooldownSec) || 8)));
     if (source.hourlyLimit !== undefined) bot.hourlyLimit = Math.max(1, Math.min(600, Math.round(Number(source.hourlyLimit) || 60)));
-    if (source.systemPrompt !== undefined || source.prompt !== undefined) bot.systemPrompt = String(source.systemPrompt !== undefined ? source.systemPrompt : source.prompt).slice(0, 4000);
+    if (source.systemPrompt !== undefined || source.prompt !== undefined) bot.systemPrompt = String(source.systemPrompt !== undefined ? source.systemPrompt : source.prompt).slice(0, 1000000);
     if (Array.isArray(source.whitelist)) bot.whitelist = source.whitelist.slice(0, 50).map(function (v) { return String(v); });
     bot.updatedAt = Date.now();
     var saved = false;
@@ -9752,7 +9752,7 @@
     var out = {
       name: name.slice(0, 40),
       emoji: emoji,
-      systemPrompt: prompt.slice(0, 16000),
+      systemPrompt: prompt.slice(0, 1000000),
       greeting: greeting
     };
     if (model) out.model = model;

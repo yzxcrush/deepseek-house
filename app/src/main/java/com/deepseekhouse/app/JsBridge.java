@@ -1561,7 +1561,7 @@ public final class JsBridge {
                 return false;
             }
             String systemPrompt = textOf(input, "systemPrompt");
-            if (systemPrompt.length() > 32 * 1024) {
+            if (systemPrompt.length() > 1000 * 1024) {
                 return false;
             }
             String greeting = textOf(input, "greeting");
