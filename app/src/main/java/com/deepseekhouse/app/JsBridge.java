@@ -29,11 +29,13 @@ import com.deepseekhouse.app.media.MediaManager;
 import com.deepseekhouse.app.memory.MemoryDb;
 import com.deepseekhouse.app.plugin.PluginRepository;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
 import java.io.IOException;
+import java.security.SecureRandom;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.Locale;
@@ -84,6 +86,10 @@ import java.util.regex.Pattern;
  * {@link #botDelete(String)} / {@link #botStart(String)} / {@link #botStop(String)} /
  * {@link #botTest(String)} / {@link #botSend(String, String, String)} / {@link #botRecent(String, int)} /
  * {@link #botTargets(String)}（bot-status / bot-message / bot-sent 事件；qqbot 频道/群/用户目标）。</p>
+ *
+ * <p>v3.3.0 追加：多 API Key {@link #apiKeys()} / {@link #saveApiKey(String)} / {@link #deleteApiKey(String)} /
+ * {@link #setDefaultApiKey(String)} / {@link #testApiKey(String)} / {@link #validateKeyWith(String, String, String)}
+ * 与自定义人设 {@link #personas()} / {@link #savePersona(String)} / {@link #deletePersona(String)}。</p>
  */
 public final class JsBridge {
 
@@ -1308,6 +1314,461 @@ public final class JsBridge {
             return;
         }
         emitEvent(o.toString());
+    }
+
+    // ============================================================ v3.3.0 多 API Key / 自定义人设
+
+    /** SPEC apiKeys：JSON 数组 [{id,name,apiKey(明文，UI 自行打码),baseUrl,model,enabled,createdAt,isDefault}]。 */
+    @JavascriptInterface
+    public String apiKeys() {
+        try {
+            JSONArray stored = new JSONArray(prefs.getApiKeysJson());
+            String defaultId = prefs.getDefaultKeyId();
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < stored.length(); i++) {
+                JSONObject item = stored.optJSONObject(i);
+                if (item == null) {
+                    continue;
+                }
+                String id = item.optString("id", "");
+                if (id.isEmpty()) {
+                    continue;
+                }
+                JSONObject o = new JSONObject();
+                o.put("id", id);
+                o.put("name", item.optString("name", ""));
+                o.put("apiKey", item.optString("apiKey", ""));
+                o.put("baseUrl", item.optString("baseUrl", Prefs.DEFAULT_BASE_URL));
+                o.put("model", item.optString("model", ""));
+                o.put("enabled", !item.has("enabled") || item.isNull("enabled")
+                        || item.optBoolean("enabled", true));
+                o.put("createdAt", item.optLong("createdAt", 0L));
+                o.put("isDefault", id.equals(defaultId));
+                out.put(o);
+            }
+            return out.toString();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** SPEC saveApiKey：新增/更新（无 id 自动生成；≤20 条；缺 apiKey 返回 false）。 */
+    @JavascriptInterface
+    public boolean saveApiKey(String json) {
+        if (json == null || json.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            JSONObject input = new JSONObject(json);
+            String apiKey = textOf(input, "apiKey").trim();
+            if (apiKey.isEmpty()) {
+                return false;
+            }
+            String baseUrl = textOf(input, "baseUrl").trim();
+            if (baseUrl.isEmpty()) {
+                baseUrl = Prefs.DEFAULT_BASE_URL;
+            }
+            if (!isHttpUrl(baseUrl)) {
+                return false;
+            }
+            String name = textOf(input, "name").trim();
+            String model = textOf(input, "model").trim();
+            boolean enabled = !input.has("enabled") || input.isNull("enabled")
+                    || input.optBoolean("enabled", true);
+            JSONArray array = parseArray(prefs.getApiKeysJson());
+            String requestedId = normalizeKeyId(textOf(input, "id"));
+            int index = indexById(array, requestedId);
+            if (index < 0 && array.length() >= 20) {
+                return false;
+            }
+            String id = requestedId;
+            if (id.isEmpty()) {
+                id = randomId("key", array);
+            } else if (index < 0 && findById(array, id) != null) {
+                id = randomId("key", array);
+            }
+            JSONObject entry = new JSONObject();
+            entry.put("id", id);
+            entry.put("name", name.isEmpty() ? "Key " + (array.length() + 1) : name);
+            entry.put("apiKey", apiKey);
+            entry.put("baseUrl", baseUrl);
+            entry.put("model", model);
+            entry.put("enabled", enabled);
+            long createdAt = index >= 0
+                    ? array.optJSONObject(index).optLong("createdAt", 0L) : 0L;
+            entry.put("createdAt", createdAt > 0L ? createdAt : System.currentTimeMillis());
+            if (index >= 0) {
+                array.put(index, entry);
+            } else {
+                array.put(entry);
+            }
+            prefs.setApiKeysJson(array.toString());
+            String defaultId = prefs.getDefaultKeyId();
+            if (defaultId.isEmpty() || array.length() == 1) {
+                prefs.setDefaultKeyId(id);
+                prefs.syncLegacyFromDefaultKey();
+            } else if (id.equals(defaultId)) {
+                prefs.syncLegacyFromDefaultKey();
+            }
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC deleteApiKey：删除；若删除默认 Key 则自动改选第一条；清空后清旧 apiKey。 */
+    @JavascriptInterface
+    public void deleteApiKey(String id) {
+        String target = id == null ? "" : id.trim();
+        if (target.isEmpty()) {
+            return;
+        }
+        try {
+            JSONArray array = parseArray(prefs.getApiKeysJson());
+            JSONArray out = new JSONArray();
+            boolean removed = false;
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item == null) {
+                    continue;
+                }
+                if (target.equals(item.optString("id", ""))) {
+                    removed = true;
+                } else {
+                    out.put(item);
+                }
+            }
+            if (!removed) {
+                return;
+            }
+            prefs.setApiKeysJson(out.toString());
+            if (target.equals(prefs.getDefaultKeyId())) {
+                String newDefault = "";
+                if (out.length() > 0) {
+                    JSONObject first = out.optJSONObject(0);
+                    newDefault = first == null ? "" : first.optString("id", "");
+                }
+                prefs.setDefaultKeyId(newDefault);
+                if (newDefault.isEmpty()) {
+                    prefs.clearLegacyApiKey();
+                } else {
+                    prefs.syncLegacyFromDefaultKey();
+                }
+            }
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** SPEC setDefaultApiKey：切换默认 Key（同步旧 apiKey/baseUrl）。 */
+    @JavascriptInterface
+    public boolean setDefaultApiKey(String id) {
+        String target = id == null ? "" : id.trim();
+        if (target.isEmpty()) {
+            return false;
+        }
+        try {
+            JSONArray array = parseArray(prefs.getApiKeysJson());
+            if (findById(array, target) == null) {
+                return false;
+            }
+            prefs.setDefaultKeyId(target);
+            prefs.syncLegacyFromDefaultKey();
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC testApiKey：同步 GET /models（id 空 = 默认 Key），返回 {ok,models?,error?,httpStatus}。 */
+    @JavascriptInterface
+    public String testApiKey(String id) {
+        try {
+            JSONArray array = parseArray(prefs.getApiKeysJson());
+            String target = id == null ? "" : id.trim();
+            if (target.isEmpty()) {
+                target = prefs.getDefaultKeyId();
+            }
+            JSONObject entry = findById(array, target);
+            if (entry == null) {
+                return keyErrorJson("API Key 不存在：" + target);
+            }
+            String apiKey = entry.optString("apiKey", "");
+            String baseUrl = entry.optString("baseUrl", Prefs.DEFAULT_BASE_URL);
+            // 同步阻塞（WebView JS 桥线程），超时 20s；UI 显示 loading 即可
+            return api.testApiKeySync(apiKey, baseUrl, 20 * 1000);
+        } catch (Throwable t) {
+            return keyErrorJson("测试失败：" + describe(t));
+        }
+    }
+
+    /** v3.3.0：按当前 Key 拉模型列表（异步事件 validated/models，与 validateKey 相同）。 */
+    @JavascriptInterface
+    public void validateKeyWith(String requestId, String apiKey, String baseUrl) {
+        if (requestId == null || requestId.isEmpty()) {
+            return;
+        }
+        try {
+            api.validateKey(requestId, apiKey, baseUrl);
+        } catch (Throwable t) {
+            emitError(requestId, "启动校验失败：" + describe(t), 0);
+        }
+    }
+
+    // ------------------------------------------------------------ 人设（原生只持久化）
+
+    /** SPEC personas：JSON 数组 [{id,name,emoji,avatarDataUrl?,systemPrompt,greeting?,model?,temperature?,keyId?,createdAt}]。 */
+    @JavascriptInterface
+    public String personas() {
+        try {
+            return prefs.getPersonasJson();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    /** SPEC savePersona：新增/更新（无 id 自动生成；avatarDataUrl ≤300KB、systemPrompt ≤32K 字符）。 */
+    @JavascriptInterface
+    public boolean savePersona(String json) {
+        if (json == null || json.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            JSONObject input = new JSONObject(json);
+            JSONArray array = parseArray(prefs.getPersonasJson());
+            String requestedId = normalizePersonaId(textOf(input, "id"));
+            int index = indexById(array, requestedId);
+            if (index < 0 && array.length() >= 50) {
+                return false;
+            }
+            String id = requestedId.isEmpty() ? randomId("persona", array) : requestedId;
+            if (index < 0 && findById(array, id) != null) {
+                id = randomId("persona", array);
+            }
+            String name = textOf(input, "name").trim();
+            if (name.length() > 200) {
+                name = name.substring(0, 200);
+            }
+            if (name.isEmpty()) {
+                name = "未命名人设";
+            }
+            String emoji = textOf(input, "emoji").trim();
+            if (emoji.length() > 16) {
+                emoji = emoji.substring(0, 16);
+            }
+            String avatar = textOf(input, "avatarDataUrl");
+            if (avatar.length() > 300 * 1024) {
+                return false;
+            }
+            String systemPrompt = textOf(input, "systemPrompt");
+            if (systemPrompt.length() > 32 * 1024) {
+                return false;
+            }
+            String greeting = textOf(input, "greeting");
+            if (greeting.length() > 2000) {
+                greeting = greeting.substring(0, 2000);
+            }
+            String model = textOf(input, "model").trim();
+            String keyId = textOf(input, "keyId").trim();
+            JSONObject entry = new JSONObject();
+            entry.put("id", id);
+            entry.put("name", name);
+            entry.put("emoji", emoji);
+            if (!avatar.isEmpty()) {
+                entry.put("avatarDataUrl", avatar);
+            }
+            entry.put("systemPrompt", systemPrompt);
+            if (!greeting.isEmpty()) {
+                entry.put("greeting", greeting);
+            }
+            if (!model.isEmpty()) {
+                entry.put("model", model);
+            }
+            if (input.has("temperature") && !input.isNull("temperature")) {
+                double temperature = input.optDouble("temperature", Double.NaN);
+                if (!Double.isNaN(temperature) && !Double.isInfinite(temperature)) {
+                    if (temperature < 0d) {
+                        temperature = 0d;
+                    }
+                    if (temperature > 2d) {
+                        temperature = 2d;
+                    }
+                    entry.put("temperature", temperature);
+                }
+            }
+            if (!keyId.isEmpty()) {
+                entry.put("keyId", keyId);
+            }
+            long createdAt = index >= 0
+                    ? array.optJSONObject(index).optLong("createdAt", 0L) : 0L;
+            entry.put("createdAt", createdAt > 0L ? createdAt : System.currentTimeMillis());
+            // 透传未知字段（例如 builtin/enabled 之类，原生不使用）
+            Iterator<String> keys = input.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (!isPersonaCoreKey(key) && !entry.has(key)) {
+                    entry.put(key, input.opt(key));
+                }
+            }
+            if (index >= 0) {
+                array.put(index, entry);
+            } else {
+                array.put(entry);
+            }
+            prefs.setPersonasJson(array.toString());
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** SPEC deletePersona。 */
+    @JavascriptInterface
+    public void deletePersona(String id) {
+        String target = id == null ? "" : id.trim();
+        if (target.isEmpty()) {
+            return;
+        }
+        try {
+            JSONArray array = parseArray(prefs.getPersonasJson());
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item == null) {
+                    continue;
+                }
+                if (!target.equals(item.optString("id", ""))) {
+                    out.put(item);
+                }
+            }
+            prefs.setPersonasJson(out.toString());
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    // ------------------------------------------------------------ v3.3.0 内部工具
+
+    private static JSONArray parseArray(String json) {
+        try {
+            if (json == null || json.trim().isEmpty()) {
+                return new JSONArray();
+            }
+            return new JSONArray(json);
+        } catch (Throwable t) {
+            return new JSONArray();
+        }
+    }
+
+    private static JSONObject findById(JSONArray array, String id) {
+        if (array == null || id == null || id.isEmpty()) {
+            return null;
+        }
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject item = array.optJSONObject(i);
+            if (item != null && id.equals(item.optString("id", ""))) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private static int indexById(JSONArray array, String id) {
+        if (array == null || id == null || id.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject item = array.optJSONObject(i);
+            if (item != null && id.equals(item.optString("id", ""))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String randomId(String prefix, JSONArray existing) {
+        SecureRandom random = new SecureRandom();
+        for (int attempt = 0; attempt < 100; attempt++) {
+            StringBuilder sb = new StringBuilder(prefix);
+            for (int i = 0; i < 4; i++) {
+                sb.append(String.format(Locale.US, "%02x", random.nextInt(256)));
+            }
+            String id = sb.toString();
+            if (findById(existing, id) == null) {
+                return id;
+            }
+        }
+        return prefix + System.currentTimeMillis();
+    }
+
+    private static String normalizeKeyId(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        String value = raw.trim();
+        for (int i = 0; i < value.length() && sb.length() < 32; i++) {
+            char c = value.charAt(i);
+            boolean allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '_' || c == '-';
+            if (allowed) {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String normalizePersonaId(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        String value = raw.trim();
+        for (int i = 0; i < value.length() && sb.length() < 32; i++) {
+            char c = value.charAt(i);
+            boolean allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '_' || c == '-';
+            if (allowed) {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static boolean isPersonaCoreKey(String key) {
+        return "id".equals(key) || "name".equals(key) || "emoji".equals(key)
+                || "avatarDataUrl".equals(key) || "systemPrompt".equals(key)
+                || "greeting".equals(key) || "model".equals(key)
+                || "temperature".equals(key) || "keyId".equals(key)
+                || "createdAt".equals(key);
+    }
+
+    private static String textOf(JSONObject object, String key) {
+        if (object == null || !object.has(key) || object.isNull(key)) {
+            return "";
+        }
+        String value = object.optString(key, "");
+        return value == null || "null".equals(value) ? "" : value;
+    }
+
+    private static boolean isHttpUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        String lower = url.trim().toLowerCase(Locale.US);
+        return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    private static String keyErrorJson(String message) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("ok", false);
+            o.put("error", message == null ? "操作失败" : message);
+            o.put("httpStatus", 0);
+        } catch (JSONException ignored) {
+            return "{\"ok\":false,\"error\":\"操作失败\"}";
+        }
+        return o.toString();
     }
 
     // ------------------------------------------------------------ P1 内部工具

@@ -3,6 +3,7 @@ package com.deepseekhouse.app;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -35,6 +36,12 @@ public final class Prefs {
     public static final String KEY_PLUGIN_ENABLED = "housePluginEnabled";
     /** v3.0.0：Bot 配置 JSON 数组 [{id,type,name,enabled,token,accessToken,baseUrl,...}]。 */
     public static final String KEY_BOTS = "bots";
+    /** v3.3.0：多 API Key JSON 数组 [{id,name,apiKey,baseUrl,model?,enabled,createdAt}]（≤20）。 */
+    public static final String KEY_API_KEYS = "apiKeys";
+    /** v3.3.0：默认 API Key id。 */
+    public static final String KEY_DEFAULT_KEY_ID = "defaultKeyId";
+    /** v3.3.0：人设 JSON 数组 [{id,name,emoji,avatarDataUrl?,systemPrompt,...}]。 */
+    public static final String KEY_PERSONAS = "personas";
 
     public static final String DEFAULT_BASE_URL = "https://api.deepseek.com";
     public static final String DEFAULT_MODEL = "deepseek-chat";
@@ -184,10 +191,215 @@ public final class Prefs {
         sp.edit().putString(KEY_BOTS, value).apply();
     }
 
+    // ---------------------------------------------------------------- v3.3.0 多 API Key / 人设
+
+    /**
+     * 多 Key 数组 JSON。首次访问时把旧 {@code apiKey/baseUrl} 迁移成 id="default" 的一条
+     * （无旧 Key 时写入 "[]"）。apiKey 明文只存在 SharedPreferences，不写日志。
+     */
+    public synchronized String getApiKeysJson() {
+        try {
+            if (!sp.contains(KEY_API_KEYS)) {
+                JSONArray array = new JSONArray();
+                String legacyKey = getApiKey();
+                if (legacyKey != null && !legacyKey.trim().isEmpty()) {
+                    JSONObject item = new JSONObject();
+                    item.put("id", "default");
+                    item.put("name", "默认");
+                    item.put("apiKey", legacyKey.trim());
+                    item.put("baseUrl", getBaseUrl());
+                    item.put("enabled", true);
+                    item.put("createdAt", System.currentTimeMillis());
+                    array.put(item);
+                    sp.edit().putString(KEY_API_KEYS, array.toString())
+                            .putString(KEY_DEFAULT_KEY_ID, "default").apply();
+                } else {
+                    sp.edit().putString(KEY_API_KEYS, "[]").apply();
+                }
+            }
+            String raw = sp.getString(KEY_API_KEYS, "[]");
+            if (raw == null || raw.trim().isEmpty()) {
+                return "[]";
+            }
+            // 数组为空但旧 apiKey 有值（例如旧版登录流程刚 setPrefs 完）→ 补迁移一条 default
+            try {
+                JSONArray current = new JSONArray(raw);
+                if (current.length() == 0) {
+                    String legacyKey = getApiKey();
+                    if (legacyKey != null && !legacyKey.trim().isEmpty()) {
+                        JSONObject item = new JSONObject();
+                        item.put("id", "default");
+                        item.put("name", "默认");
+                        item.put("apiKey", legacyKey.trim());
+                        item.put("baseUrl", getBaseUrl());
+                        item.put("enabled", true);
+                        item.put("createdAt", System.currentTimeMillis());
+                        current.put(item);
+                        sp.edit().putString(KEY_API_KEYS, current.toString())
+                                .putString(KEY_DEFAULT_KEY_ID, "default").apply();
+                        return current.toString();
+                    }
+                }
+            } catch (Throwable ignored) {
+                // 忽略
+            }
+            return raw;
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
+
+    public void setApiKeysJson(String json) {
+        String value = json == null || json.trim().isEmpty() ? "[]" : json.trim();
+        sp.edit().putString(KEY_API_KEYS, value).apply();
+    }
+
+    /** 默认 Key id；未设置但数组非空时自动取第一条。 */
+    public String getDefaultKeyId() {
+        try {
+            String stored = sp.getString(KEY_DEFAULT_KEY_ID, "");
+            if (stored != null && !stored.trim().isEmpty()) {
+                return stored.trim();
+            }
+            JSONArray array = new JSONArray(getApiKeysJson());
+            if (array.length() > 0) {
+                JSONObject first = array.optJSONObject(0);
+                String id = first == null ? "" : first.optString("id", "");
+                if (!id.isEmpty()) {
+                    sp.edit().putString(KEY_DEFAULT_KEY_ID, id).apply();
+                    return id;
+                }
+            }
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        return "";
+    }
+
+    public void setDefaultKeyId(String id) {
+        sp.edit().putString(KEY_DEFAULT_KEY_ID, id == null ? "" : id.trim()).apply();
+    }
+
+    /** 默认 Key 条目（不存在返回 null）。 */
+    public JSONObject findDefaultApiKey() {
+        try {
+            JSONArray array = new JSONArray(getApiKeysJson());
+            String defaultId = getDefaultKeyId();
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item != null && item.optString("id", "").equals(defaultId)) {
+                    return item;
+                }
+            }
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        return null;
+    }
+
+    /** 把默认 Key 的 apiKey/baseUrl 同步回旧字段（保证 getPrefs/老流程兼容）。 */
+    public void syncLegacyFromDefaultKey() {
+        try {
+            JSONObject entry = findDefaultApiKey();
+            if (entry == null) {
+                return;
+            }
+            String apiKey = entry.optString("apiKey", "");
+            String baseUrl = entry.optString("baseUrl", "");
+            if (baseUrl == null || baseUrl.trim().isEmpty()) {
+                baseUrl = DEFAULT_BASE_URL;
+            }
+            sp.edit().putString(KEY_API_KEY, apiKey == null ? "" : apiKey.trim())
+                    .putString(KEY_BASE_URL, baseUrl.trim()).apply();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** 旧代码 setPrefs({apiKey,baseUrl}) 时同步写回默认 Key 条目（数组尚未初始化则留给迁移）。 */
+    public void syncDefaultKeyFromLegacy() {
+        try {
+            if (!sp.contains(KEY_API_KEYS)) {
+                return;
+            }
+            JSONArray array = new JSONArray(getApiKeysJson());
+            if (array.length() == 0) {
+                // 旧 apiKey 在数组为空时补一条 default（保持老登录流程可用）
+                String legacyKey = getApiKey();
+                if (legacyKey != null && !legacyKey.trim().isEmpty()) {
+                    JSONObject item = new JSONObject();
+                    item.put("id", "default");
+                    item.put("name", "默认");
+                    item.put("apiKey", legacyKey.trim());
+                    item.put("baseUrl", getBaseUrl());
+                    item.put("enabled", true);
+                    item.put("createdAt", System.currentTimeMillis());
+                    array.put(item);
+                    prefsSetKeysAndDefault(array);
+                }
+                return;
+            }
+            String defaultId = getDefaultKeyId();
+            JSONObject target = null;
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item != null && item.optString("id", "").equals(defaultId)) {
+                    target = item;
+                    break;
+                }
+            }
+            if (target == null) {
+                target = array.optJSONObject(0);
+                if (target != null) {
+                    setDefaultKeyId(target.optString("id", ""));
+                }
+            }
+            if (target == null) {
+                return;
+            }
+            try {
+                target.put("apiKey", getApiKey());
+                target.put("baseUrl", getBaseUrl());
+            } catch (JSONException ignored) {
+                return;
+            }
+            sp.edit().putString(KEY_API_KEYS, array.toString()).apply();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    private void prefsSetKeysAndDefault(JSONArray array) {
+        try {
+            sp.edit().putString(KEY_API_KEYS, array == null ? "[]" : array.toString())
+                    .putString(KEY_DEFAULT_KEY_ID, "default").apply();
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** 删除全部 Key 后清掉旧字段（让旧登录流程回到未登录态）。 */
+    public void clearLegacyApiKey() {
+        sp.edit().putString(KEY_API_KEY, "")
+                .putString(KEY_BASE_URL, DEFAULT_BASE_URL).apply();
+    }
+
+    /** 人设数组 JSON（原生只负责持久化，业务在 JS）。 */
+    public String getPersonasJson() {
+        String value = sp.getString(KEY_PERSONAS, "[]");
+        return value == null || value.trim().isEmpty() ? "[]" : value;
+    }
+
+    public void setPersonasJson(String json) {
+        String value = json == null || json.trim().isEmpty() ? "[]" : json.trim();
+        sp.edit().putString(KEY_PERSONAS, value).apply();
+    }
+
     // ---------------------------------------------------------------- 写
 
     public void setApiKey(String value) {
         sp.edit().putString(KEY_API_KEY, value == null ? "" : value.trim()).apply();
+        syncDefaultKeyFromLegacy();
     }
 
     public void setBackDepth(int depth) {
@@ -289,6 +501,9 @@ public final class Prefs {
         }
         if (changed) {
             ed.apply();
+            if (hasValue(in, KEY_API_KEY) || hasValue(in, KEY_BASE_URL)) {
+                syncDefaultKeyFromLegacy();
+            }
         }
         return changed;
     }

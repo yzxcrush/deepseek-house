@@ -231,9 +231,15 @@ public final class QqBotApi {
 
     /** 发送到频道子频道：POST /channels/{channel_id}/messages（404 回退 v2 路径）。 */
     public String sendChannelMessage(String guildId, String channelId, String content) throws IOException {
+        return sendChannelMessage(guildId, channelId, content, "");
+    }
+
+    /** 被动回复版本：msgId 非空时 body 带 msg_id（5 分钟内有效）。 */
+    public String sendChannelMessage(String guildId, String channelId, String content,
+                                     String msgId) throws IOException {
         String safeGuild = safeSegment(guildId, "频道 ID");
         String safeChannel = safeSegment(channelId, "子频道 ID");
-        JSONObject body = messageBody(content);
+        JSONObject body = messageBody(content, msgId);
         try {
             Object result = request("POST", "/channels/" + safeChannel + "/messages", body, true);
             return extractMessageId(result);
@@ -243,24 +249,36 @@ public final class QqBotApi {
             }
             Object result = request("POST",
                     "/v2/guilds/" + safeGuild + "/channels/" + safeChannel + "/messages",
-                    messageBody(content), true);
+                    messageBody(content, msgId), true);
             return extractMessageId(result);
         }
     }
 
     /** 发送到 QQ 群（需要 group_openid）。 */
     public String sendGroupMessage(String groupOpenid, String content) throws IOException {
+        return sendGroupMessage(groupOpenid, content, "");
+    }
+
+    /** 被动回复版本：msgId 非空时 body 带 msg_id。 */
+    public String sendGroupMessage(String groupOpenid, String content, String msgId)
+            throws IOException {
         String openid = safeSegment(groupOpenid, "group_openid");
         Object result = request("POST", "/v2/groups/" + openid + "/messages",
-                messageBody(content), true);
+                messageBody(content, msgId), true);
         return extractMessageId(result);
     }
 
     /** 发送到 QQ 用户（需要 openid）。 */
     public String sendUserMessage(String userOpenid, String content) throws IOException {
+        return sendUserMessage(userOpenid, content, "");
+    }
+
+    /** 被动回复版本：msgId 非空时 body 带 msg_id。 */
+    public String sendUserMessage(String userOpenid, String content, String msgId)
+            throws IOException {
         String openid = safeSegment(userOpenid, "openid");
         Object result = request("POST", "/v2/users/" + openid + "/messages",
-                messageBody(content), true);
+                messageBody(content, msgId), true);
         return extractMessageId(result);
     }
 
@@ -270,6 +288,11 @@ public final class QqBotApi {
      * {@code group:<group_openid>} / {@code user:<openid>}。
      */
     public String sendMessage(String chatId, String content) throws IOException {
+        return sendMessage(chatId, content, "");
+    }
+
+    /** 被动回复版本：msgId 非空时自动带 msg_id（群/私聊/频道均适用）。 */
+    public String sendMessage(String chatId, String content, String msgId) throws IOException {
         String target = chatId == null ? "" : chatId.trim();
         if (target.isEmpty()) {
             throw new BotException(0, "缺少聊天 ID（chatId）");
@@ -287,13 +310,13 @@ public final class QqBotApi {
             }
             String guildId = rest.substring(0, split);
             String channelId = rest.substring(split + 1);
-            return sendChannelMessage(guildId, channelId, text);
+            return sendChannelMessage(guildId, channelId, text, msgId);
         }
         if (lower.startsWith("group:")) {
-            return sendGroupMessage(target.substring("group:".length()), text);
+            return sendGroupMessage(target.substring("group:".length()), text, msgId);
         }
         if (lower.startsWith("user:")) {
-            return sendUserMessage(target.substring("user:".length()), text);
+            return sendUserMessage(target.substring("user:".length()), text, msgId);
         }
         throw new BotException(0,
                 "qqbot chatId 需使用 channel:<guild_id>:<channel_id> / group:<group_openid> / user:<openid> 前缀");
@@ -401,12 +424,15 @@ public final class QqBotApi {
         return conn;
     }
 
-    private JSONObject messageBody(String content) {
+    private JSONObject messageBody(String content, String msgId) {
         JSONObject body = new JSONObject();
         try {
             body.put("content", content == null ? "" : content);
             body.put("msg_type", 0);
             body.put("msg_seq", msgSeq.getAndIncrement());
+            if (msgId != null && !msgId.trim().isEmpty()) {
+                body.put("msg_id", msgId.trim());
+            }
         } catch (JSONException ignored) {
             // 忽略
         }

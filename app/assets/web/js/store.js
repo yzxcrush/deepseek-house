@@ -94,7 +94,11 @@
     marketSource: 'official',
     marketUrl: '',
     /* v3.0.0：机器人配置（token 仅本机；备份会剔除） */
-    bots: []
+    bots: [],
+    /* v3.3.0：多 API Key / 人设 */
+    apiKeys: [],
+    defaultKeyId: '',
+    personas: []
   };
 
   var ROLES = { user: true, assistant: true, tool: true, note: true };
@@ -200,7 +204,10 @@
       locale: DEFAULT_PREFS.locale,
       marketSource: DEFAULT_PREFS.marketSource,
       marketUrl: DEFAULT_PREFS.marketUrl,
-      bots: []
+      bots: [],
+      apiKeys: [],
+      defaultKeyId: '',
+      personas: []
     };
   }
 
@@ -274,6 +281,74 @@
     return out;
   }
 
+  /** v3.3.0：API Key 归一化（≤20 条；baseUrl 默认 DeepSeek） */
+  function normalizeApiKeyConfig(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var id = raw.id === undefined || raw.id === null ? '' : String(raw.id).slice(0, 120);
+    var name = String(raw.name === undefined || raw.name === null ? '' : raw.name).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    var apiKey = String(raw.apiKey === undefined || raw.apiKey === null ? '' : raw.apiKey).replace(/^\s+|\s+$/g, '').slice(0, 600);
+    var baseUrl = String(raw.baseUrl === undefined || raw.baseUrl === null ? '' : raw.baseUrl).replace(/^\s+|\s+$/g, '').slice(0, 300);
+    if (!baseUrl) baseUrl = DEFAULT_PREFS.baseUrl;
+    if (!/^https?:\/\//i.test(baseUrl)) baseUrl = DEFAULT_PREFS.baseUrl;
+    return {
+      id: id,
+      name: name.slice(0, 60) || 'API Key',
+      apiKey: apiKey,
+      baseUrl: baseUrl,
+      model: raw.model ? String(raw.model).slice(0, 80) : '',
+      enabled: raw.enabled === undefined || raw.enabled === null ? true : !!raw.enabled,
+      createdAt: Math.max(0, Number(raw.createdAt) || 0)
+    };
+  }
+
+  function normalizeApiKeys(raw) {
+    var out = [];
+    var seen = {};
+    if (!Array.isArray(raw)) return out;
+    for (var i = 0; i < raw.length && out.length < 20; i++) {
+      var key = normalizeApiKeyConfig(raw[i]);
+      if (!key || !key.id || seen[key.id]) continue;
+      seen[key.id] = true;
+      out.push(key);
+    }
+    return out;
+  }
+
+  /** v3.3.0：人设归一化（沿用 presets 字段并扩展 emoji/greeting/temperature/keyId） */
+  function normalizePersona(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    var name = String(raw.name === null || raw.name === undefined ? '' : raw.name).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    if (!name) return null;
+    var temperature = Number(raw.temperature);
+    if (!isFinite(temperature)) temperature = 1;
+    return {
+      id: raw.id ? String(raw.id).slice(0, 80) : ('persona-' + uid()),
+      name: name.slice(0, 40),
+      emoji: String(raw.emoji === undefined || raw.emoji === null ? '' : raw.emoji).slice(0, 16),
+      description: String(raw.description === undefined || raw.description === null ? '' : raw.description).slice(0, 160),
+      systemPrompt: String(raw.systemPrompt === undefined || raw.systemPrompt === null ? '' : raw.systemPrompt).slice(0, 16000),
+      greeting: String(raw.greeting === undefined || raw.greeting === null ? '' : raw.greeting).slice(0, 2000),
+      model: raw.model ? String(raw.model).slice(0, 80) : '',
+      temperature: Math.max(0, Math.min(2, temperature)),
+      keyId: raw.keyId ? String(raw.keyId).slice(0, 120) : '',
+      builtin: !!raw.builtin,
+      createdAt: Math.max(0, Number(raw.createdAt) || 0)
+    };
+  }
+
+  function normalizePersonas(raw) {
+    var out = [];
+    var seen = {};
+    if (!Array.isArray(raw)) return out;
+    for (var i = 0; i < raw.length && out.length < 100; i++) {
+      var persona = normalizePersona(raw[i]);
+      if (!persona || seen[persona.id]) continue;
+      seen[persona.id] = true;
+      out.push(persona);
+    }
+    return out;
+  }
+
   /** v3.0.0：机器人配置归一化（type/name/token/baseUrl/autoReply/whitelist/限流） */
   function normalizeBotConfig(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -291,7 +366,6 @@
         if (chatId) whitelist.push(chatId.slice(0, 120));
       }
     }
-    var isQqBot = type === 'qqbot';
     return {
       id: id,
       type: type,
@@ -303,12 +377,14 @@
       sandbox: raw.sandbox === undefined || raw.sandbox === null ? false : !!raw.sandbox,
       baseUrl: baseUrl,
       enabled: !!raw.enabled,
-      /* QQ 官方机器人无接收通道：自动回复强制关闭 */
-      autoReply: isQqBot ? false : !!raw.autoReply,
+      /* v3.2.0：qqbot 支持 WS 接收，自动回复与其它类型一致 */
+      autoReply: !!raw.autoReply,
       whitelist: whitelist,
       systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 4000),
       cooldownSec: Math.round(clampNum(raw.cooldownSec !== undefined ? raw.cooldownSec : 8, 3, 300)),
       hourlyLimit: Math.round(clampNum(raw.hourlyLimit !== undefined ? raw.hourlyLimit : 60, 1, 600)),
+      keyId: raw.keyId ? String(raw.keyId).slice(0, 120) : '',
+      personaId: raw.personaId ? String(raw.personaId).slice(0, 120) : '',
       createdAt: Math.max(0, Number(raw.createdAt) || 0),
       updatedAt: Math.max(0, Number(raw.updatedAt) || 0)
     };
@@ -360,6 +436,9 @@
     if (raw.glassSpeed !== undefined) p.glassSpeed = Math.round(clampNum(raw.glassSpeed, 0.2, 3) * 10) / 10;
     if (raw.locale === 'zh' || raw.locale === 'en') p.locale = raw.locale;
     if (raw.bots !== undefined) p.bots = normalizeBots(raw.bots);
+    if (raw.apiKeys !== undefined) p.apiKeys = normalizeApiKeys(raw.apiKeys);
+    if (raw.defaultKeyId !== undefined) p.defaultKeyId = String(raw.defaultKeyId === null ? '' : raw.defaultKeyId).slice(0, 120);
+    if (raw.personas !== undefined) p.personas = normalizePersonas(raw.personas);
     if (raw.marketSource === 'official' || raw.marketSource === 'custom') p.marketSource = raw.marketSource;
     if (raw.marketUrl !== undefined) p.marketUrl = String(raw.marketUrl === null ? '' : raw.marketUrl).slice(0, 500);
     if (raw.systemPrompt !== undefined) p.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
@@ -635,6 +714,9 @@
     }
     // v2.0 F1/F4：预设绑定 + 会话级 system prompt（预设提示词复制到会话，便于用户单独修改）
     if (raw.presetId) chat.presetId = String(raw.presetId).slice(0, 80);
+    if (raw.keyId) chat.keyId = String(raw.keyId).slice(0, 120);
+    if (raw.personaId) chat.personaId = String(raw.personaId).slice(0, 80);
+    if (raw.personaPrompt) chat.personaPrompt = String(raw.personaPrompt).slice(0, 16000);
     if (raw.systemPrompt) chat.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
     if (Array.isArray(raw.trace)) chat.trace = normalizeTrace(raw.trace);
     if (raw.lastSnapshotId) chat.lastSnapshotId = String(raw.lastSnapshotId).slice(0, 120);
@@ -913,10 +995,32 @@
     return state;
   }
 
+  /** v3.3.0：持久化脱敏 —— 多 Key 的 apiKey/baseUrl 不落 localStorage（原生 SharedPreferences 为密钥唯一真源） */
+  function sanitizeStateForPersist() {
+    var copy = null;
+    try { copy = JSON.parse(JSON.stringify(state)); } catch (e) { return state; }
+    if (copy && copy.prefs && Array.isArray(copy.prefs.apiKeys)) {
+      copy.prefs.apiKeys = copy.prefs.apiKeys.map(function (item) {
+        if (!item || typeof item !== 'object') return null;
+        return {
+          id: item.id,
+          name: item.name,
+          apiKey: '',
+          baseUrl: '',
+          model: item.model || '',
+          enabled: item.enabled !== false,
+          createdAt: item.createdAt || 0
+        };
+      }).filter(Boolean);
+    }
+    if (copy && copy.prefs) delete copy.prefs.apiKey;
+    return copy;
+  }
+
   function save() {
     if (!state) return false;
     var json = '';
-    try { json = JSON.stringify(state); } catch (e) {
+    try { json = JSON.stringify(sanitizeStateForPersist()); } catch (e) {
       warn('保存失败（序列化错误）：' + (e && e.message));
       return false;
     }
@@ -1039,6 +1143,9 @@
     if (patch.glassSpeed !== undefined) state.prefs.glassSpeed = Math.round(clampNum(patch.glassSpeed, 0.2, 3) * 10) / 10;
     if (patch.locale !== undefined) state.prefs.locale = String(patch.locale) === 'en' ? 'en' : 'zh';
     if (patch.bots !== undefined) state.prefs.bots = normalizeBots(patch.bots);
+    if (patch.apiKeys !== undefined) state.prefs.apiKeys = normalizeApiKeys(patch.apiKeys);
+    if (patch.defaultKeyId !== undefined) state.prefs.defaultKeyId = String(patch.defaultKeyId === null ? '' : patch.defaultKeyId).slice(0, 120);
+    if (patch.personas !== undefined) state.prefs.personas = normalizePersonas(patch.personas);
     if (patch.marketSource !== undefined) state.prefs.marketSource = String(patch.marketSource) === 'custom' ? 'custom' : 'official';
     if (patch.marketUrl !== undefined) state.prefs.marketUrl = String(patch.marketUrl === null ? '' : patch.marketUrl).slice(0, 500);
     if (patch.systemPrompt !== undefined) state.prefs.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
@@ -1180,7 +1287,12 @@
     };
     // v2.0 F1：从智能体预设创建会话时，绑定 presetId 并把提示词复制到会话（用户可单独修改）
     if (opts.presetId) chat.presetId = String(opts.presetId).slice(0, 80);
+    if (opts.keyId) chat.keyId = String(opts.keyId).slice(0, 120);
+    else if (state.prefs && state.prefs.defaultKeyId) chat.keyId = String(state.prefs.defaultKeyId).slice(0, 120);
+    if (opts.personaId) chat.personaId = String(opts.personaId).slice(0, 80);
+    if (opts.personaPrompt) chat.personaPrompt = String(opts.personaPrompt).slice(0, 16000);
     if (opts.systemPrompt) chat.systemPrompt = String(opts.systemPrompt).slice(0, 16000);
+    if (opts.temperature !== undefined) chat.temperature = Math.max(0, Math.min(2, Number(opts.temperature) || 1));
     state.chats.push(chat);
     state.activeChatId = chat.id;
     save();
@@ -1236,6 +1348,10 @@
     if (patch.archived !== undefined) chat.archived = !!patch.archived;
     if (patch.presetId !== undefined) chat.presetId = patch.presetId ? String(patch.presetId).slice(0, 80) : '';
     if (patch.systemPrompt !== undefined) chat.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
+    if (patch.keyId !== undefined) chat.keyId = patch.keyId ? String(patch.keyId).slice(0, 120) : '';
+    if (patch.personaId !== undefined) chat.personaId = patch.personaId ? String(patch.personaId).slice(0, 80) : '';
+    if (patch.personaPrompt !== undefined) chat.personaPrompt = String(patch.personaPrompt || '').slice(0, 16000);
+    if (patch.temperature !== undefined) chat.temperature = Math.max(0, Math.min(2, Number(patch.temperature) || 1));
     if (patch.lastSnapshotId !== undefined) chat.lastSnapshotId = patch.lastSnapshotId ? String(patch.lastSnapshotId).slice(0, 120) : '';
     if (patch.lastSnapshotCount !== undefined) chat.lastSnapshotCount = Math.max(0, parseInt(patch.lastSnapshotCount, 10) || 0);
     if (patch.updatedAt !== undefined) chat.updatedAt = Number(patch.updatedAt) || now();
@@ -1566,6 +1682,157 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * v3.3.0：多 API Key / 人设 CRUD
+   * ------------------------------------------------------------------ */
+
+  function getApiKeys() {
+    load();
+    return clone(state.prefs.apiKeys || []);
+  }
+
+  function getApiKey(id) {
+    load();
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return null;
+    var list = state.prefs.apiKeys || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === key) return clone(list[i]);
+    return null;
+  }
+
+  /**
+   * 新增/更新 Key（≤20）。无 id 自动生成；name/baseUrl 缺省补默认；首个 Key 自动设为默认。
+   * 返回保存后的 Key 快照；参数非法返回 null。
+   */
+  function saveApiKey(config) {
+    load();
+    if (!config || typeof config !== 'object' || Array.isArray(config)) return null;
+    var item = normalizeApiKeyConfig(config);
+    if (!item) return null;
+    if (!item.id) item.id = 'key-' + uid();
+    if (!state.prefs.apiKeys) state.prefs.apiKeys = [];
+    var list = state.prefs.apiKeys;
+    var idx = -1;
+    for (var i = 0; i < list.length; i++) if (list[i].id === item.id) { idx = i; break; }
+    if (idx >= 0) {
+      item.createdAt = list[idx].createdAt || item.createdAt || now();
+      /* 编辑时 apiKey 留空 = 保持原值 */
+      if (!item.apiKey && list[idx].apiKey) item.apiKey = list[idx].apiKey;
+      list[idx] = item;
+    } else {
+      if (list.length >= 20) return null;
+      item.createdAt = item.createdAt || now();
+      list.push(item);
+    }
+    if (!state.prefs.defaultKeyId || !getApiKey(state.prefs.defaultKeyId)) state.prefs.defaultKeyId = item.id;
+    save();
+    return clone(item);
+  }
+
+  function deleteApiKey(id) {
+    load();
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key || !Array.isArray(state.prefs.apiKeys)) return false;
+    var list = state.prefs.apiKeys;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id !== key) continue;
+      list.splice(i, 1);
+      if (state.prefs.defaultKeyId === key) state.prefs.defaultKeyId = list.length ? list[0].id : '';
+      save();
+      return true;
+    }
+    return false;
+  }
+
+  function setDefaultApiKey(id) {
+    load();
+    var key = String(id === null || id === undefined ? '' : id);
+    var list = state.prefs.apiKeys || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id !== key) continue;
+      state.prefs.defaultKeyId = key;
+      save();
+      return true;
+    }
+    return false;
+  }
+
+  /** 当前默认 Key（defaultKeyId 无效时回落第一个；没有则 null） */
+  function getDefaultApiKey() {
+    load();
+    var list = state.prefs.apiKeys || [];
+    var id = state.prefs.defaultKeyId;
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return clone(list[i]);
+    return list.length ? clone(list[0]) : null;
+  }
+
+  function getPersonas() {
+    load();
+    return clone(state.prefs.personas || []);
+  }
+
+  function getPersona(id) {
+    load();
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return null;
+    var list = state.prefs.personas || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === key) return clone(list[i]);
+    return null;
+  }
+
+  function savePersona(config) {
+    load();
+    var persona = normalizePersona(config);
+    if (!persona) return null;
+    if (!state.prefs.personas) state.prefs.personas = [];
+    var list = state.prefs.personas;
+    var idx = -1;
+    for (var i = 0; i < list.length; i++) if (list[i].id === persona.id) { idx = i; break; }
+    if (idx >= 0) {
+      persona.createdAt = list[idx].createdAt || persona.createdAt || now();
+      persona.builtin = !!list[idx].builtin || !!persona.builtin;
+      list[idx] = persona;
+    } else {
+      if (list.length >= 100) return null;
+      persona.createdAt = persona.createdAt || now();
+      list.push(persona);
+    }
+    save();
+    return clone(persona);
+  }
+
+  function deletePersona(id) {
+    load();
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key || !Array.isArray(state.prefs.personas)) return false;
+    var list = state.prefs.personas;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id !== key) continue;
+      if (list[i].builtin) return false;
+      list.splice(i, 1);
+      save();
+      return true;
+    }
+    return false;
+  }
+
+  /** 旧 apiKey（原生 prefs）→ 生成 default Key 的候选（App 负责调用并同步原生） */
+  function migrateLegacyApiKey(legacyKey, legacyBaseUrl) {
+    load();
+    var apiKey = String(legacyKey === null || legacyKey === undefined ? '' : legacyKey).replace(/^\s+|\s+$/g, '');
+    if (!apiKey) return null;
+    if (Array.isArray(state.prefs.apiKeys) && state.prefs.apiKeys.length) return getDefaultApiKey();
+    var created = saveApiKey({
+      id: 'default', name: '默认密钥', apiKey: apiKey,
+      baseUrl: legacyBaseUrl || DEFAULT_PREFS.baseUrl, enabled: true
+    });
+    if (created && !state.prefs.defaultKeyId) {
+      state.prefs.defaultKeyId = created.id;
+      save();
+    }
+    return created;
+  }
+
+  /* ------------------------------------------------------------------ *
    * 智能体预设 CRUD（追加需求 v2.0 F1）
    * ------------------------------------------------------------------ */
 
@@ -1709,6 +1976,21 @@
     delete prefs.apiKey;
     /* 批次2：PIN 凭据不进入备份（防止迁移后锁定/泄露） */
     delete prefs.appPin;
+    /* v3.3.0：API Key 凭据不进入备份（保留名称/模型/启用状态） */
+    if (Array.isArray(prefs.apiKeys)) {
+      prefs.apiKeys = prefs.apiKeys.map(function (item) {
+        if (!item || typeof item !== 'object') return null;
+        return {
+          id: String(item.id || ''),
+          name: String(item.name || 'API Key'),
+          model: item.model ? String(item.model) : '',
+          enabled: item.enabled !== false,
+          createdAt: Number(item.createdAt) || 0,
+          apiKey: '',
+          baseUrl: ''
+        };
+      }).filter(Boolean);
+    }
     /* v3.0.0：机器人 token/accessToken 不进入备份明文 */
     if (Array.isArray(prefs.bots)) {
       prefs.bots = prefs.bots.map(function (bot) {
@@ -1902,6 +2184,19 @@
     deletePreset: deletePreset,
     setPresets: setPresets,
     resetPresets: resetPresets,
+
+    /* v3.3.0：多 API Key / 人设 */
+    getApiKeys: getApiKeys,
+    getApiKey: getApiKey,
+    saveApiKey: saveApiKey,
+    deleteApiKey: deleteApiKey,
+    setDefaultApiKey: setDefaultApiKey,
+    getDefaultApiKey: getDefaultApiKey,
+    migrateLegacyApiKey: migrateLegacyApiKey,
+    getPersonas: getPersonas,
+    getPersona: getPersona,
+    savePersona: savePersona,
+    deletePersona: deletePersona,
 
     /* v2.0 F4：分支 */
     forkChat: forkChat,

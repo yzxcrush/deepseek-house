@@ -259,6 +259,21 @@
       targets: {},
       currentId: null,
       form: { id: null, type: 'telegram', editing: false }
+    },
+    /* v3.3.0：多 API Key / 会话选 Key / 人设 */
+    keys: {
+      list: [],
+      loaded: false,
+      currentKeyId: null,
+      chatKeyName: '',
+      pickerCurrent: '',
+      form: { id: null }
+    },
+    personas: {
+      list: [],
+      loaded: false,
+      pickerCurrent: '',
+      form: { id: null }
     }
   };
 
@@ -1279,7 +1294,8 @@
              state.screen === 'audit' || state.screen === 'mcp' || state.screen === 'market' ||
              state.screen === 'memory' || state.screen === 'trace' || state.screen === 'cost' ||
              state.screen === 'tool-policy' || state.screen === 'snapshots' ||
-             state.screen === 'appearance' || state.screen === 'bots') base = 2;
+             state.screen === 'appearance' || state.screen === 'bots' ||
+             state.screen === 'keys' || state.screen === 'personas') base = 2;
     else return; /* login 由 app.js 决定 */
     var overlay = state.drawerOpen || state.menuOpen || state.modelPicker.open ||
       state.agentPicker.open || state.fileDrawer.open || state.pluginPanelOpen || state.buildPanelOpen ||
@@ -1291,7 +1307,8 @@
       isModalOpen(r('pin-modal')) || isModalOpen(r('pin-setup-modal')) || isModalOpen(r('password-modal')) ||
       isModalOpen(r('edit-message-modal')) || isModalOpen(r('market-detail-modal')) ||
       isModalOpen(r('market-url-install-modal')) || isModalOpen(r('market-code-modal')) ||
-      isModalOpen(r('bot-form-modal')) || isModalOpen(r('bot-detail-modal'));
+      isModalOpen(r('bot-form-modal')) || isModalOpen(r('bot-detail-modal')) ||
+      isModalOpen(r('key-form-modal')) || isModalOpen(r('persona-form-modal'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1330,7 +1347,8 @@
     ['install-modal', 'confirm-modal', 'rename-modal', 'risk-modal', 'backup-modal', 'file-preview-modal',
       'mcp-form-modal', 'memory-item-modal', 'pin-modal', 'pin-setup-modal', 'password-modal',
       'edit-message-modal', 'market-detail-modal', 'market-url-install-modal', 'market-code-modal',
-      'bot-form-modal', 'bot-detail-modal'].forEach(function (id) {
+      'bot-form-modal', 'bot-detail-modal', 'key-form-modal', 'persona-form-modal',
+      'key-picker', 'persona-picker'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -6566,9 +6584,9 @@
       status = String(value);
     }
     var key = status.toLowerCase().replace(/-/g, '_');
-    if (key === 'connected' || key === 'online' || key === 'ok' || key === 'ready') return { key: 'connected', message: message };
-    if (key === 'connecting' || key === 'pending' || key === 'starting') return { key: 'connecting', message: message };
-    if (key === 'error' || key === 'failed' || key === 'invalid') return { key: 'error', message: message };
+    if (key === 'connected' || key === 'online' || key === 'ok' || key === 'ready' || key === 'ws_connected' || key === 'gateway_connected' || key === 'ws_ready') return { key: 'connected', message: message };
+    if (key === 'connecting' || key === 'pending' || key === 'starting' || key === 'ws_connecting' || key === 'reconnecting' || key === 'ws_reconnecting') return { key: 'connecting', message: message };
+    if (key === 'error' || key === 'failed' || key === 'invalid' || key === 'ws_error' || key === 'gateway_error' || key === 'ws_closed') return { key: 'error', message: message };
     if (key === 'stopped' || key === 'disabled' || key === 'offline') return { key: 'stopped', message: message };
     if (key === 'disconnected' || key === 'closed') return { key: 'disconnected', message: message };
     return { key: 'idle', message: message };
@@ -6604,13 +6622,14 @@
       type: type,
       name: item.name ? String(item.name) : BOT_TYPE_LABELS[type],
       enabled: item.enabled !== false,
-      autoReply: type === 'qqbot' ? false : (item.autoReply === true || item.auto_reply === true),
+      autoReply: item.autoReply === true || item.auto_reply === true,
       status: status.key,
       appId: item.appId != null ? String(item.appId) : '',
       appIdMasked: item.appIdMasked ? String(item.appIdMasked) : '',
       appSecretMasked: item.appSecretMasked ? String(item.appSecretMasked) : '',
       sandbox: item.sandbox === true || String(item.env || '').toLowerCase() === 'sandbox',
-      statusMessage: status.message,
+      statusMessage: item.statusMessage != null ? String(item.statusMessage)
+        : (item.message != null ? String(item.message) : status.message),
       baseUrl: item.baseUrl ? String(item.baseUrl) : '',
       whitelist: whitelist,
       cooldownSec: Number(item.cooldownSec) || 8,
@@ -6619,7 +6638,11 @@
       recentCount: isFinite(recentCount) && recentCount > 0 ? recentCount : 0,
       recentMessages: Array.isArray(item.recentMessages) ? item.recentMessages : [],
       tokenMasked: item.tokenMasked ? String(item.tokenMasked) : '',
-      accessTokenMasked: item.accessTokenMasked ? String(item.accessTokenMasked) : ''
+      accessTokenMasked: item.accessTokenMasked ? String(item.accessTokenMasked) : '',
+      personaId: item.personaId != null ? String(item.personaId) : '',
+      keyId: item.keyId != null ? String(item.keyId) : '',
+      personaName: item.personaName ? String(item.personaName) : '',
+      keyName: item.keyName ? String(item.keyName) : ''
     };
   }
 
@@ -6634,7 +6657,14 @@
       fromName: msg.fromName != null ? String(msg.fromName) : (msg.senderName != null ? String(msg.senderName) : (msg.from != null ? String(msg.from) : (msg.sender != null ? String(msg.sender) : ''))),
       text: msg.text != null ? String(msg.text) : (msg.content != null ? String(msg.content) : ''),
       at: msg.at != null ? msg.at : (msg.ts != null ? msg.ts : (msg.time != null ? msg.time : Date.now())),
-      direction: direction
+      direction: direction,
+      ok: msg.ok !== false,
+      error: msg.error != null ? String(msg.error) : '',
+      eventId: msg.eventId != null ? String(msg.eventId) : '',
+      msgId: msg.msgId != null ? String(msg.msgId) : '',
+      msgType: msg.msgType != null ? String(msg.msgType) : '',
+      groupId: msg.groupId != null ? String(msg.groupId) : '',
+      channelId: msg.channelId != null ? String(msg.channelId) : ''
     };
   }
 
@@ -6711,12 +6741,18 @@
     if (bot.type === 'qqbot') {
       meta.appendChild(makeText('span', 'bot-meta-chip is-on', bot.sandbox ? '沙箱环境' : '正式环境'));
       if (bot.appIdMasked || bot.appId) meta.appendChild(makeText('span', 'bot-meta-chip', 'AppID ' + (bot.appIdMasked || bot.appId)));
+      if (bot.autoReply) meta.appendChild(makeText('span', 'bot-meta-chip is-on', '自动回复已开启'));
+      if (bot.statusMessage) meta.appendChild(makeText('span', 'bot-meta-chip bot-ws-chip ' + (bot.status === 'error' ? 'is-error' : (bot.status === 'connected' ? 'is-on' : '')), bot.statusMessage));
     } else {
       if (bot.autoReply) meta.appendChild(makeText('span', 'bot-meta-chip is-on', '自动回复'));
       else meta.appendChild(makeText('span', 'bot-meta-chip', '自动回复关闭'));
       meta.appendChild(makeText('span', 'bot-meta-chip', bot.type === 'onebot' ? (bot.baseUrl || '未配置 Base URL') : 'Telegram Bot API'));
     }
     if (bot.whitelist.length) meta.appendChild(makeText('span', 'bot-meta-chip', '白名单 ' + bot.whitelist.length));
+    var botPersona = bot.personaName || (bot.personaId ? ((findPersona(bot.personaId) || {}).name || '') : '');
+    if (botPersona) meta.appendChild(makeText('span', 'bot-meta-chip', '人设 ' + botPersona));
+    var botKey = bot.keyName || (bot.keyId ? ((findApiKey(bot.keyId) || {}).name || '') : '');
+    if (botKey) meta.appendChild(makeText('span', 'bot-meta-chip', '密钥 ' + botKey));
     card.appendChild(meta);
 
     var actions = el('div', 'bot-card-actions');
@@ -6768,13 +6804,9 @@
     var qqbotGroup = r('bot-field-qqbot');
     if (qqbotGroup) qqbotGroup.hidden = value !== 'qqbot';
     var autoWrap = r('bot-auto-reply-wrap');
-    if (autoWrap) autoWrap.hidden = value === 'qqbot';
+    if (autoWrap) autoWrap.hidden = false;
     var qqbotHint = r('bot-qqbot-hint');
     if (qqbotHint) qqbotHint.hidden = value !== 'qqbot';
-    if (value === 'qqbot') {
-      var auto = r('bot-field-auto-reply');
-      if (auto) auto.checked = false;
-    }
   }
 
   function botFormError(text) {
@@ -6831,6 +6863,9 @@
     setVal('bot-field-limit', bot ? String(bot.hourlyLimit) : '60');
     setVal('bot-field-prompt', bot ? bot.systemPrompt : '');
     setVal('bot-field-whitelist', bot ? bot.whitelist.join(', ') : '');
+    refreshBotBindingOptions(bot ? bot.personaId : '', bot ? bot.keyId : '');
+    if (!state.keys.loaded) invoke('onOpenKeys');
+    if (!state.personas.loaded) invoke('onOpenPersonas');
     setBotFormType(bot ? bot.type : 'telegram');
     botFormError('');
     botFormStatus('');
@@ -6870,10 +6905,11 @@
       whitelist: whitelist,
       appId: String((r('bot-field-app-id') || {}).value || '').trim(),
       secret: String((r('bot-field-app-secret') || {}).value || '').trim(),
-      sandbox: !!(r('bot-field-sandbox') && r('bot-field-sandbox').checked)
+      sandbox: !!(r('bot-field-sandbox') && r('bot-field-sandbox').checked),
+      personaId: String((r('bot-field-persona') || {}).value || ''),
+      keyId: String((r('bot-field-key') || {}).value || '')
     };
     if (cfg.type === 'qqbot') {
-      cfg.autoReply = false;
       cfg.token = '';
       cfg.accessToken = '';
       cfg.baseUrl = '';
@@ -6991,6 +7027,33 @@
     return (Array.isArray(list) ? list : []).map(function (msg) { return normalizeBotMessage(msg, botId); }).filter(Boolean);
   }
 
+  function botChatSource(chatId) {
+    var value = String(chatId == null ? '' : chatId);
+    if (/^(channel|guild):/i.test(value)) return { key: 'channel', label: '频道' };
+    if (/^group:/i.test(value)) return { key: 'group', label: '群聊' };
+    if (/^user:/i.test(value)) return { key: 'user', label: '私聊' };
+    return { key: 'other', label: '' };
+  }
+
+  function buildBotMessageNode(msg) {
+    var row = el('div', 'bot-message' + (msg.direction === 'out' ? ' is-out' : '') + (msg.ok === false ? ' is-failed' : ''));
+    var head = el('div', 'bot-message-head');
+    head.appendChild(makeText('span', 'bot-message-dir' + (msg.direction === 'out' ? ' is-out' : ''), msg.direction === 'out' ? '发出' : '收到'));
+    head.appendChild(makeText('span', 'bot-message-from', msg.fromName || (msg.direction === 'out' ? '我' : msg.from || '对方')));
+    var source = botChatSource(msg.chatId);
+    if (source.label) head.appendChild(makeText('span', 'bot-message-source', source.label));
+    head.appendChild(makeText('span', 'bot-message-time', botTimeText(msg.at)));
+    row.appendChild(head);
+    row.appendChild(makeText('div', 'bot-message-text', msg.text || ''));
+    if (msg.ok === false) {
+      var failed = el('div', 'bot-message-failed');
+      failed.appendChild(makeText('span', 'bot-message-failed-badge', '发送失败'));
+      if (msg.error) failed.appendChild(makeText('span', 'bot-message-failed-text', msg.error));
+      row.appendChild(failed);
+    }
+    return row;
+  }
+
   function renderBotMessages(list) {
     var botId = state.bots.currentId;
     var messages = normalizeBotMessages(list, botId);
@@ -6999,13 +7062,7 @@
     if (box) {
       box.textContent = '';
       messages.forEach(function (msg) {
-        var row = el('div', 'bot-message' + (msg.direction === 'out' ? ' is-out' : ''));
-        var head = el('div', 'bot-message-head');
-        head.appendChild(makeText('span', 'bot-message-from', msg.fromName || (msg.direction === 'out' ? '我' : msg.from || '对方')));
-        head.appendChild(makeText('span', 'bot-message-time', botTimeText(msg.at)));
-        row.appendChild(head);
-        row.appendChild(makeText('div', 'bot-message-text', msg.text || ''));
-        box.appendChild(row);
+        box.appendChild(buildBotMessageNode(msg));
       });
     }
     var empty = r('bot-detail-messages-empty');
@@ -7046,6 +7103,7 @@
           meta.appendChild(makeText('span', 'bot-detail-chip is-sandbox', bot.sandbox ? '沙箱环境' : '正式环境'));
           var masked = bot.appIdMasked || bot.appId;
           if (masked) meta.appendChild(makeText('span', 'bot-detail-chip', 'AppID ' + masked));
+          if (bot.autoReply) meta.appendChild(makeText('span', 'bot-detail-chip is-accent', '自动回复已开启'));
         } else if (bot.type === 'onebot' && bot.baseUrl) {
           meta.appendChild(makeText('span', 'bot-detail-chip', bot.baseUrl));
         }
@@ -7069,6 +7127,28 @@
         if (chatInput) chatInput.placeholder = 'chatId（可空）';
       }
     }
+    if (bot) {
+      var personaName = bot.personaName || (bot.personaId ? ((findPersona(bot.personaId) || {}).name || '') : '');
+      var keyName = bot.keyName || (bot.keyId ? ((findApiKey(bot.keyId) || {}).name || '') : '');
+      if (meta && personaName) meta.appendChild(makeText('span', 'bot-detail-chip', '人设 ' + personaName));
+      if (meta && keyName) meta.appendChild(makeText('span', 'bot-detail-chip', '密钥 ' + keyName));
+    }
+    var wsRow = r('bot-detail-ws');
+    var wsText = r('bot-detail-ws-text');
+    var wsDot = r('bot-detail-ws-dot');
+    if (wsRow) {
+      if (bot && bot.type === 'qqbot') {
+        var isConnected = bot.status === 'connected';
+        var isWsError = bot.status === 'error';
+        var wsMessage = bot.statusMessage || (isConnected ? 'WebSocket 已连接' : (isWsError ? 'WebSocket 连接失败' : 'WebSocket 未连接'));
+        wsRow.hidden = false;
+        wsRow.className = 'bot-detail-ws' + (isConnected ? ' is-connected' : (isWsError ? ' is-error' : ''));
+        if (wsText) wsText.textContent = wsMessage;
+        if (wsDot) wsDot.className = 'bot-ws-dot ' + botStatusClass(bot.status);
+      } else {
+        wsRow.hidden = true;
+      }
+    }
     var messagesLabel = r('bot-detail-messages-label');
     if (messagesLabel) messagesLabel.textContent = bot && bot.type === 'qqbot' ? '发送记录' : '最近消息';
     updateBotDetailCount();
@@ -7076,31 +7156,67 @@
   }
 
   function renderBotTargets(list) {
-    var raw = list && typeof list === 'object' && !Array.isArray(list) ? list.targets : list;
-    var targets = (Array.isArray(raw) ? raw : []).map(function (item) {
-      if (!item || typeof item !== 'object') return null;
+    var raw = list && typeof list === 'object' && !Array.isArray(list) ? (list.targets || list.list || []) : list;
+    var recentRaw = list && typeof list === 'object' && !Array.isArray(list) ? (list.recent || list.recentSessions || []) : [];
+    var normalized = [];
+    var seen = {};
+    function pushTarget(item, forcedRecent) {
+      if (!item || typeof item !== 'object') return;
       var id = item.id != null ? String(item.id) : '';
-      if (!id) return null;
-      return { id: id, label: item.label != null ? String(item.label) : id, type: item.type ? String(item.type) : '' };
-    }).filter(Boolean);
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      var type = String(item.type || '').toLowerCase();
+      var isRecent = forcedRecent || item.recent === true || item.source === 'recent' || type === 'recent' || type === 'session' || type === 'recent_session';
+      if (!type || isRecent) {
+        if (/^channel:/i.test(id)) type = 'channel';
+        else if (/^group:/i.test(id)) type = 'group';
+        else if (/^user:/i.test(id)) type = 'user';
+      }
+      normalized.push({
+        id: id,
+        label: item.label != null ? String(item.label) : id,
+        type: type,
+        recent: isRecent
+      });
+    }
+    (Array.isArray(raw) ? raw : []).forEach(function (item) { pushTarget(item, false); });
+    (Array.isArray(recentRaw) ? recentRaw : []).forEach(function (item) { pushTarget(item, true); });
+    var targets = normalized;
     var botId = state.bots.currentId;
     if (botId) state.bots.targets[botId] = targets;
     var box = r('bot-detail-targets-list');
     if (box) {
       box.textContent = '';
-      targets.forEach(function (target) {
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'bot-target';
-        btn.setAttribute('data-action', 'bot-target');
-        btn.setAttribute('data-target-id', target.id);
-        var iconText = target.id.indexOf('channel:') === 0 ? '频道' : (target.id.indexOf('group:') === 0 ? '群' : '用户');
-        btn.appendChild(makeText('span', 'bot-target-icon', iconText));
-        var main = el('div', 'bot-target-main');
-        main.appendChild(makeText('span', 'bot-target-label', target.label));
-        main.appendChild(makeText('span', 'bot-target-id', target.id));
-        btn.appendChild(main);
-        box.appendChild(btn);
+      var groups = [
+        { key: 'channel', title: '频道 / 子频道' },
+        { key: 'group', title: '群聊' },
+        { key: 'user', title: '私聊' },
+        { key: 'recent', title: '最近会话' }
+      ];
+      groups.forEach(function (group) {
+        var items = targets.filter(function (target) {
+          if (group.key === 'recent') return target.recent || target.type === 'recent';
+          if (group.key === 'channel') return !target.recent && (target.type === 'channel' || target.type === 'guild');
+          if (group.key === 'group') return !target.recent && target.type === 'group';
+          if (group.key === 'user') return !target.recent && target.type === 'user';
+          return false;
+        });
+        if (!items.length) return;
+        box.appendChild(makeText('div', 'bot-target-group-title', group.title));
+        items.forEach(function (target) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'bot-target';
+          btn.setAttribute('data-action', 'bot-target');
+          btn.setAttribute('data-target-id', target.id);
+          var iconText = target.recent ? '最近' : (target.id.indexOf('channel:') === 0 ? '频道' : (target.id.indexOf('group:') === 0 ? '群' : '用户'));
+          btn.appendChild(makeText('span', 'bot-target-icon', iconText));
+          var main = el('div', 'bot-target-main');
+          main.appendChild(makeText('span', 'bot-target-label', (target.recent ? '最近：' : '') + target.label));
+          main.appendChild(makeText('span', 'bot-target-id', target.id));
+          btn.appendChild(main);
+          box.appendChild(btn);
+        });
       });
     }
     var empty = r('bot-detail-targets-empty');
@@ -7152,6 +7268,10 @@
         if (text) text.textContent = botStatusLabel(status.key);
       }
     }
+    if (bot.type === 'qqbot') {
+      var listBox = r('bots-list');
+      if (listBox) renderBots(state.bots.list);
+    }
     if (state.bots.currentId === bot.id) updateBotDetailHeader();
     return status;
   }
@@ -7178,13 +7298,7 @@
       var box = r('bot-detail-messages');
       if (box) {
         box.hidden = false;
-        var row = el('div', 'bot-message' + (normalized.direction === 'out' ? ' is-out' : ''));
-        var head = el('div', 'bot-message-head');
-        head.appendChild(makeText('span', 'bot-message-from', normalized.fromName || (normalized.direction === 'out' ? '我' : normalized.from || '对方')));
-        head.appendChild(makeText('span', 'bot-message-time', botTimeText(normalized.at)));
-        row.appendChild(head);
-        row.appendChild(makeText('div', 'bot-message-text', normalized.text || ''));
-        box.appendChild(row);
+        box.appendChild(buildBotMessageNode(normalized));
         var empty = r('bot-detail-messages-empty');
         if (empty) empty.hidden = true;
         try { box.scrollTop = box.scrollHeight; } catch (err) { /* 静默 */ }
@@ -7280,9 +7394,710 @@
   function handleBotAutoReplyToggle(checked) {
     var auto = r('bot-field-auto-reply');
     if (!checked) return;
-    confirmDialog('开启自动回复', '自动回复仅限合规 Bot API（Telegram 官方 Bot / QQ OneBot）；请勿用于真人账号骚扰、欺诈或违反平台规则的行为。确定开启吗？').then(function (ok) {
+    var isQQBot = state.bots.form.type === 'qqbot';
+    var message = isQQBot
+      ? 'QQ 官方机器人自动回复需 WebSocket 网关接收群/私聊消息；仅限官方机器人合规使用，禁止骚扰、欺诈或违反平台规则。确定开启吗？'
+      : '自动回复仅限合规 Bot API（Telegram 官方 Bot / QQ OneBot）；请勿用于真人账号骚扰、欺诈或违反平台规则的行为。确定开启吗？';
+    confirmDialog('开启自动回复', message).then(function (ok) {
       if (!ok && auto) auto.checked = false;
     });
+  }
+
+  /* ================================================================== *
+   * v3.3.0：多 API Key / 会话选 Key / 人设
+   * ================================================================== */
+  function maskApiKeyText(key) {
+    var value = key && key.apiKeyMasked ? String(key.apiKeyMasked) : '';
+    if (value) return value;
+    var raw = key && key.apiKey ? String(key.apiKey) : '';
+    if (!raw) return '';
+    if (raw.length <= 8) return '••••' + raw.slice(-2);
+    return '••••••••' + raw.slice(-4);
+  }
+
+  function normalizeApiKey(item) {
+    if (!item || typeof item !== 'object') return null;
+    var id = item.id != null ? String(item.id) : '';
+    if (!id) return null;
+    return {
+      id: id,
+      name: item.name ? String(item.name) : ('密钥 ' + id.slice(-4)),
+      baseUrl: item.baseUrl ? String(item.baseUrl) : '',
+      model: item.model ? String(item.model) : '',
+      enabled: item.enabled !== false,
+      isDefault: item.isDefault === true || item.default === true,
+      apiKeyMasked: maskApiKeyText(item),
+      hasKey: item.hasKey !== false,
+      apiKey: item.apiKey != null ? String(item.apiKey) : ''
+    };
+  }
+
+  function findApiKey(id) {
+    var key = String(id == null ? '' : id);
+    var found = null;
+    (state.keys.list || []).forEach(function (item) {
+      if (item.id === key) found = item;
+    });
+    return found;
+  }
+
+  function updateKeysLabels() {
+    var list = state.keys.list || [];
+    var defaults = list.filter(function (key) { return key.isDefault; });
+    var count = r('keys-count');
+    if (count) {
+      count.textContent = list.length
+        ? (list.length + ' 个密钥 · 默认：' + (defaults.length ? defaults[0].name : '未设置'))
+        : '管理多个 API Key 与默认密钥';
+    }
+    var label = r('set-keys-label');
+    if (label) label.textContent = list.length ? (list.length + ' 个密钥' + (defaults.length ? ' · 默认 ' + defaults[0].name : '')) : '管理密钥与默认';
+    var empty = r('keys-empty');
+    if (empty) empty.hidden = list.length > 0;
+  }
+
+  function buildKeyCard(key) {
+    var card = el('div', 'key-card' + (key.isDefault ? ' is-default' : ''));
+    card.setAttribute('data-key-id', key.id);
+    var head = el('div', 'key-card-head');
+    var icon = el('span', 'key-card-icon');
+    icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a4 4 0 1 1-3 6.6L5 20H3v-3l7.4-7A4 4 0 0 1 15 7Z"></path><circle cx="16.5" cy="7.5" r="1"></circle></svg>';
+    head.appendChild(icon);
+    var main = el('div', 'key-card-main');
+    var nameRow = el('div', 'key-card-name-row');
+    nameRow.appendChild(makeText('span', 'key-card-name', key.name));
+    if (key.isDefault) nameRow.appendChild(makeText('span', 'key-default-badge', '默认'));
+    main.appendChild(nameRow);
+    var sub = el('div', 'key-card-sub');
+    sub.appendChild(makeText('span', 'key-masked', key.apiKeyMasked || (key.hasKey ? '已保存' : '未设置')));
+    main.appendChild(sub);
+    head.appendChild(main);
+    var switchLabel = document.createElement('label');
+    switchLabel.className = 'switch';
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'key-toggle';
+    checkbox.setAttribute('data-key-id', key.id);
+    checkbox.checked = !!key.enabled;
+    checkbox.setAttribute('aria-label', '启用密钥');
+    switchLabel.appendChild(checkbox);
+    switchLabel.appendChild(el('span', 'switch-track'));
+    head.appendChild(switchLabel);
+    card.appendChild(head);
+
+    var meta = el('div', 'key-card-meta');
+    meta.appendChild(makeText('span', 'key-meta-chip', key.baseUrl || 'https://api.deepseek.com'));
+    if (key.model) meta.appendChild(makeText('span', 'key-meta-chip', '默认模型 ' + key.model));
+    card.appendChild(meta);
+
+    var actions = el('div', 'key-card-actions');
+    function addAction(action, labelText, cls) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'key-act' + (cls ? ' ' + cls : '');
+      btn.setAttribute('data-action', action);
+      btn.setAttribute('data-id', key.id);
+      btn.textContent = labelText;
+      actions.appendChild(btn);
+    }
+    addAction('key-test', '测试');
+    if (!key.isDefault) addAction('key-default', '设为默认', 'key-act--primary');
+    addAction('key-edit', '编辑');
+    addAction('key-delete', '删除', 'key-act--danger');
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderApiKeys(list) {
+    state.keys.list = (Array.isArray(list) ? list : []).map(normalizeApiKey).filter(Boolean);
+    state.keys.loaded = true;
+    var box = r('keys-list');
+    if (box) {
+      box.textContent = '';
+      state.keys.list.forEach(function (key) { box.appendChild(buildKeyCard(key)); });
+    }
+    updateKeysLabels();
+    if (!r('key-picker').hidden) renderKeyPicker(state.keys.list, state.keys.pickerCurrent);
+    refreshPersonaKeyOptions();
+    refreshBotBindingOptions();
+    refreshChatKeyName();
+    return state.keys.list;
+  }
+
+  function openKeysPage() {
+    showScreenImpl('keys');
+    if (!invoke('onOpenKeys')) renderApiKeys(state.keys.list);
+  }
+
+  function keyFormError(text) {
+    var error = r('key-form-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function renderKeyTestResult(result) {
+    var box = r('key-test-result');
+    if (!box) return null;
+    var ok = result === true;
+    var message = '';
+    if (result && typeof result === 'object') {
+      ok = result.ok === true;
+      var models = Array.isArray(result.models) ? result.models.length : Number(result.count);
+      message = result.message || result.error || '';
+      if (!message) message = ok ? '连接成功' : '连接失败';
+      if (ok && isFinite(models) && models > 0) message = message + ' · 可用模型 ' + models + ' 个';
+    } else if (result === false) {
+      message = '连接失败，请检查 Key 与 Base URL';
+    } else {
+      message = '连接成功';
+    }
+    box.textContent = message;
+    box.hidden = false;
+    box.classList.remove('is-ok', 'is-error');
+    box.classList.add(ok ? 'is-ok' : 'is-error');
+    return { ok: ok, message: message };
+  }
+
+  function openKeyForm(cfg) {
+    var key = cfg && typeof cfg === 'object' ? normalizeApiKey(cfg) : null;
+    state.keys.form = { id: key ? key.id : null };
+    var title = r('key-form-title');
+    if (title) title.textContent = key ? '编辑 API 密钥' : '添加 API 密钥';
+    setVal('key-field-name', key ? key.name : '');
+    setVal('key-field-api-key', '');
+    var apiInput = r('key-field-api-key');
+    if (apiInput) {
+      apiInput.type = 'password';
+      apiInput.placeholder = key ? '留空保持不变（仅保存在本机）' : 'sk-…';
+    }
+    var secretToggle = r('key-secret-toggle');
+    if (secretToggle) secretToggle.classList.remove('is-on');
+    setVal('key-field-base-url', key ? key.baseUrl : '');
+    setVal('key-field-model', key ? key.model : '');
+    var enabled = r('key-field-enabled');
+    if (enabled) enabled.checked = key ? !!key.enabled : true;
+    keyFormError('');
+    var testResult = r('key-test-result');
+    if (testResult) { testResult.hidden = true; testResult.textContent = ''; testResult.classList.remove('is-ok', 'is-error'); }
+    openModal(r('key-form-modal'));
+    setTimeout(function () {
+      var field = r('key-field-name');
+      if (!field) return;
+      try { field.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function closeKeyForm() {
+    closeModal(r('key-form-modal'));
+    keyFormError('');
+  }
+
+  function collectKeyForm() {
+    return {
+      id: state.keys.form.id || undefined,
+      name: String((r('key-field-name') || {}).value || '').trim(),
+      apiKey: String((r('key-field-api-key') || {}).value || '').trim(),
+      baseUrl: String((r('key-field-base-url') || {}).value || '').trim(),
+      model: String((r('key-field-model') || {}).value || '').trim(),
+      enabled: !!(r('key-field-enabled') && r('key-field-enabled').checked)
+    };
+  }
+
+  function validateKeyForm(cfg) {
+    if (!cfg.name) return '请填写密钥名称';
+    if (!state.keys.form.id && !cfg.apiKey) return '请填写 API Key';
+    if (cfg.baseUrl && !/^https?:\/\//i.test(cfg.baseUrl)) return 'Base URL 需以 http:// 或 https:// 开头';
+    return '';
+  }
+
+  function saveKeyForm() {
+    var cfg = collectKeyForm();
+    var error = validateKeyForm(cfg);
+    if (error) { keyFormError(error); return; }
+    keyFormError('');
+    var result = callHandler('onKeySave', cfg);
+    if (result === undefined) { keyFormError('密钥服务尚未就绪'); return; }
+    Promise.resolve(result).then(function (done) {
+      if (done === false) { keyFormError('保存失败，请检查 Key / Base URL'); return; }
+      closeKeyForm();
+      UI.toast('密钥已保存');
+    }, function () { keyFormError('保存失败，请检查 Key / Base URL'); });
+  }
+
+  function testKeyForm() {
+    var cfg = collectKeyForm();
+    var error = validateKeyForm(cfg);
+    if (error) { keyFormError(error); return; }
+    keyFormError('');
+    var box = r('key-test-result');
+    if (box) { box.hidden = false; box.textContent = '正在测试连接…'; box.classList.remove('is-ok', 'is-error'); }
+    var result = state.keys.form.id
+      ? callHandler('onKeyTest', state.keys.form.id)
+      : callHandler('onKeyTest', null, cfg);
+    if (result === undefined) {
+      renderKeyTestResult({ ok: false, error: '密钥服务尚未就绪' });
+      return;
+    }
+    Promise.resolve(result).then(function (res) {
+      renderKeyTestResult(res);
+    }, function (err) {
+      renderKeyTestResult({ ok: false, error: errText(err) });
+    });
+  }
+
+  function deleteApiKey(id) {
+    var key = findApiKey(id);
+    var name = key && key.name ? '「' + key.name + '」' : '该密钥';
+    confirmDialog('删除密钥', '确定删除' + name + '吗？使用该密钥的会话会回退到默认密钥。').then(function (ok) {
+      if (!ok) return;
+      var result = callHandler('onKeyDelete', id);
+      if (result === undefined) { UI.toast('密钥服务尚未就绪'); return; }
+      Promise.resolve(result).then(function (done) {
+        if (done === false) { UI.toast('删除失败，请重试'); return; }
+        state.keys.list = state.keys.list.filter(function (item) { return item.id !== String(id); });
+        renderApiKeys(state.keys.list);
+        UI.toast('密钥已删除');
+      }, function () { UI.toast('删除失败，请重试'); });
+    });
+  }
+
+  function setDefaultApiKey(id) {
+    var result = callHandler('onSetDefaultKey', id);
+    if (result === undefined) { UI.toast('密钥服务尚未就绪'); return; }
+    state.keys.list.forEach(function (key) { key.isDefault = key.id === String(id); });
+    renderApiKeys(state.keys.list);
+    UI.toast('已设为默认密钥');
+  }
+
+  function toggleApiKey(id, enabled) {
+    var key = findApiKey(id);
+    if (!key) return;
+    var result = callHandler('onKeySave', {
+      id: key.id,
+      name: key.name,
+      baseUrl: key.baseUrl,
+      model: key.model,
+      enabled: !!enabled
+    });
+    if (result === undefined) {
+      UI.toast('密钥服务尚未就绪');
+      renderApiKeys(state.keys.list);
+      return;
+    }
+    key.enabled = !!enabled;
+    Promise.resolve(result).then(function (done) {
+      if (done === false) {
+        key.enabled = !enabled;
+        renderApiKeys(state.keys.list);
+        UI.toast('更新失败');
+      }
+    }, function () {
+      key.enabled = !enabled;
+      renderApiKeys(state.keys.list);
+    });
+  }
+
+  /* ---------- 会话密钥选择器 ---------- */
+  function keyPickerItem(id, name, sub, active, iconText) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'key-picker-item' + (active ? ' is-active' : '');
+    btn.setAttribute('data-action', 'key-picker-pick');
+    btn.setAttribute('data-key-id', id == null ? '' : String(id));
+    if (iconText === 'key') {
+      var icon = el('span', 'key-picker-icon');
+      icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a4 4 0 1 1-3 6.6L5 20H3v-3l7.4-7A4 4 0 0 1 15 7Z"></path><circle cx="16.5" cy="7.5" r="1"></circle></svg>';
+      btn.appendChild(icon);
+    } else {
+      btn.appendChild(makeText('span', 'key-picker-icon', iconText || '🔑'));
+    }
+    var main = el('div', 'key-picker-main');
+    var nameRow = el('div', 'key-picker-name');
+    nameRow.appendChild(makeText('span', '', name));
+    if (active) nameRow.appendChild(makeText('span', 'key-default-badge', '当前'));
+    main.appendChild(nameRow);
+    if (sub) main.appendChild(makeText('div', 'key-picker-sub', sub));
+    btn.appendChild(main);
+    if (active) btn.appendChild(makeText('span', 'key-picker-check', '✓'));
+    return btn;
+  }
+
+  function renderKeyPicker(keys, currentId) {
+    if (Array.isArray(keys)) state.keys.list = keys.map(normalizeApiKey).filter(Boolean);
+    state.keys.pickerCurrent = currentId == null ? '' : String(currentId);
+    var box = r('key-picker-list');
+    if (box) {
+      box.textContent = '';
+      box.appendChild(keyPickerItem('', '跟随默认密钥', '使用设置中的默认 API Key', !state.keys.pickerCurrent, '★'));
+      state.keys.list.forEach(function (key) {
+        box.appendChild(keyPickerItem(key.id, key.name, (key.apiKeyMasked || '已保存') + (key.baseUrl ? ' · ' + key.baseUrl : ''), state.keys.pickerCurrent === key.id, 'key'));
+      });
+    }
+    var empty = r('key-picker-empty');
+    if (empty) empty.hidden = state.keys.list.length > 0;
+    return state.keys.list;
+  }
+
+  function openChatKeyPicker(keys, currentId) {
+    if (Array.isArray(keys)) {
+      renderKeyPicker(keys, currentId);
+    } else {
+      renderKeyPicker(state.keys.list, currentId);
+      if (!state.keys.loaded || !state.keys.list.length) invoke('onOpenKeys');
+    }
+    openModal(r('key-picker'));
+    return state.keys.list;
+  }
+
+  function closeKeyPicker() {
+    closeModal(r('key-picker'));
+  }
+
+  function refreshChatKeyName() {
+    var label = r('chat-key-name');
+    var btn = r('chat-key-btn');
+    if (!label) return;
+    var name = state.keys.chatKeyName || '';
+    var key = state.keys.currentKeyId ? findApiKey(state.keys.currentKeyId) : null;
+    if (!name && key) name = key.name;
+    label.textContent = name || '默认密钥';
+    if (btn) btn.classList.toggle('is-default', !name && !state.keys.currentKeyId);
+  }
+
+  function refreshBotBindingOptions(personaId, keyId) {
+    var personaSelect = r('bot-field-persona');
+    if (personaSelect) {
+      var currentPersona = personaId !== undefined ? String(personaId == null ? '' : personaId)
+        : (personaSelect.getAttribute('data-current') || '');
+      personaSelect.textContent = '';
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = '不绑定';
+      personaSelect.appendChild(none);
+      (state.personas.list || []).forEach(function (persona) {
+        var option = document.createElement('option');
+        option.value = persona.id;
+        option.textContent = (persona.emoji ? persona.emoji + ' ' : '') + persona.name;
+        personaSelect.appendChild(option);
+      });
+      personaSelect.setAttribute('data-current', currentPersona);
+      personaSelect.value = currentPersona;
+    }
+    var keySelect = r('bot-field-key');
+    if (keySelect) {
+      var currentKey = keyId !== undefined ? String(keyId == null ? '' : keyId)
+        : (keySelect.getAttribute('data-current') || '');
+      keySelect.textContent = '';
+      var def = document.createElement('option');
+      def.value = '';
+      def.textContent = '跟随默认';
+      keySelect.appendChild(def);
+      (state.keys.list || []).forEach(function (key) {
+        var option = document.createElement('option');
+        option.value = key.id;
+        option.textContent = key.name + (key.enabled ? '' : '（已禁用）');
+        keySelect.appendChild(option);
+      });
+      keySelect.setAttribute('data-current', currentKey);
+      keySelect.value = currentKey;
+    }
+  }
+
+  function setChatKeyName(name) {
+    state.keys.chatKeyName = name == null ? '' : String(name);
+    refreshChatKeyName();
+    return state.keys.chatKeyName;
+  }
+
+  function pickChatKey(keyId) {
+    var id = keyId == null || keyId === '' ? null : String(keyId);
+    var result = callHandler('onChatPickKey', id);
+    if (result === undefined) {
+      UI.toast('密钥服务尚未就绪');
+      closeKeyPicker();
+      return;
+    }
+    state.keys.currentKeyId = id;
+    var key = id ? findApiKey(id) : null;
+    setChatKeyName(key ? key.name : '');
+    closeKeyPicker();
+    UI.toast(key ? ('已切换到密钥「' + key.name + '」') : '已切换为默认密钥');
+  }
+
+  /* ---------- 人设 ---------- */
+  function normalizePersona(item) {
+    if (!item || typeof item !== 'object') return null;
+    var id = item.id != null ? String(item.id) : '';
+    if (!id) return null;
+    var temp = Number(item.temperature);
+    return {
+      id: id,
+      name: item.name ? String(item.name) : '未命名人设',
+      emoji: item.emoji ? String(item.emoji) : '🤖',
+      description: item.description ? String(item.description) : '',
+      systemPrompt: item.systemPrompt != null ? String(item.systemPrompt) : (item.prompt != null ? String(item.prompt) : ''),
+      greeting: item.greeting ? String(item.greeting) : '',
+      model: item.model ? String(item.model) : '',
+      temperature: isFinite(temp) ? Math.max(0, Math.min(2, temp)) : 1,
+      keyId: item.keyId != null ? String(item.keyId) : '',
+      keyName: item.keyName ? String(item.keyName) : '',
+      builtin: item.builtin === true || item.isBuiltin === true
+    };
+  }
+
+  function findPersona(id) {
+    var key = String(id == null ? '' : id);
+    var found = null;
+    (state.personas.list || []).forEach(function (item) {
+      if (item.id === key) found = item;
+    });
+    return found;
+  }
+
+  function updatePersonasLabels() {
+    var list = state.personas.list || [];
+    var count = r('personas-count');
+    if (count) count.textContent = list.length ? (list.length + ' 个人设 · 点击卡片可编辑') : '给每个会话一个角色与语气';
+    var label = r('set-personas-label');
+    if (label) label.textContent = list.length ? (list.length + ' 个人设') : '管理人设与问候语';
+    var empty = r('personas-empty');
+    if (empty) empty.hidden = list.length > 0;
+  }
+
+  function personaKeyName(persona) {
+    if (persona.keyName) return persona.keyName;
+    var key = persona.keyId ? findApiKey(persona.keyId) : null;
+    return key ? key.name : '';
+  }
+
+  function buildPersonaCard(persona) {
+    var card = el('div', 'persona-card');
+    card.setAttribute('data-persona-id', persona.id);
+    card.appendChild(makeText('div', 'persona-avatar', persona.emoji || '🤖'));
+    var main = el('div', 'persona-main');
+    var nameRow = el('div', 'persona-name-row');
+    nameRow.appendChild(makeText('span', 'persona-name', persona.name));
+    if (persona.builtin) nameRow.appendChild(makeText('span', 'persona-builtin', '内置'));
+    main.appendChild(nameRow);
+    if (persona.description) main.appendChild(makeText('div', 'persona-desc', persona.description));
+    var meta = el('div', 'persona-meta');
+    if (persona.model) meta.appendChild(makeText('span', 'persona-chip', '模型 ' + persona.model));
+    var keyName = personaKeyName(persona);
+    meta.appendChild(makeText('span', 'persona-chip', keyName ? '密钥 ' + keyName : '默认密钥'));
+    meta.appendChild(makeText('span', 'persona-chip', '温度 ' + persona.temperature));
+    main.appendChild(meta);
+    var actions = el('div', 'persona-actions');
+    function add(action, label, cls) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'persona-act' + (cls ? ' ' + cls : '');
+      btn.setAttribute('data-action', action);
+      btn.setAttribute('data-id', persona.id);
+      btn.textContent = label;
+      actions.appendChild(btn);
+    }
+    add('persona-use', '用于当前会话', 'persona-act--primary');
+    add('persona-edit', '编辑');
+    if (!persona.builtin) add('persona-delete', '删除', 'persona-act--danger');
+    main.appendChild(actions);
+    card.appendChild(main);
+    return card;
+  }
+
+  function renderPersonas(list) {
+    state.personas.list = (Array.isArray(list) ? list : []).map(normalizePersona).filter(Boolean);
+    state.personas.loaded = true;
+    var box = r('personas-list');
+    if (box) {
+      box.textContent = '';
+      state.personas.list.forEach(function (persona) { box.appendChild(buildPersonaCard(persona)); });
+    }
+    updatePersonasLabels();
+    refreshPersonaKeyOptions();
+    refreshBotBindingOptions();
+    if (!r('persona-picker').hidden) renderPersonaPicker(state.personas.list, state.personas.pickerCurrent);
+    return state.personas.list;
+  }
+
+  function openPersonasPage() {
+    showScreenImpl('personas');
+    if (!invoke('onOpenPersonas')) renderPersonas(state.personas.list);
+  }
+
+  function refreshPersonaKeyOptions() {
+    var select = r('persona-field-key');
+    if (!select) return;
+    var current = select.getAttribute('data-current') || '';
+    select.textContent = '';
+    var def = document.createElement('option');
+    def.value = '';
+    def.textContent = '跟随默认密钥';
+    select.appendChild(def);
+    (state.keys.list || []).forEach(function (key) {
+      var option = document.createElement('option');
+      option.value = key.id;
+      option.textContent = key.name + (key.enabled ? '' : '（已禁用）');
+      select.appendChild(option);
+    });
+    select.value = current;
+  }
+
+  function personaFormError(text) {
+    var error = r('persona-form-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function openPersonaForm(persona) {
+    var info = persona && typeof persona === 'object' ? normalizePersona(persona) : null;
+    state.personas.form = { id: info ? info.id : null };
+    var title = r('persona-form-title');
+    if (title) title.textContent = info ? '编辑人设' : '添加人设';
+    setVal('persona-field-emoji', info ? info.emoji : '🤖');
+    setVal('persona-field-name', info ? info.name : '');
+    setVal('persona-field-desc', info ? info.description : '');
+    setVal('persona-field-prompt', info ? info.systemPrompt : '');
+    setVal('persona-field-greeting', info ? info.greeting : '');
+    setVal('persona-field-model', info ? info.model : '');
+    setVal('persona-field-temperature', info ? String(info.temperature) : '1');
+    var select = r('persona-field-key');
+    if (select) select.setAttribute('data-current', info ? info.keyId : '');
+    refreshPersonaKeyOptions();
+    personaFormError('');
+    openModal(r('persona-form-modal'));
+    if (!state.keys.loaded) invoke('onOpenKeys');
+    setTimeout(function () {
+      var field = r('persona-field-name');
+      if (!field) return;
+      try { field.focus(); } catch (err) { /* 静默 */ }
+    }, 80);
+  }
+
+  function closePersonaForm() {
+    closeModal(r('persona-form-modal'));
+    personaFormError('');
+  }
+
+  function collectPersonaForm() {
+    var temp = Number((r('persona-field-temperature') || {}).value);
+    return {
+      id: state.personas.form.id || undefined,
+      name: String((r('persona-field-name') || {}).value || '').trim(),
+      emoji: String((r('persona-field-emoji') || {}).value || '🤖').trim() || '🤖',
+      description: String((r('persona-field-desc') || {}).value || '').trim(),
+      systemPrompt: String((r('persona-field-prompt') || {}).value || '').trim(),
+      greeting: String((r('persona-field-greeting') || {}).value || '').trim(),
+      model: String((r('persona-field-model') || {}).value || '').trim(),
+      temperature: isFinite(temp) ? Math.max(0, Math.min(2, temp)) : 1,
+      keyId: String((r('persona-field-key') || {}).value || '')
+    };
+  }
+
+  function savePersonaForm() {
+    var cfg = collectPersonaForm();
+    if (!cfg.name) { personaFormError('请填写人设名称'); return; }
+    if (!cfg.systemPrompt) { personaFormError('请填写系统提示词'); return; }
+    personaFormError('');
+    var result = callHandler('onPersonaSave', cfg);
+    if (result === undefined) { personaFormError('人设服务尚未就绪'); return; }
+    Promise.resolve(result).then(function (done) {
+      if (done === false) { personaFormError('保存失败'); return; }
+      closePersonaForm();
+      UI.toast('人设已保存');
+    }, function () { personaFormError('保存失败'); });
+  }
+
+  function deletePersona(id) {
+    var persona = findPersona(id);
+    var name = persona && persona.name ? '「' + persona.name + '」' : '该人设';
+    confirmDialog('删除人设', '确定删除' + name + '吗？已使用该人设的会话会保留当前提示词。').then(function (ok) {
+      if (!ok) return;
+      var result = callHandler('onPersonaDelete', id);
+      if (result === undefined) { UI.toast('人设服务尚未就绪'); return; }
+      state.personas.list = state.personas.list.filter(function (item) { return item.id !== String(id); });
+      renderPersonas(state.personas.list);
+      UI.toast('人设已删除');
+    });
+  }
+
+  function usePersona(id) {
+    var result = callHandler('onChatPickPersona', id);
+    if (result === undefined) { UI.toast('人设服务尚未就绪'); return; }
+    var persona = findPersona(id);
+    Promise.resolve(result).then(function (done) {
+      if (done === false) { UI.toast('应用人设失败'); return; }
+      UI.toast(persona ? ('已应用人设「' + persona.name + '」') : '已应用人设');
+    }, function () { UI.toast('应用人设失败'); });
+  }
+
+  function personaPickerItem(persona, active) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'persona-picker-item' + (active ? ' is-active' : '');
+    btn.setAttribute('data-action', 'persona-picker-pick');
+    btn.setAttribute('data-persona-id', persona.id);
+    btn.appendChild(makeText('span', 'persona-picker-icon', persona.emoji || '🤖'));
+    var main = el('div', 'persona-picker-main');
+    var nameRow = el('div', 'persona-picker-name');
+    nameRow.appendChild(makeText('span', '', persona.name));
+    if (persona.builtin) nameRow.appendChild(makeText('span', 'persona-builtin', '内置'));
+    main.appendChild(nameRow);
+    main.appendChild(makeText('div', 'persona-picker-sub', persona.description || persona.systemPrompt || ''));
+    btn.appendChild(main);
+    if (active) btn.appendChild(makeText('span', 'persona-picker-check', '✓'));
+    return btn;
+  }
+
+  function renderPersonaPicker(list, currentId) {
+    if (Array.isArray(list)) state.personas.list = list.map(normalizePersona).filter(Boolean);
+    state.personas.pickerCurrent = currentId == null ? '' : String(currentId);
+    var box = r('persona-picker-list');
+    if (box) {
+      box.textContent = '';
+      var none = document.createElement('button');
+      none.type = 'button';
+      none.className = 'persona-picker-item' + (!state.personas.pickerCurrent ? ' is-active' : '');
+      none.setAttribute('data-action', 'persona-picker-pick');
+      none.setAttribute('data-persona-id', '');
+      none.appendChild(makeText('span', 'persona-picker-icon', '🚫'));
+      var noneMain = el('div', 'persona-picker-main');
+      noneMain.appendChild(makeText('div', 'persona-picker-name', '不使用人设'));
+      noneMain.appendChild(makeText('div', 'persona-picker-sub', '清除当前会话的人设绑定'));
+      none.appendChild(noneMain);
+      if (!state.personas.pickerCurrent) none.appendChild(makeText('span', 'persona-picker-check', '✓'));
+      box.appendChild(none);
+      state.personas.list.forEach(function (persona) {
+        box.appendChild(personaPickerItem(persona, state.personas.pickerCurrent === persona.id));
+      });
+    }
+    var empty = r('persona-picker-empty');
+    if (empty) empty.hidden = state.personas.list.length > 0;
+    return state.personas.list;
+  }
+
+  function openChatPersonaPicker(list, currentId) {
+    renderPersonaPicker(list || state.personas.list, currentId);
+    openModal(r('persona-picker'));
+    if (!state.personas.loaded) invoke('onOpenPersonas');
+    return state.personas.list;
+  }
+
+  function closePersonaPicker() {
+    closeModal(r('persona-picker'));
+  }
+
+  function pickPersonaFromPicker(id) {
+    var personaId = id == null || id === '' ? null : String(id);
+    var result = callHandler('onChatPickPersona', personaId);
+    if (result === undefined) { UI.toast('人设服务尚未就绪'); return; }
+    closePersonaPicker();
+    UI.toast(personaId ? '已应用人设' : '已清除人设');
   }
 
   /* ------------------------------------------------------------------ *
@@ -7306,7 +8121,9 @@
     'tool-policy': 'screen-tool-policy',
     snapshots: 'screen-snapshots',
     appearance: 'screen-appearance',
-    bots: 'screen-bots'
+    bots: 'screen-bots',
+    keys: 'screen-keys',
+    personas: 'screen-personas'
   };
 
   function syncBottomNav(name) {
@@ -9030,6 +9847,10 @@
       if (typeof state.cb.onCloseBots === 'function') invoke('onCloseBots');
       return;
     }
+    if (state.screen === 'keys' || state.screen === 'personas') {
+      showScreenImpl('settings');
+      return;
+    }
     if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') {
       var closeSnapKey = state.screen === 'snapshots' ? 'onCloseSnapshots' : (state.screen === 'cost' ? 'onCloseCost' : 'onCloseToolPolicies');
       var snapScreen = state.screen;
@@ -9074,6 +9895,10 @@
     if (isModalOpen(r('market-code-modal'))) { closeModal(r('market-code-modal')); return true; }
     if (isModalOpen(r('bot-form-modal'))) { closeBotForm(); return true; }
     if (isModalOpen(r('bot-detail-modal'))) { closeBotDetail(); return true; }
+    if (isModalOpen(r('key-form-modal'))) { closeKeyForm(); return true; }
+    if (isModalOpen(r('persona-form-modal'))) { closePersonaForm(); return true; }
+    if (isModalOpen(r('key-picker'))) { closeKeyPicker(); return true; }
+    if (isModalOpen(r('persona-picker'))) { closePersonaPicker(); return true; }
     var searchBar = r('chat-search-in');
     if (searchBar && !searchBar.hidden) { closeChatSearch(); return true; }
     if (state.pluginPanelOpen) { closePluginPanel(); return true; }
@@ -9090,6 +9915,7 @@
     if (state.screen === 'cost' || state.screen === 'tool-policy' || state.screen === 'snapshots') { showScreenImpl('settings'); return true; }
     if (state.screen === 'appearance') { showScreenImpl('settings'); return true; }
     if (state.screen === 'bots') { showScreenImpl('settings'); return true; }
+    if (state.screen === 'keys' || state.screen === 'personas') { showScreenImpl('settings'); return true; }
     if (state.screen === 'agents') { handleHeaderBack(); return true; }
     if (state.screen === 'chat') { showScreenImpl('chats'); return true; }
     return false;
@@ -9393,6 +10219,97 @@
         break;
       case 'bot-type':
         setBotFormType(node.getAttribute('data-type'));
+        break;
+      /* -------- v3.3.0：多 Key / 会话选 Key / 人设 -------- */
+      case 'open-keys':
+        openKeysPage();
+        break;
+      case 'login-existing-key': {
+        var loginHandled = callHandler('onUseExistingKey');
+        if (loginHandled === undefined) openKeysPage();
+        break;
+      }
+      case 'key-add':
+        openKeyForm();
+        break;
+      case 'key-edit':
+        openKeyForm(findApiKey(node.getAttribute('data-id')));
+        break;
+      case 'key-delete':
+        deleteApiKey(node.getAttribute('data-id'));
+        break;
+      case 'key-default':
+        setDefaultApiKey(node.getAttribute('data-id'));
+        break;
+      case 'key-test': {
+        var keyForTest = findApiKey(node.getAttribute('data-id'));
+        if (keyForTest) {
+          var keyTestResult = callHandler('onKeyTest', keyForTest.id, keyForTest);
+          if (keyTestResult === undefined) UI.toast('密钥服务尚未就绪');
+          else Promise.resolve(keyTestResult).then(function (res) {
+            var ok = res === true || (res && typeof res === 'object' && res.ok === true);
+            UI.toast(ok ? '密钥连接成功' : ((res && (res.error || res.message)) ? String(res.error || res.message) : '密钥连接失败'));
+          }, function () { UI.toast('密钥连接失败'); });
+        }
+        break;
+      }
+      case 'key-secret-toggle': {
+        var keySecret = r('key-field-api-key');
+        if (keySecret) {
+          var showKey = keySecret.type === 'password';
+          keySecret.type = showKey ? 'text' : 'password';
+          node.classList.toggle('is-on', showKey);
+          node.setAttribute('aria-pressed', showKey ? 'true' : 'false');
+        }
+        break;
+      }
+      case 'key-form-save':
+        saveKeyForm();
+        break;
+      case 'key-form-test':
+        testKeyForm();
+        break;
+      case 'key-form-cancel':
+      case 'close-key-form':
+        closeKeyForm();
+        break;
+      case 'open-key-picker':
+        openChatKeyPicker();
+        break;
+      case 'close-key-picker':
+        closeKeyPicker();
+        break;
+      case 'key-picker-pick':
+        pickChatKey(node.getAttribute('data-key-id'));
+        break;
+      case 'open-personas':
+        openPersonasPage();
+        break;
+      case 'persona-add':
+        openPersonaForm();
+        break;
+      case 'persona-edit':
+        openPersonaForm(findPersona(node.getAttribute('data-id')));
+        break;
+      case 'persona-delete':
+        deletePersona(node.getAttribute('data-id'));
+        break;
+      case 'persona-use':
+        usePersona(node.getAttribute('data-id'));
+        break;
+      case 'persona-form-save':
+        savePersonaForm();
+        break;
+      case 'persona-form-cancel':
+      case 'close-persona-form':
+        closePersonaForm();
+        break;
+      case 'persona-picker-close':
+      case 'close-persona-picker':
+        closePersonaPicker();
+        break;
+      case 'persona-picker-pick':
+        pickPersonaFromPicker(node.getAttribute('data-persona-id'));
         break;
       case 'bot-secret-toggle': {
         var secretInput = r('bot-field-app-secret');
@@ -9907,6 +10824,11 @@
       setMarketSort(target.value);
       return;
     }
+    /* v3.3.0：密钥启用开关 */
+    if (target.classList && target.classList.contains('key-toggle')) {
+      toggleApiKey(target.getAttribute('data-key-id'), target.checked);
+      return;
+    }
     /* v3.0.0：Bot 启用开关 / 自动回复风险确认 */
     if (target.classList && target.classList.contains('bot-toggle')) {
       toggleBot(target.getAttribute('data-bot-id'), target.checked);
@@ -10109,6 +11031,10 @@
     bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
     bindModalBackdrop(r('mcp-form-modal'), function () { closeMcpForm(); });
     bindModalBackdrop(r('memory-item-modal'), function () { closeMemoryItemForm(); });
+    bindModalBackdrop(r('key-form-modal'), function () { closeKeyForm(); });
+    bindModalBackdrop(r('persona-form-modal'), function () { closePersonaForm(); });
+    bindModalBackdrop(r('key-picker'), function () { closeKeyPicker(); });
+    bindModalBackdrop(r('persona-picker'), function () { closePersonaPicker(); });
     bindModalBackdrop(r('bot-form-modal'), function () { closeBotForm(); });
     bindModalBackdrop(r('bot-detail-modal'), function () { closeBotDetail(); });
     bindModalBackdrop(r('market-detail-modal'), function () { closeMarketDetail(); });
@@ -10260,7 +11186,21 @@
       'bot-field-qqbot', 'bot-field-app-id', 'bot-field-app-secret', 'bot-secret-toggle',
       'bot-field-sandbox', 'bot-auto-reply-wrap', 'bot-qqbot-hint',
       'bot-detail-meta', 'bot-detail-targets', 'bot-detail-targets-list', 'bot-detail-targets-empty',
-      'bot-detail-chat-hint', 'bot-detail-messages-label'
+      'bot-detail-chat-hint', 'bot-detail-messages-label',
+      /* v3.2.0：WS 状态 */
+      'bot-detail-ws', 'bot-detail-ws-text', 'bot-detail-ws-dot',
+      /* v3.3.0：多 Key / 人设 */
+      'screen-keys', 'keys-count', 'keys-list', 'keys-empty', 'set-keys-row', 'set-keys-label',
+      'key-form-modal', 'key-form-title', 'key-field-name', 'key-field-api-key', 'key-secret-toggle',
+      'key-field-base-url', 'key-field-model', 'key-field-enabled', 'key-test-result', 'key-form-error',
+      'key-picker', 'key-picker-list', 'key-picker-empty',
+      'screen-personas', 'personas-count', 'personas-list', 'personas-empty',
+      'set-personas-row', 'set-personas-label',
+      'persona-form-modal', 'persona-form-title', 'persona-field-emoji', 'persona-field-name',
+      'persona-field-desc', 'persona-field-prompt', 'persona-field-greeting', 'persona-field-model',
+      'persona-field-temperature', 'persona-field-key', 'persona-form-error',
+      'persona-picker', 'persona-picker-list', 'persona-picker-empty',
+      'login-existing-key', 'chat-key-btn', 'chat-key-name'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -10951,6 +11891,23 @@
   UI.setBotStatus = setBotStatus;
   UI.appendBotMessage = appendBotMessage;
   UI.renderBotTargets = function (list) { return renderBotTargets(list); };
+
+  /* v3.3.0：多 Key / 人设 */
+  UI.renderApiKeys = function (list) { return renderApiKeys(list); };
+  UI.openKeysPage = openKeysPage;
+  UI.openKeyForm = openKeyForm;
+  UI.renderKeyTestResult = function (result) { return renderKeyTestResult(result); };
+  UI.renderKeyPicker = function (keys, currentId) { return renderKeyPicker(keys, currentId); };
+  UI.openChatKeyPicker = function (keys, currentId) { return openChatKeyPicker(keys, currentId); };
+  UI.openKeyPicker = function (keys, currentId) { return openChatKeyPicker(keys, currentId); };
+  UI.setChatKeyName = setChatKeyName;
+  UI.renderPersonas = function (list) { return renderPersonas(list); };
+  UI.openPersonasPage = openPersonasPage;
+  UI.openPersonaForm = openPersonaForm;
+  UI.renderPersonaPicker = function (list, currentId) { return renderPersonaPicker(list, currentId); };
+  UI.openChatPersonaPicker = function (list, currentId) { return openChatPersonaPicker(list, currentId); };
+  UI.getApiKeys = function () { return (state.keys.list || []).slice(); };
+  UI.getPersonas = function () { return (state.personas.list || []).slice(); };
   UI.getBotTargets = function () {
     return state.bots.currentId ? (state.bots.targets[state.bots.currentId] || []).slice() : [];
   };
@@ -10980,5 +11937,5 @@
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '3.1.0';
+  UI.version = '3.3.0';
 })();

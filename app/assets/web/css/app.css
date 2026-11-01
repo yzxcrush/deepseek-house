@@ -8987,3 +8987,623 @@ html.glass-frost .bot-type {
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
+
+/* ==========================================================================
+   v3.2.0：QQ 官方机器人 WS 状态 / 收发消息 / 目标分组
+   ========================================================================== */
+
+/* 详情 WS 状态条 */
+.bot-detail-ws {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: -2px 0 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.bot-detail-ws.is-connected {
+  background-color: rgba(79, 208, 91, 0.08);
+}
+
+.bot-detail-ws.is-error {
+  background-color: rgba(224, 93, 93, 0.09);
+}
+
+.bot-ws-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #6f6f6f;
+}
+
+.bot-ws-dot.is-connected { background-color: #4fd05b; box-shadow: 0 0 0 3px rgba(79, 208, 91, 0.15); }
+.bot-ws-dot.is-connecting { background-color: #f0b256; animation: bot-ws-pulse 1.2s ease-in-out infinite; }
+.bot-ws-dot.is-error { background-color: #e05d5d; }
+.bot-ws-dot.is-stopped,
+.bot-ws-dot.is-disconnected,
+.bot-ws-dot.is-idle { background-color: #6f6f6f; }
+
+@keyframes bot-ws-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.bot-detail-ws-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #9aa0a6;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bot-detail-ws.is-connected .bot-detail-ws-text { color: #8fe897; }
+.bot-detail-ws.is-error .bot-detail-ws-text { color: #f08c8c; }
+
+/* 列表 WS 状态 chip */
+.bot-ws-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bot-meta-chip.is-error {
+  background-color: rgba(224, 93, 93, 0.13);
+  color: #f08c8c;
+}
+
+/* 消息方向 / 来源 / 失败 */
+.bot-message-dir {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.07);
+  color: #9aa0a6;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.bot-message-dir.is-out {
+  background-color: rgba(81, 122, 246, 0.18);
+  color: #cfe0ff;
+}
+
+.bot-message-source {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background-color: rgba(79, 208, 91, 0.1);
+  color: #8fe897;
+  font-size: 9.5px;
+  line-height: 1.6;
+}
+
+.bot-message.is-failed {
+  border-left: 2px solid rgba(224, 93, 93, 0.65);
+}
+
+.bot-message-failed {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.bot-message-failed-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background-color: rgba(224, 93, 93, 0.16);
+  color: #f08c8c;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.bot-message-failed-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #f08c8c;
+  font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* 目标分组标题 */
+.bot-target-group-title {
+  padding: 6px 2px 2px;
+  color: #8b8b8b;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+
+.bot-target-group-title:first-child {
+  padding-top: 0;
+}
+
+/* ==========================================================================
+   v3.3.0：多 API Key / 会话选 Key / 人设
+   ========================================================================== */
+
+/* 登录页「使用已有密钥」 */
+.login-existing-key {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.04);
+  color: #b9b9b9;
+  font-size: 13px;
+}
+
+.login-existing-key svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 聊天顶栏密钥按钮 */
+.chat-key-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 92px;
+  margin-right: 2px;
+  padding: 4px 7px;
+  border-radius: 8px;
+  background-color: rgba(81, 122, 246, 0.13);
+  color: #9db6ff;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.chat-key-btn svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.chat-key-btn span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-key-btn.is-default {
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #9aa0a6;
+}
+
+/* API 密钥页 */
+.screen--keys,
+.screen--personas {
+  z-index: 20;
+}
+
+.keys-scroll,
+.personas-scroll {
+  padding-bottom: calc(26px + var(--safe-bottom));
+}
+
+.keys-actions,
+.personas-actions {
+  display: flex;
+  margin: 2px 12px 10px;
+}
+
+.keys-add-btn,
+.personas-add-btn {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 42px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.keys-add-btn svg,
+.personas-add-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.keys-list,
+.personas-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 12px 4px;
+}
+
+.key-card {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 15px;
+  background-color: rgba(31, 31, 31, 0.9);
+}
+
+.key-card.is-default {
+  border-color: rgba(81, 122, 246, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(81, 122, 246, 0.18);
+}
+
+.key-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.key-card-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background-color: rgba(81, 122, 246, 0.14);
+  color: #9db6ff;
+}
+
+.key-card-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.key-card-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.key-card-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.key-card-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.key-default-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: rgba(81, 122, 246, 0.2);
+  color: #cfe0ff;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.key-card-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.key-card-sub .key-masked {
+  color: #9aa0a6;
+}
+
+.key-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.key-meta-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.7;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.key-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.key-act {
+  padding: 6px 12px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #c7c7c7;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.key-act--primary {
+  background-color: rgba(81, 122, 246, 0.18);
+  color: #cfe0ff;
+}
+
+.key-act--danger {
+  background-color: rgba(224, 93, 93, 0.14);
+  color: #f08c8c;
+}
+
+.key-card-actions .switch {
+  margin-left: auto;
+}
+
+.keys-empty,
+.personas-empty {
+  position: static;
+  padding: 38px 24px;
+}
+
+/* 密钥测试结果 */
+.key-test-result {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: rgba(81, 122, 246, 0.1);
+  color: #cfe0ff;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.key-test-result.is-error {
+  background-color: rgba(224, 93, 93, 0.1);
+  color: #f08c8c;
+}
+
+.key-test-result.is-ok {
+  background-color: rgba(79, 208, 91, 0.1);
+  color: #8fe897;
+}
+
+/* 人设卡片 */
+.persona-card {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 15px;
+  background-color: rgba(31, 31, 31, 0.9);
+}
+
+.persona-avatar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  background-color: rgba(255, 255, 255, 0.06);
+  font-size: 23px;
+  line-height: 1;
+}
+
+.persona-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.persona-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.persona-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.persona-builtin {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.07);
+  color: #9aa0a6;
+  font-size: 9.5px;
+  line-height: 1.6;
+}
+
+.persona-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 2px;
+  color: #8b8b8b;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.persona-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.persona-chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+.persona-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.persona-act {
+  padding: 6px 12px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #c7c7c7;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.persona-act--primary {
+  background-color: rgba(81, 122, 246, 0.18);
+  color: #cfe0ff;
+}
+
+.persona-act--danger {
+  background-color: rgba(224, 93, 93, 0.13);
+  color: #f08c8c;
+}
+
+.persona-form-panel {
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.persona-form-grid {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.persona-form-grid .form-row--col:first-child {
+  max-width: 84px;
+}
+
+/* 密钥 / 人设选择器 */
+.key-picker-item,
+.persona-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.key-picker-item.is-active,
+.persona-picker-item.is-active {
+  background-color: rgba(81, 122, 246, 0.1);
+}
+
+.key-picker-icon,
+.persona-picker-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background-color: rgba(81, 122, 246, 0.14);
+  color: #9db6ff;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.key-picker-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.key-picker-main,
+.persona-picker-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.key-picker-name,
+.persona-picker-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.key-picker-sub,
+.persona-picker-sub {
+  color: #8b8b8b;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.key-picker-check,
+.persona-picker-check {
+  flex: none;
+  color: var(--accent-2);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.key-picker-empty,
+.persona-picker-empty {
+  padding: 28px 24px;
+}
+
+/* 液态玻璃 */
+html.glass-liquid .key-card,
+html.glass-liquid .persona-card,
+html.glass-liquid .key-picker-item,
+html.glass-liquid .persona-picker-item,
+html.glass-frost .key-card,
+html.glass-frost .persona-card {
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}

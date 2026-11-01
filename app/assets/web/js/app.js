@@ -290,6 +290,14 @@
     botStatusMap: {},       /* botId -> {status,message} */
     botRecentCache: {},     /* botId -> [{...}] */
     botTargetsCache: {},    /* botId -> [{id,label,type}] */
+    botSeenEvents: {},      /* 'botId||eventId' -> ts（qqbot WS 事件去重） */
+    /* v3.3.0：多 API Key / 人设 */
+    apiKeysLoaded: false,
+    apiKeys: null,
+    personasLoaded: false,
+    personas: null,
+    keysOpening: false,
+    personasOpening: false,
     botPendingSends: [],    /* [{botId,chatId,text,at}] 等待 bot-sent 回执 */
     botAuto: {
       lastReplyAt: {},      /* botId||chatId -> ts */
@@ -509,6 +517,8 @@
     state.prefs = mergePrefs(Store.getPrefs(), nativePrefs);
     loadCustomModels();
     loadPresets();
+    try { loadApiKeys(true); } catch (eKeys) { warn('加载 API 密钥失败：' + errText(eKeys)); }
+    try { ensurePersonas(); } catch (ePersonas) { warn('加载人设失败：' + errText(ePersonas)); }
     state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels);
 
     bindBridgeEvents();
@@ -844,7 +854,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '3.1.0' }
+      { label: '版本', value: '3.3.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -893,6 +903,11 @@
     setHeader(chat, '');
     setBackDepth(1);
     ui('scrollBottom', true);
+    /* v3.3.0：顶栏显示当前会话使用的 Key 名称 */
+    try {
+      var chatKeyName = getChatKeyName(chat);
+      if (typeof UI !== 'undefined' && UI && typeof UI.setChatKeyName === 'function') UI.setChatKeyName(chatKeyName);
+    } catch (eKeyName) { /* ignore */ }
   }
 
   function ensureActiveChat() {
@@ -997,7 +1012,7 @@
         }
         return;
       }
-      if (uiScreen === 'cost' || uiScreen === 'tool-policy' || uiScreen === 'snapshots' || uiScreen === 'appearance' || uiScreen === 'bots') {
+      if (uiScreen === 'cost' || uiScreen === 'tool-policy' || uiScreen === 'snapshots' || uiScreen === 'appearance' || uiScreen === 'bots' || uiScreen === 'keys' || uiScreen === 'personas') {
         closeDrawer();
         if (state.nav.screen !== 'settings') {
           state.nav = { screen: 'settings', drawerOpen: false, from: state.nav.screen || 'chats' };
@@ -1266,6 +1281,26 @@
       onOpenBotDetail: safe(function (id) { return openBotDetailPage(id); }, 'onOpenBotDetail'),
       onBotFetchMessages: safe(function (id) { return openBotDetailPage(id); }, 'onBotFetchMessages'),
       onBotTargets: safe(function (botId) { return getBotTargets(botId); }, 'onBotTargets'),
+      /* v3.3.0：多 API Key / 会话选 Key / 人设 */
+      onOpenKeys: safe(function () { return openKeysPage(); }, 'onOpenKeys'),
+      onKeySave: safe(function (cfg) { return saveApiKeyConfig(cfg); }, 'onKeySave'),
+      onKeyDelete: safe(function (id) { return deleteApiKeyById(id); }, 'onKeyDelete'),
+      onKeyTest: safe(function (id, cfg) { return testApiKeyConfig(id, cfg); }, 'onKeyTest'),
+      onSetDefaultKey: safe(function (id) { return setDefaultKeyById(id); }, 'onSetDefaultKey'),
+      onKeyToggle: safe(function (id, enabled) {
+        var key = findApiKeyById(id);
+        if (!key) return false;
+        return !!saveApiKeyConfig({
+          id: key.id, name: key.name, baseUrl: key.baseUrl, model: key.model,
+          apiKey: key.apiKey, enabled: !!enabled
+        });
+      }, 'onKeyToggle'),
+      onUseExistingKey: safe(function (keyId) { return useExistingKeyLogin(keyId); }, 'onUseExistingKey'),
+      onOpenPersonas: safe(function () { return openPersonasPage(); }, 'onOpenPersonas'),
+      onPersonaSave: safe(function (cfg) { return savePersonaConfig(cfg); }, 'onPersonaSave'),
+      onPersonaDelete: safe(function (id) { return deletePersonaById(id); }, 'onPersonaDelete'),
+      onChatPickKey: safe(function (keyId) { return pickChatKey(keyId); }, 'onChatPickKey'),
+      onChatPickPersona: safe(function (personaId) { return pickChatPersona(personaId); }, 'onChatPickPersona'),
       onCloseMarket: safe(function () { return true; }, 'onCloseMarket'),
       onOpenMemory: safe(function () { return refreshMemoryPage(); }, 'onOpenMemory'),
       onMemorySave: safe(function (scope, key, value) { return saveMemoryItem(scope, key, value); }, 'onMemorySave'),
@@ -1322,6 +1357,33 @@
    * 登录 / 退出
    * ------------------------------------------------------------------ */
 
+  /** v3.3.0：登录成功后把 Key 写入多 Key 列表并设为默认 */
+  function saveLoginApiKey(apiKey, baseUrl) {
+    var keyText = String(apiKey || '').trim();
+    if (!keyText) return null;
+    loadApiKeys(true);
+    var list = Store.getApiKeys();
+    var found = null;
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].apiKey) === keyText) { found = list[i]; break; }
+    }
+    var saved = found;
+    if (!saved) {
+      saved = Store.saveApiKey({
+        name: list.length ? ('登录密钥 ' + (list.length + 1)) : '默认密钥',
+        apiKey: keyText, baseUrl: baseUrl || KEY_DEFAULT_BASE, enabled: true
+      });
+    }
+    if (saved) {
+      Store.setDefaultApiKey(saved.id);
+      syncKeyNative(saved, true);
+      state.apiKeysLoaded = false;
+      state.apiKeys = null;
+      loadApiKeys(true);
+    }
+    return saved;
+  }
+
   function login(data) {
     data = data || {};
     if (state.loginBusy) return;
@@ -1350,6 +1412,8 @@
         try { if (global.Bridge && global.Bridge.setPrefs) global.Bridge.setPrefs({ baseUrl: baseUrl }); } catch (e2) { /* ignore */ }
         state.prefs = mergePrefs(Store.getPrefs(), readNativePrefs());
         state.prefs.baseUrl = baseUrl;
+        /* v3.3.0：登录 Key 同步到多 Key 列表（相同 Key 复用并设为默认） */
+        try { saveLoginApiKey(key, baseUrl); } catch (eKey) { warn('保存登录密钥失败：' + errText(eKey)); }
         ui('renderLogin', { hasKey: true, busy: false, error: '' });
         enterChats();
         toast('登录成功', true);
@@ -1476,6 +1540,15 @@
     /* 批次3：引用回复在 API content 前拼「> 引用：…」 */
     messages = applyQuotedPrefix(messages);
     sendPrefs.systemPrompt = resolveSystemPrompt(chat);
+    /* v3.3.0：按 chat.keyId → persona.keyId → defaultKeyId 解析并注入本次请求鉴权 */
+    var authResolved = { key: null, source: 'none' };
+    try {
+      authResolved = applyRequestAuthForChat(chat);
+      if (authResolved.key) {
+        if (authResolved.key.baseUrl) sendPrefs.baseUrl = authResolved.key.baseUrl;
+        if (authResolved.key.model && !chat.model) sendPrefs.model = authResolved.key.model;
+      }
+    } catch (eAuth) { warn('解析会话密钥失败：' + errText(eAuth)); }
     var requestId = Api.send({
       chat: chat,
       messages: messages,
@@ -2711,6 +2784,7 @@
    * UI 未实现 openAgentPicker 时行为与旧版一致（直接新建）。
    */
   function newChat() {
+    try { loadApiKeys(true); } catch (eKey) { /* ignore */ }
     if (state.busy) stopGeneration();
     state.nav.from = 'chats';
     var chat = ensureFreshDefaultChat();
@@ -3507,6 +3581,18 @@
     if (!global.Api || typeof global.Api.verifyKey !== 'function') {
       return Promise.resolve({ ok: false, models: [], error: 'Api 不可用' });
     }
+    /* v3.3.0：按当前会话/指定 Key 拉模型列表 */
+    try {
+      var modelKeyId = opts.keyId ? String(opts.keyId) : '';
+      var modelKey = modelKeyId ? findApiKeyById(modelKeyId) : null;
+      if (!modelKey) {
+        var modelResolved = resolveChatApiKey(Store.getActiveChat());
+        modelKey = modelResolved.key;
+      }
+      if (modelKey && !isDefaultApiKey(modelKey) && global.Bridge && typeof global.Bridge.setRequestAuth === 'function') {
+        global.Bridge.setRequestAuth({ apiKey: modelKey.apiKey, baseUrl: modelKey.baseUrl });
+      }
+    } catch (eModelAuth) { /* ignore */ }
     var promise = Api.verifyKey({ timeout: opts.timeout || 15000 }).then(function (res) {
       state.remoteModelsPromise = null;
       res = res || {};
@@ -6432,6 +6518,8 @@
     } catch (e) { warn('刷新 prefs 失败：' + errText(e)); }
     try { loadCustomModels(); } catch (e1) { /* ignore */ }
     try { loadPresets(); } catch (e2) { /* ignore */ }
+    try { loadApiKeys(true); } catch (eKeys2) { /* ignore */ }
+    try { ensurePersonas(); } catch (ePersonas2) { /* ignore */ }
     try { state.modelCatalog = buildModelCatalog(state.remoteModels, state.customModels); } catch (e3) { /* ignore */ }
     try { applyWorkbenchFromPrefs(); } catch (e4) { /* ignore */ }
     try { applyModelLabel(); } catch (e5) { /* ignore */ }
@@ -8154,9 +8242,11 @@
       sandbox: !!raw.sandbox,
       baseUrl: String(raw.baseUrl || '').slice(0, 300),
       enabled: !!raw.enabled,
-      autoReply: fallbackType === 'qqbot' ? false : !!raw.autoReply,
+      autoReply: !!raw.autoReply,
       whitelist: Array.isArray(raw.whitelist) ? raw.whitelist.slice(0, 50).map(function (v) { return String(v); }) : [],
       systemPrompt: String(raw.systemPrompt || '').slice(0, 4000),
+      keyId: String(raw.keyId || '').slice(0, 120),
+      personaId: String(raw.personaId || '').slice(0, 120),
       cooldownSec: Math.max(3, Math.min(300, Math.round(Number(raw.cooldownSec) || 8))),
       hourlyLimit: Math.max(1, Math.min(600, Math.round(Number(raw.hourlyLimit) || 60))),
       createdAt: Number(raw.createdAt) || 0,
@@ -8169,7 +8259,8 @@
       id: cfg.id, type: cfg.type, name: cfg.name,
       token: cfg.token, accessToken: cfg.accessToken, baseUrl: cfg.baseUrl,
       appId: cfg.appId || '', secret: cfg.secret || '', sandbox: !!cfg.sandbox,
-      enabled: !!cfg.enabled, autoReply: cfg.type === 'qqbot' ? false : !!cfg.autoReply,
+      keyId: cfg.keyId || '', personaId: cfg.personaId || '',
+      enabled: !!cfg.enabled, autoReply: !!cfg.autoReply,
       whitelist: (cfg.whitelist || []).slice(0, 50),
       systemPrompt: cfg.systemPrompt || '',
       cooldownSec: cfg.cooldownSec || 8,
@@ -8195,6 +8286,10 @@
     out.recentCount = Math.max(0, parseInt(raw && raw.recentCount, 10) || 0);
     out.message = raw && raw.message ? String(raw.message) : '';
     out.botUsername = raw && raw.botUsername ? String(raw.botUsername) : '';
+    out.ws = raw && raw.ws ? String(raw.ws) : '';
+    out.wsMessage = raw && raw.wsMessage ? String(raw.wsMessage) : '';
+    out.eventCount = Math.max(0, parseInt(raw && raw.eventCount, 10) || 0);
+    out.lastEventAt = Math.max(0, Number(raw && raw.lastEventAt) || 0);
     return out;
   }
 
@@ -8279,7 +8374,22 @@
         accessTokenMasked: maskBotSecret(bot.accessToken),
         appIdMasked: maskBotSecret(bot.appId),
         appSecretMasked: maskBotSecret(bot.secret),
-        sandbox: !!bot.sandbox
+        sandbox: !!bot.sandbox,
+        ws: bot.ws || '',
+        wsMessage: bot.wsMessage || '',
+        eventCount: Number(bot.eventCount) || 0,
+        lastEventAt: Number(bot.lastEventAt) || 0,
+        keyId: bot.keyId || '',
+        personaId: bot.personaId || '',
+        keyName: (function () {
+          if (!bot.keyId) return '';
+          var found = findApiKeyById(bot.keyId);
+          return found ? found.name : '';
+        })(),
+        personaName: (function () {
+          if (!bot.personaId) return '';
+          try { var p = Store.getPersona(bot.personaId); return p ? p.name : ''; } catch (e) { return ''; }
+        })()
       });
     }
     return list;
@@ -8366,7 +8476,7 @@
         type: 'function',
         function: {
           name: 'bot_list_targets',
-          description: '列出机器人可用的发送目标。QQ 官方机器人返回可发送的文字子频道（id 形如 channel:<guild>:<channel>）；Telegram/OneBot 返回最近会话或好友列表。不会主动加好友或群发。' + botDesc,
+          description: '列出机器人可用的发送目标。QQ 官方机器人返回可发送的文字子频道（id 形如 channel:<guild>:<channel>）与最近收到消息的会话（type=recent，id 可直接用于回复）；Telegram/OneBot 返回最近会话或好友列表。不会主动加好友或群发。' + botDesc,
           parameters: {
             type: 'object',
             properties: {
@@ -8396,16 +8506,25 @@
     if (!evt || !evt.botId) return;
     var id = String(evt.botId);
     var status = String(evt.status || 'stopped');
-    state.botStatusMap[id] = { status: status, message: evt.message ? String(evt.message) : '' };
+    var ws = evt.ws === undefined || evt.ws === null ? '' : String(evt.ws);
+    var wsMessage = evt.wsMessage === undefined || evt.wsMessage === null ? '' : String(evt.wsMessage);
+    var statusInfo = { status: status, message: evt.message ? String(evt.message) : '' };
+    if (ws) statusInfo.ws = ws;
+    if (wsMessage) statusInfo.wsMessage = wsMessage;
+    state.botStatusMap[id] = statusInfo;
     var bot = getBotById(id);
     if (bot) {
       bot.status = status;
       bot.message = evt.message ? String(evt.message) : '';
       bot.running = status === 'connected';
+      if (ws) bot.ws = ws;
+      if (wsMessage) bot.wsMessage = wsMessage;
+      if (evt.eventCount !== undefined) bot.eventCount = Number(evt.eventCount) || 0;
+      if (evt.lastEventAt !== undefined) bot.lastEventAt = Number(evt.lastEventAt) || 0;
     }
     var U = getUI();
     if (U && typeof U.setBotStatus === 'function') {
-      try { U.setBotStatus(id, { status: status, message: evt.message || '' }); } catch (e) { /* ignore */ }
+      try { U.setBotStatus(id, statusInfo); } catch (e) { /* ignore */ }
     }
     if (status === 'error' && evt.message) toast('机器人「' + (bot ? bot.name : id) + '」连接失败：' + evt.message, true);
   }
@@ -8420,18 +8539,61 @@
     if (bot) bot.recentCount = cache.length;
   }
 
+  /** v3.2.0：qqbot WS 事件 chatId 归一（缺失时由 groupId/channelId/openid 推导） */
+  function normalizeBotEventChatId(evt) {
+    var raw = evt && evt.chatId !== undefined && evt.chatId !== null ? String(evt.chatId).trim() : '';
+    if (raw) {
+      if (/^(user|group|channel|guild):/.test(raw)) return raw;
+      return raw;
+    }
+    var groupId = String(evt.groupId || evt.group_openid || evt.groupOpenid || '').trim();
+    var channelId = String(evt.channelId || evt.channel_id || '').trim();
+    var guildId = String(evt.guildId || evt.guild_id || '').trim();
+    var userId = String(evt.userId || evt.user_id || evt.openid || evt.from || '').trim();
+    if (channelId && guildId) return 'channel:' + guildId + ':' + channelId;
+    if (groupId) return 'group:' + groupId;
+    if (userId) return 'user:' + userId;
+    return '';
+  }
+
   function onBotMessageEvent(evt) {
     if (!evt || !evt.botId) return;
+    if (!state.botsLoaded) {
+      try { loadBots(false); } catch (e) { /* ignore */ }
+    }
+    var botId = String(evt.botId);
+    var eventId = String(evt.eventId || evt.event_id || '');
+    var msgId = String(evt.msgId || evt.msg_id || evt.messageId || '');
+    /* qqbot WS 重连/重复投递去重（同 eventId 只处理一次） */
+    if (eventId) {
+      var seenKey = botId + '||' + eventId;
+      if (state.botSeenEvents[seenKey]) return;
+      state.botSeenEvents[seenKey] = Date.now();
+      var seenKeys = Object.keys(state.botSeenEvents);
+      if (seenKeys.length > 1000) {
+        for (var sk = 0; sk < seenKeys.length - 800; sk++) delete state.botSeenEvents[seenKeys[sk]];
+      }
+    }
+    var chatId = normalizeBotEventChatId(evt);
     var msg = {
-      botId: String(evt.botId),
-      chatId: evt.chatId === undefined || evt.chatId === null ? '' : String(evt.chatId),
+      botId: botId,
+      chatId: chatId,
       from: evt.from === undefined || evt.from === null ? '' : String(evt.from),
       fromName: evt.fromName === undefined || evt.fromName === null ? '' : String(evt.fromName),
       text: evt.text === undefined || evt.text === null ? '' : String(evt.text),
       at: Number(evt.at) || Date.now(),
       ts: Number(evt.at) || Date.now(),
-      direction: 'in'
+      direction: 'in',
+      eventId: eventId,
+      msgId: msgId,
+      msgType: evt.msgType || evt.msg_type ? String(evt.msgType || evt.msg_type) : '',
+      source: String(evt.source || (chatId.indexOf('group:') === 0 ? 'group' : (chatId.indexOf('channel:') === 0 ? 'channel' : 'user'))),
+      groupId: String(evt.groupId || evt.group_openid || ''),
+      channelId: String(evt.channelId || evt.channel_id || ''),
+      guildId: String(evt.guildId || evt.guild_id || ''),
+      userId: String(evt.userId || evt.user_id || '')
     };
+    if (!msg.chatId) return;
     cacheBotMessage(msg.botId, msg);
     var U = getUI();
     if (U && typeof U.appendBotMessage === 'function') {
@@ -8591,7 +8753,18 @@
         if (!opts.silent) toast('QQ 机器人 Base URL 需以 https:// 开头', true);
         return false;
       }
-      next.autoReply = false; /* 无接收通道 */
+    }
+    if (next.keyId && !findApiKeyById(next.keyId)) {
+      if (!opts.silent) toast('绑定的 API 密钥不存在', true);
+      return false;
+    }
+    if (next.personaId) {
+      var boundPersona = null;
+      try { boundPersona = Store.getPersona(next.personaId); } catch (ePersona) { boundPersona = null; }
+      if (!boundPersona) {
+        if (!opts.silent) toast('绑定的人设不存在', true);
+        return false;
+      }
     }
     if (next.type === 'telegram' && !next.token.trim()) {
       if (!opts.silent) toast('请填写 Telegram Bot Token', true);
@@ -8660,11 +8833,6 @@
   function updateBotAutoReply(id, opts) {
     var bot = getBotById(id);
     if (!bot) return false;
-    if (bot.type === 'qqbot') {
-      bot.autoReply = false;
-      toast('QQ 官方机器人暂不支持自动回复（需 WebSocket 网关，后续版本）', true);
-      return false;
-    }
     var source = opts && typeof opts === 'object' ? opts : {};
     if (source.autoReply !== undefined) bot.autoReply = !!source.autoReply;
     if (source.cooldownSec !== undefined) bot.cooldownSec = Math.max(3, Math.min(300, Math.round(Number(source.cooldownSec) || 8)));
@@ -8724,12 +8892,22 @@
   }
 
   function botAllowAutoReply(bot, msg) {
-    if (!bot || bot.type === 'qqbot') return false; /* QQ 官方机器人无接收通道 */
+    if (!bot) return false;
     if (!bot.enabled || !bot.autoReply) return false;
+    if (!msg || String(msg.direction || 'in') === 'out') return false;
     var chatId = String(msg.chatId || '');
     if (!chatId) return false;
     var whitelist = Array.isArray(bot.whitelist) ? bot.whitelist : [];
-    if (whitelist.length && whitelist.indexOf(chatId) === -1) return false;
+    if (whitelist.length) {
+      var candidates = [chatId, String(msg.from || ''), String(msg.groupId || ''), String(msg.channelId || ''), String(msg.guildId || ''), String(msg.userId || '')];
+      var matched = false;
+      for (var w = 0; w < whitelist.length && !matched; w++) {
+        for (var c = 0; c < candidates.length; c++) {
+          if (candidates[c] && String(whitelist[w]) === candidates[c]) { matched = true; break; }
+        }
+      }
+      if (!matched) return false;
+    }
     var key = botAutoReplyKey(bot.id, chatId);
     if (state.botAuto.inFlight[key]) return false;
     var now = Date.now();
@@ -8784,6 +8962,21 @@
       var requestId = 'botreq_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
       var model = (state.prefs && state.prefs.model) || 'deepseek-chat';
       var prompt = String(bot.systemPrompt || BOT_DEFAULT_PROMPT);
+      var botKey = null;
+      var botPersona = null;
+      /* v3.3.0：机器人绑定 keyId/personaId — 自动回复用对应 Key + 人设 prompt/模型 */
+      try {
+        if (bot.personaId) botPersona = Store.getPersona(bot.personaId);
+        if (botPersona) {
+          if (!String(bot.systemPrompt || '').trim() && botPersona.systemPrompt) prompt = String(botPersona.systemPrompt);
+          if (botPersona.model) model = String(botPersona.model);
+        }
+        if (bot.keyId) botKey = findApiKeyById(bot.keyId);
+        if (!botKey && botPersona && botPersona.keyId) botKey = findApiKeyById(botPersona.keyId);
+        if (!botKey) {
+          try { botKey = Store.getDefaultApiKey(); } catch (eKeyDef) { botKey = null; }
+        }
+      } catch (eBind) { botKey = null; botPersona = null; }
       var messages = [
         { role: 'system', content: prompt },
         { role: 'user', content: String(userText || '').slice(0, 4000) }
@@ -8796,6 +8989,10 @@
         stream: false,
         systemPrompt: ''
       };
+      if (botKey && botKey.apiKey && !isDefaultApiKey(botKey)) {
+        body.apiKey = String(botKey.apiKey);
+        body.baseUrl = String(botKey.baseUrl || '');
+      }
       var content = '';
       var done = false;
       var timer = null;
@@ -8875,35 +9072,18 @@
         state.botRecentCache[bot.id] = list.slice(0, 200);
         work = Promise.resolve({ ok: true, result: JSON.stringify({ bot_id: bot.id, count: list.length, messages: list.slice(0, limit) }), chatId: '' });
       } else if (tool === 'bot_list_targets') {
-        var nativeTargets = [];
-        try {
-          if (global.Bridge && typeof global.Bridge.botTargets === 'function') nativeTargets = global.Bridge.botTargets(bot.id) || [];
-        } catch (e2) { nativeTargets = []; }
-        if (Array.isArray(nativeTargets) && nativeTargets.length) {
-          work = Promise.resolve({ ok: true, result: JSON.stringify({ bot_id: bot.id, type: bot.type, source: 'botTargets', targets: nativeTargets }), chatId: '' });
-        } else {
-          var recentList = [];
-          try { recentList = global.Bridge.botRecent(bot.id, 200) || []; } catch (e3) { recentList = []; }
-          var targets = {};
-          for (var i = 0; i < recentList.length; i++) {
-            var m = recentList[i];
-            if (!m || !m.chatId) continue;
-            if (!targets[m.chatId]) targets[m.chatId] = { chat_id: m.chatId, last_at: m.at || 0, last_from: m.fromName || m.from || '', count: 0 };
-            targets[m.chatId].count++;
-            if ((m.at || 0) > targets[m.chatId].last_at) targets[m.chatId].last_at = m.at || 0;
-          }
-          var whitelist = Array.isArray(bot.whitelist) ? bot.whitelist : [];
-          for (var w = 0; w < whitelist.length; w++) {
-            if (!targets[whitelist[w]]) targets[whitelist[w]] = { chat_id: whitelist[w], last_at: 0, last_from: '', count: 0, whitelist: true };
-          }
-          var arr = Object.keys(targets).map(function (k) { return targets[k]; });
-          var payload = { bot_id: bot.id, type: bot.type, targets: arr };
-          if (bot.type === 'qqbot') {
-            payload.hint = 'QQ 官方机器人无接收通道；请手动填写 user:<openid> / group:<group_openid> / channel:<guild>:<channel>，或在详情页点「获取目标」加载频道列表';
-            payload.formats = ['user:<openid>', 'group:<group_openid>', 'channel:<guild_id>:<channel_id>'];
-          }
-          work = Promise.resolve({ ok: true, result: JSON.stringify(payload), chatId: '' });
+        var merged = buildBotTargetsWithRecent(bot);
+        var payload = {
+          bot_id: bot.id,
+          type: bot.type,
+          targets: merged.targets
+        };
+        if (merged.recent.length) payload.recent = merged.recent;
+        if (!merged.targets.length) {
+          payload.hint = '暂无可用目标。QQ 官方机器人可手动填写 user:<openid> / group:<group_openid> / channel:<guild>:<channel>；收到消息后最近会话会出现在这里。';
+          payload.formats = ['user:<openid>', 'group:<group_openid>', 'channel:<guild_id>:<channel_id>'];
         }
+        work = Promise.resolve({ ok: true, result: JSON.stringify(payload), chatId: '' });
       } else {
         work = Promise.resolve({ ok: false, error: '未知机器人工具：' + tool });
       }
@@ -8933,21 +9113,61 @@
 
   /* ---------------- Bot 会话 / 详情 ---------------- */
 
+  /** v3.2.0：合并「频道/群/好友目标」+「最近会话（botRecent in 去重）」 */
+  function buildBotTargetsWithRecent(bot) {
+    if (!bot) return { targets: [], channels: [], recent: [] };
+    var channels = [];
+    try {
+      if (global.Bridge && typeof global.Bridge.botTargets === 'function') channels = global.Bridge.botTargets(bot.id);
+    } catch (e) { warn('获取机器人目标失败：' + errText(e)); channels = []; }
+    if (!Array.isArray(channels)) channels = [];
+    var recentRaw = [];
+    try { recentRaw = global.Bridge.botRecent(bot.id, 200) || []; } catch (e2) { recentRaw = []; }
+    var seen = {};
+    var targets = [];
+    for (var i = 0; i < channels.length; i++) {
+      var target = channels[i];
+      if (!target || !target.id || seen[target.id]) continue;
+      seen[target.id] = true;
+      target.source = target.source || 'botTargets';
+      targets.push(target);
+    }
+    var recent = [];
+    for (var j = 0; j < recentRaw.length; j++) {
+      var msg = recentRaw[j];
+      if (!msg || msg.direction !== 'in' || !msg.chatId || seen[msg.chatId]) continue;
+      seen[msg.chatId] = true;
+      var label = msg.fromName || msg.from || msg.chatId;
+      var item = {
+        id: String(msg.chatId),
+        label: '最近：' + label,
+        type: 'recent',
+        source: 'recent',
+        recent: true,
+        last_at: Number(msg.at) || 0,
+        from: msg.from || '',
+        fromName: msg.fromName || ''
+      };
+      if (msg.groupId) item.groupId = String(msg.groupId);
+      if (msg.channelId) item.channelId = String(msg.channelId);
+      if (msg.guildId) item.guildId = String(msg.guildId);
+      targets.push(item);
+      recent.push(item);
+    }
+    return { targets: targets, channels: channels, recent: recent };
+  }
+
   function getBotTargets(botId) {
     var bot = findBotByRef(botId);
     if (!bot) return [];
-    var list = [];
-    try {
-      if (global.Bridge && typeof global.Bridge.botTargets === 'function') list = global.Bridge.botTargets(bot.id);
-    } catch (e) { warn('获取机器人目标失败：' + errText(e)); list = []; }
-    if (!Array.isArray(list)) list = [];
+    var merged = buildBotTargetsWithRecent(bot);
     state.botTargetsCache = state.botTargetsCache || {};
-    state.botTargetsCache[bot.id] = list.slice(0, 200);
+    state.botTargetsCache[bot.id] = merged.targets.slice(0, 200);
     var U = getUI();
     if (U && typeof U.renderBotTargets === 'function') {
-      try { U.renderBotTargets(list); } catch (e2) { /* ignore */ }
+      try { U.renderBotTargets(merged.targets); } catch (e2) { /* ignore */ }
     }
-    return list;
+    return merged.targets;
   }
 
   function openBotDetailPage(id) {
@@ -8995,6 +9215,493 @@
     } catch (e2) { warn('进入 Bot 会话失败：' + errText(e2)); }
     toast('已打开会话：' + title);
     return true;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * v3.3.0：多 API Key / 会话级 Key / 人设
+   * ------------------------------------------------------------------ */
+
+  var MAX_API_KEYS = 20;
+  var KEY_DEFAULT_BASE = 'https://api.deepseek.com';
+
+  function maskApiKeyText(apiKey) {
+    var text = String(apiKey === null || apiKey === undefined ? '' : apiKey);
+    if (!text) return '';
+    if (text.length <= 8) return '****';
+    return text.slice(0, 4) + '…' + text.slice(text.length - 4);
+  }
+
+  function normalizeKeyBaseUrl(baseUrl) {
+    var raw = String(baseUrl === null || baseUrl === undefined ? '' : baseUrl).replace(/^\s+|\s+$/g, '');
+    if (!raw) return KEY_DEFAULT_BASE;
+    if (!/^https?:\/\//i.test(raw)) return '';
+    return raw.replace(/\/+$/, '');
+  }
+
+  function keyView(key, defaultId) {
+    if (!key) return null;
+    return {
+      id: key.id,
+      name: key.name,
+      baseUrl: key.baseUrl,
+      model: key.model || '',
+      enabled: key.enabled !== false,
+      createdAt: key.createdAt || 0,
+      isDefault: String(key.id) === String(defaultId || ''),
+      hasKey: !!key.apiKey,
+      apiKey: String(key.apiKey || ''),
+      apiKeyMasked: maskApiKeyText(key.apiKey)
+    };
+  }
+
+  function nativeKeyStorage() {
+    try {
+      return !!(global.Bridge && typeof global.Bridge.keysAreNative === 'function' && global.Bridge.keysAreNative());
+    } catch (e) { return false; }
+  }
+
+  function syncKeyNative(key, makeDefault) {
+    if (!key || !global.Bridge) return false;
+    if (!nativeKeyStorage()) return true; /* 原生无多 Key：以 Store 为唯一存储 */
+    try {
+      var saved = global.Bridge.saveApiKey({
+        id: key.id, name: key.name, apiKey: key.apiKey, baseUrl: key.baseUrl,
+        model: key.model || '', enabled: key.enabled !== false
+      });
+      if (makeDefault) global.Bridge.setDefaultApiKey(key.id);
+      return saved !== false && saved !== null;
+    } catch (e) { warn('同步密钥到原生失败：' + errText(e)); return false; }
+  }
+
+  /** 加载 keys：Store 为持久层，原生存在时以原生数据合并/兜底 */
+  function loadApiKeys(force) {
+    if (state.apiKeysLoaded && !force) return state.apiKeys || [];
+    var storeKeys = [];
+    try { storeKeys = Store.getApiKeys(); } catch (e) { storeKeys = []; }
+    var nativeKeys = [];
+    try { if (nativeKeyStorage() && typeof global.Bridge.apiKeys === 'function') nativeKeys = global.Bridge.apiKeys(); } catch (e2) { nativeKeys = []; }
+    if (!Array.isArray(nativeKeys)) nativeKeys = [];
+    if (nativeKeys.length) {
+      var storeById = {};
+      for (var a = 0; a < storeKeys.length; a++) storeById[storeKeys[a].id] = storeKeys[a];
+      for (var i = 0; i < nativeKeys.length; i++) {
+        var nk = nativeKeys[i];
+        if (!nk || !nk.id) continue;
+        if (!storeById[nk.id]) {
+          try {
+            Store.saveApiKey({
+              id: nk.id, name: nk.name || 'API Key', apiKey: nk.apiKey || '',
+              baseUrl: nk.baseUrl || KEY_DEFAULT_BASE, model: nk.model || '', enabled: nk.enabled !== false
+            });
+          } catch (e3) { /* ignore */ }
+        }
+      }
+      storeKeys = Store.getApiKeys();
+    }
+    /* 旧 apiKey 迁移为默认 Key（仅当完全没有 keys） */
+    if (!storeKeys.length) {
+      var legacyKey = String(state.apiKey || '');
+      var legacyBase = (state.prefs && state.prefs.baseUrl) || KEY_DEFAULT_BASE;
+      if (legacyKey) {
+        try { Store.migrateLegacyApiKey(legacyKey, legacyBase); } catch (e4) { /* ignore */ }
+        storeKeys = Store.getApiKeys();
+        if (storeKeys.length) syncKeyNative(storeKeys[0], true);
+      }
+    }
+    /* defaultKeyId 兜底：Store 的默认与原生默认同步 */
+    try {
+      var storeDefault = Store.getDefaultApiKey();
+      var nativeDefaultId = nativeKeyStorage() && global.Bridge && typeof global.Bridge.getDefaultKeyId === 'function' ? String(global.Bridge.getDefaultKeyId() || '') : '';
+      if (storeDefault && !nativeDefaultId) syncKeyNative(storeDefault, true);
+    } catch (e5) { /* ignore */ }
+    /* localStorage 脱敏后 apiKey 为空：用旧 prefs.apiKey 给默认/首个 Key 内存兜底（不回写） */
+    if (state.apiKey) {
+      var def = null;
+      try { def = Store.getDefaultApiKey(); } catch (eFill) { def = null; }
+      var filled = false;
+      for (var f = 0; f < storeKeys.length; f++) {
+        if (storeKeys[f].apiKey) continue;
+        if (def && String(storeKeys[f].id) === String(def.id)) {
+          storeKeys[f].apiKey = String(state.apiKey);
+          storeKeys[f].baseUrl = storeKeys[f].baseUrl || String((state.prefs && state.prefs.baseUrl) || KEY_DEFAULT_BASE);
+          filled = true;
+        }
+      }
+      if (!filled && storeKeys.length && !storeKeys[0].apiKey) {
+        storeKeys[0].apiKey = String(state.apiKey);
+        storeKeys[0].baseUrl = storeKeys[0].baseUrl || String((state.prefs && state.prefs.baseUrl) || KEY_DEFAULT_BASE);
+      }
+    }
+    state.apiKeys = storeKeys;
+    state.apiKeysLoaded = true;
+    return state.apiKeys;
+  }
+
+  function getApiKeysView() {
+    var list = loadApiKeys();
+    var defaultKey = null;
+    try { defaultKey = Store.getDefaultApiKey(); } catch (e) { defaultKey = null; }
+    var defaultId = defaultKey ? defaultKey.id : '';
+    var out = [];
+    for (var i = 0; i < list.length; i++) out.push(keyView(list[i], defaultId));
+    return out;
+  }
+
+  function findApiKeyById(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return null;
+    var list = loadApiKeys();
+    for (var i = 0; i < list.length; i++) if (String(list[i].id) === key) return list[i];
+    return null;
+  }
+
+  /** 解析会话使用哪个 Key：chat.keyId → persona.keyId → defaultKeyId → 旧 prefs.apiKey */
+  function resolveChatApiKey(chat) {
+    var keys = loadApiKeys();
+    var persona = null;
+    if (chat && chat.personaId) {
+      try { persona = Store.getPersona(chat.personaId); } catch (e) { persona = null; }
+    }
+    var candidates = [];
+    if (chat && chat.keyId) candidates.push({ keyId: chat.keyId, source: 'chat' });
+    if (persona && persona.keyId) candidates.push({ keyId: persona.keyId, source: 'persona' });
+    var defaultKey = null;
+    try { defaultKey = Store.getDefaultApiKey(); } catch (e2) { defaultKey = null; }
+    if (defaultKey) candidates.push({ keyId: defaultKey.id, source: 'default' });
+    for (var i = 0; i < candidates.length; i++) {
+      var key = null;
+      for (var j = 0; j < keys.length; j++) if (String(keys[j].id) === String(candidates[i].keyId)) { key = keys[j]; break; }
+      if (key && key.enabled !== false && key.apiKey) return { key: key, source: candidates[i].source };
+    }
+    var legacy = String(state.apiKey || '');
+    if (legacy) return { key: { id: '', name: '默认密钥', apiKey: legacy, baseUrl: (state.prefs && state.prefs.baseUrl) || KEY_DEFAULT_BASE }, source: 'legacy' };
+    return { key: null, source: 'none' };
+  }
+
+  /** key 是否就是默认 Key（默认 Key 由原生 prefs 承载，无需在请求 body 里重复传密钥） */
+  function isDefaultApiKey(key) {
+    if (!key) return false;
+    try {
+      var def = Store.getDefaultApiKey();
+      if (def && String(def.id) === String(key.id)) {
+        if (!key.apiKey) return true;
+        if (!def.apiKey || String(def.apiKey) === String(key.apiKey)) return true;
+      }
+    } catch (e) { /* ignore */ }
+    if (!key.id && state.apiKey && String(key.apiKey) === String(state.apiKey)) return true;
+    return false;
+  }
+
+  function applyRequestAuthForChat(chat) {
+    var resolved = resolveChatApiKey(chat);
+    /* 默认 Key 走原生全局 prefs，不注入 body（保持请求体不含密钥）；自定义 Key 才按请求覆盖 */
+    if (resolved.key && !isDefaultApiKey(resolved.key) && global.Bridge && typeof global.Bridge.setRequestAuth === 'function') {
+      global.Bridge.setRequestAuth({ apiKey: resolved.key.apiKey, baseUrl: resolved.key.baseUrl });
+      resolved.injected = true;
+    }
+    return resolved;
+  }
+
+  function saveApiKeyConfig(cfg) {
+    var raw = cfg && typeof cfg === 'object' ? cfg : {};
+    var name = String(raw.name || '').replace(/^\s+|\s+$/g, '').slice(0, 60);
+    if (!name) { toast('请填写密钥名称', true); return null; }
+    var baseUrl = normalizeKeyBaseUrl(raw.baseUrl);
+    if (!baseUrl) { toast('Base URL 需以 http(s):// 开头', true); return null; }
+    var existing = raw.id ? findApiKeyById(raw.id) : null;
+    var apiKey = String(raw.apiKey || '').replace(/^\s+|\s+$/g, '');
+    if (!apiKey && existing) apiKey = existing.apiKey;
+    if (!apiKey) { toast('请填写 API Key', true); return null; }
+    if (!existing && loadApiKeys().length >= MAX_API_KEYS) { toast('最多保存 ' + MAX_API_KEYS + ' 个密钥', true); return null; }
+    var saved = null;
+    try {
+      saved = Store.saveApiKey({
+        id: raw.id || '', name: name, apiKey: apiKey, baseUrl: baseUrl,
+        model: raw.model ? String(raw.model).slice(0, 80) : '',
+        enabled: raw.enabled === undefined ? true : !!raw.enabled
+      });
+    } catch (e) { warn('保存密钥失败：' + errText(e)); saved = null; }
+    if (!saved) { toast('保存密钥失败', true); return null; }
+    syncKeyNative(saved, false);
+    state.apiKeysLoaded = false;
+    state.apiKeys = null;
+    loadApiKeys(true);
+    var U = getUI();
+    if (U && typeof U.renderApiKeys === 'function') {
+      try { U.renderApiKeys(getApiKeysView()); } catch (e2) { /* ignore */ }
+    }
+    toast(existing ? '密钥已更新' : '密钥已保存');
+    return keyView(saved, Store.getDefaultApiKey ? (Store.getDefaultApiKey() || {}).id : '');
+  }
+
+  function deleteApiKeyById(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    var ok = false;
+    try { ok = Store.deleteApiKey(key); } catch (e) { ok = false; }
+    if (ok) {
+      try { if (nativeKeyStorage() && typeof global.Bridge.deleteApiKey === 'function') global.Bridge.deleteApiKey(key); } catch (e2) { /* ignore */ }
+      state.apiKeysLoaded = false;
+      state.apiKeys = null;
+      loadApiKeys(true);
+      var defaultKey = Store.getDefaultApiKey();
+      if (defaultKey) syncKeyNative(defaultKey, true);
+      renderKeysPage();
+      toast('密钥已删除');
+    }
+    return ok;
+  }
+
+  function setDefaultKeyById(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    var ok = false;
+    try { ok = Store.setDefaultApiKey(key); } catch (e) { ok = false; }
+    if (!ok) { toast('密钥不存在', true); return false; }
+    try { if (nativeKeyStorage() && typeof global.Bridge.setDefaultApiKey === 'function') global.Bridge.setDefaultApiKey(key); } catch (e2) { /* ignore */ }
+    var def = Store.getDefaultApiKey();
+    if (def) syncKeyNative(def, true);
+    renderKeysPage();
+    toast('已设为默认密钥');
+    return true;
+  }
+
+  function testApiKeyConfig(id, cfg) {
+    var auth = null;
+    if (cfg && typeof cfg === 'object') {
+      auth = { apiKey: String(cfg.apiKey || '').replace(/^\s+|\s+$/g, ''), baseUrl: normalizeKeyBaseUrl(cfg.baseUrl) };
+      if (!auth.apiKey) return Promise.resolve({ ok: false, error: '请填写 API Key' });
+    } else {
+      var key = findApiKeyById(id);
+      if (!key) return Promise.resolve({ ok: false, error: '密钥不存在' });
+      auth = { apiKey: key.apiKey, baseUrl: key.baseUrl };
+    }
+    var legacyMode = !auth.apiKey && state.apiKey;
+    if (legacyMode) auth.apiKey = state.apiKey;
+    if (!auth.apiKey) return Promise.resolve({ ok: false, error: '缺少 API Key' });
+    if (id && nativeKeyStorage() && global.Bridge && typeof global.Bridge.testApiKey === 'function') {
+      return Promise.resolve(global.Bridge.testApiKey(String(id))).then(function (res) {
+        return { ok: !!(res && res.ok), models: (res && res.models) || [], error: (res && res.error) || '' };
+      });
+    }
+    if (!global.Api || typeof global.Api.verifyKey !== 'function') {
+      return Promise.resolve({ ok: false, error: 'Api 不可用' });
+    }
+    try { if (global.Bridge && typeof global.Bridge.setRequestAuth === 'function') global.Bridge.setRequestAuth(auth); } catch (e) { /* ignore */ }
+    return Api.verifyKey({ auth: auth, timeout: 15000 }).then(function (res) {
+      res = res || {};
+      return { ok: !!res.ok, models: Array.isArray(res.models) ? res.models : [], error: res.ok ? '' : (res.message || '连接失败') };
+    }, function (err) {
+      return { ok: false, models: [], error: errText(err) };
+    });
+  }
+
+  function renderKeysPage() {
+    var list = getApiKeysView();
+    var U = getUI();
+    if (U && typeof U.renderApiKeys === 'function') {
+      try { U.renderApiKeys(list); } catch (e) { warn('UI.renderApiKeys 异常：' + errText(e)); }
+    }
+    if (U && typeof U.setChatKeyName === 'function') {
+      var chat = Store.getActiveChat();
+      if (chat) {
+        var resolved = resolveChatApiKey(chat);
+        try { U.setChatKeyName(resolved.key ? resolved.key.name : ''); } catch (e2) { /* ignore */ }
+      }
+    }
+    return list;
+  }
+
+  function openKeysPage() {
+    loadApiKeys(true);
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'keys' && U && typeof U.openKeysPage === 'function') {
+      state.keysOpening = true;
+      try { U.openKeysPage(); } catch (e) { warn('UI.openKeysPage 异常：' + errText(e)); } finally { state.keysOpening = false; }
+    }
+    return renderKeysPage();
+  }
+
+  function pickChatKey(keyId) {
+    var chat = Store.getActiveChat();
+    if (!chat) return false;
+    var id = keyId === null || keyId === undefined ? '' : String(keyId);
+    try { Store.updateChat(chat.id, { keyId: id }); } catch (e) { warn('设置会话密钥失败：' + errText(e)); return false; }
+    var resolved = resolveChatApiKey(Store.getChat(chat.id));
+    var U = getUI();
+    if (U && typeof U.setChatKeyName === 'function') {
+      try { U.setChatKeyName(resolved.key ? resolved.key.name : ''); } catch (e2) { /* ignore */ }
+    }
+    toast(id ? '已切换密钥：' + (resolved.key ? resolved.key.name : id) : '已跟随默认密钥');
+    return true;
+  }
+
+  /** 登录页「使用已有密钥」：选中/默认 Key 直接登录 */
+  function useExistingKeyLogin(keyId) {
+    var key = keyId ? findApiKeyById(keyId) : Store.getDefaultApiKey();
+    if (!key) { toast('还没有保存的密钥', true); return false; }
+    state.apiKey = String(key.apiKey || '');
+    state.prefs.baseUrl = key.baseUrl || KEY_DEFAULT_BASE;
+    try { Store.setPrefs({ baseUrl: state.prefs.baseUrl }); } catch (e) { /* ignore */ }
+    try { if (global.Bridge && typeof global.Bridge.setPrefs === 'function') global.Bridge.setPrefs({ apiKey: state.apiKey, baseUrl: state.prefs.baseUrl }); } catch (e2) { /* ignore */ }
+    try { if (nativeKeyStorage() && typeof global.Bridge.setDefaultApiKey === 'function') global.Bridge.setDefaultApiKey(key.id); } catch (e3) { /* ignore */ }
+    ui('renderLogin', { hasKey: true, busy: false, error: '' });
+    enterChats();
+    toast('已使用密钥：' + key.name, true);
+    return true;
+  }
+
+  function getChatKeyName(chat) {
+    var resolved = resolveChatApiKey(chat || Store.getActiveChat());
+    return resolved.key ? resolved.key.name : '';
+  }
+
+  /* ---------------- 人设 ---------------- */
+
+  function ensurePersonas() {
+    if (state.personasLoaded) return state.personas || [];
+    var list = [];
+    try { list = Store.getPersonas(); } catch (e) { list = []; }
+    if (!list.length) {
+      /* 首次：把现有内置预设迁移为内置人设（presets 本身保持不变，兼容旧 UI） */
+      var presets = [];
+      try { presets = Store.getPresets(); } catch (e2) { presets = []; }
+      for (var i = 0; i < presets.length && i < 100; i++) {
+        var preset = presets[i];
+        if (!preset) continue;
+        try {
+          Store.savePersona({
+            id: 'persona-' + preset.id, name: preset.name, emoji: '',
+            description: preset.description || '', systemPrompt: preset.systemPrompt || '',
+            greeting: '', model: preset.model || '', temperature: 1, keyId: '',
+            builtin: !!preset.builtin
+          });
+        } catch (e3) { /* ignore */ }
+      }
+      try { list = Store.getPersonas(); } catch (e4) { list = []; }
+    }
+    state.personas = list;
+    state.personasLoaded = true;
+    return list;
+  }
+
+  function getPersonasView() {
+    var list = ensurePersonas();
+    var keys = loadApiKeys();
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      var keyName = '';
+      for (var k = 0; k < keys.length; k++) if (String(keys[k].id) === String(p.keyId)) { keyName = keys[k].name; break; }
+      out.push({
+        id: p.id, name: p.name, emoji: p.emoji || '', description: p.description || '',
+        systemPrompt: p.systemPrompt || '', greeting: p.greeting || '',
+        model: p.model || '', temperature: p.temperature === undefined ? 1 : p.temperature,
+        keyId: p.keyId || '', keyName: keyName, builtin: !!p.builtin, createdAt: p.createdAt || 0
+      });
+    }
+    return out;
+  }
+
+  function renderPersonasPage() {
+    var list = getPersonasView();
+    var U = getUI();
+    if (U && typeof U.renderPersonas === 'function') {
+      try { U.renderPersonas(list); } catch (e) { warn('UI.renderPersonas 异常：' + errText(e)); }
+    }
+    return list;
+  }
+
+  function openPersonasPage() {
+    ensurePersonas();
+    var U = getUI();
+    var screen = U && typeof U.getScreen === 'function' ? String(U.getScreen() || '') : '';
+    if (screen !== 'personas' && U && typeof U.openPersonasPage === 'function') {
+      state.personasOpening = true;
+      try { U.openPersonasPage(); } catch (e) { warn('UI.openPersonasPage 异常：' + errText(e)); } finally { state.personasOpening = false; }
+    }
+    return renderPersonasPage();
+  }
+
+  function savePersonaConfig(cfg) {
+    var raw = cfg && typeof cfg === 'object' ? cfg : {};
+    var name = String(raw.name || '').replace(/^\s+|\s+$/g, '').slice(0, 40);
+    if (!name) { toast('请填写人设名称', true); return null; }
+    var saved = null;
+    try {
+      saved = Store.savePersona({
+        id: raw.id || '', name: name, emoji: raw.emoji || '',
+        description: raw.description || '', systemPrompt: raw.systemPrompt || '',
+        greeting: raw.greeting || '', model: raw.model || '',
+        temperature: raw.temperature === undefined ? 1 : raw.temperature,
+        keyId: raw.keyId || '', builtin: raw.builtin
+      });
+    } catch (e) { warn('保存人设失败：' + errText(e)); saved = null; }
+    if (!saved) { toast('保存人设失败', true); return null; }
+    try { if (global.Bridge && typeof global.Bridge.savePersona === 'function') global.Bridge.savePersona(saved); } catch (e2) { /* ignore */ }
+    state.personasLoaded = false;
+    state.personas = null;
+    ensurePersonas();
+    renderPersonasPage();
+    toast(raw.id ? '人设已更新' : '人设已保存');
+    return saved;
+  }
+
+  function deletePersonaById(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    if (!key) return false;
+    var ok = false;
+    try { ok = Store.deletePersona(key); } catch (e) { ok = false; }
+    if (!ok) { toast('内置人设不可删除', true); return false; }
+    try { if (global.Bridge && typeof global.Bridge.deletePersona === 'function') global.Bridge.deletePersona(key); } catch (e2) { /* ignore */ }
+    state.personasLoaded = false;
+    state.personas = null;
+    ensurePersonas();
+    renderPersonasPage();
+    toast('人设已删除');
+    return true;
+  }
+
+  /** 应用人设到会话：写入 chat.personaId/personaPrompt/systemPrompt/model/temperature/keyId（可选插入 greeting） */
+  function applyPersonaToChat(chatId, personaId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    if (!chat) return false;
+    var persona = null;
+    try { persona = Store.getPersona(personaId); } catch (e) { persona = null; }
+    if (!persona) { toast('人设不存在', true); return false; }
+    var patch = {
+      personaId: persona.id,
+      personaPrompt: persona.systemPrompt || '',
+      systemPrompt: persona.systemPrompt || '',
+      temperature: persona.temperature === undefined ? 1 : persona.temperature
+    };
+    if (persona.model) patch.model = persona.model;
+    if (persona.keyId) patch.keyId = persona.keyId;
+    try { Store.updateChat(chat.id, patch); } catch (e2) { warn('应用人设失败：' + errText(e2)); return false; }
+    if (persona.greeting) {
+      var latest = Store.getChat(chat.id);
+      var hasUser = false;
+      for (var i = 0; i < (latest.messages || []).length; i++) if (latest.messages[i].role === 'user') { hasUser = true; break; }
+      if (!hasUser) {
+        try {
+          var greetingMsg = Store.appendMessage(chat.id, { role: 'assistant', content: String(persona.greeting).slice(0, 2000) });
+          if (greetingMsg && state.nav && state.nav.screen === 'chat' && state.requestChatId === chat.id) ui('appendMessage', greetingMsg);
+        } catch (e3) { /* ignore */ }
+      }
+    }
+    if (state.nav && state.nav.screen === 'chat' && Store.getActiveChatId() === chat.id) {
+      var refreshed = Store.getChat(chat.id);
+      try { ui('renderMessages', refreshed); } catch (e4) { /* ignore */ }
+      try { ui('setModel', refreshed.model); } catch (e5) { /* ignore */ }
+      try { applyModelLabel(); } catch (e6) { /* ignore */ }
+    }
+    refreshChatList();
+    toast('已应用人设：' + persona.name);
+    return true;
+  }
+
+  function pickChatPersona(personaId) {
+    return applyPersonaToChat(Store.getActiveChatId(), personaId);
   }
 
   /* ------------------------------------------------------------------ *
@@ -9143,6 +9850,32 @@
   App.openBotChat = safe(function (botId, chatId) { return openBotChat(botId, chatId); }, 'App.openBotChat');
   App.getBotTargets = function (botId) { return getBotTargets(botId); };
   App.reloadBots = safe(function () { loadBots(true); return buildBotViewList(); }, 'App.reloadBots');
+
+  /* v3.3.0 多 API Key / 人设对外接口 */
+  App.getApiKeys = function () { return getApiKeysView(); };
+  App.saveApiKey = safe(function (cfg) { return saveApiKeyConfig(cfg); }, 'App.saveApiKey');
+  App.deleteApiKey = safe(function (id) { return deleteApiKeyById(id); }, 'App.deleteApiKey');
+  App.setDefaultApiKey = safe(function (id) { return setDefaultKeyById(id); }, 'App.setDefaultApiKey');
+  App.testApiKey = safe(function (id, cfg) { return testApiKeyConfig(id, cfg); }, 'App.testApiKey');
+  App.openKeysPage = safe(function () { return openKeysPage(); }, 'App.openKeysPage');
+  App.getDefaultApiKey = function () {
+    try { return Store.getDefaultApiKey(); } catch (e) { return null; }
+  };
+  App.resolveChatApiKey = function (chatId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    return resolveChatApiKey(chat);
+  };
+  App.getChatKeyName = function (chatId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    return getChatKeyName(chat);
+  };
+  App.pickChatKey = safe(function (keyId) { return pickChatKey(keyId); }, 'App.pickChatKey');
+  App.getPersonas = function () { return getPersonasView(); };
+  App.savePersona = safe(function (cfg) { return savePersonaConfig(cfg); }, 'App.savePersona');
+  App.deletePersona = safe(function (id) { return deletePersonaById(id); }, 'App.deletePersona');
+  App.applyPersonaToChat = safe(function (chatId, personaId) { return applyPersonaToChat(chatId, personaId); }, 'App.applyPersonaToChat');
+  App.pickChatPersona = safe(function (personaId) { return pickChatPersona(personaId); }, 'App.pickChatPersona');
+  App.openPersonasPage = safe(function () { return openPersonasPage(); }, 'App.openPersonasPage');
   App.showMarketPage = safe(function () { return showMarketPage(); }, 'App.showMarketPage');
   App.fetchMarketIndex = safe(function (url) { return fetchMarketIndex(url); }, 'App.fetchMarketIndex');
   App.installMarketItem = safe(function (item) { return installMarketItem(item); }, 'App.installMarketItem');

@@ -1,6 +1,7 @@
 package com.deepseekhouse.app.bot;
 
 import android.content.Context;
+import android.util.Log;
 
 import com.deepseekhouse.app.Prefs;
 
@@ -11,6 +12,7 @@ import org.json.JSONObject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,7 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Telegram/OneBot 发送、连接测试、最近 200 条消息内存缓存，以及事件：</p>
  * <pre>
  * bot-status  {botId,status:"connected"|"error"|"stopped",message}
- * bot-message {botId,chatId,from,fromName,text,at}       // 仅 Telegram 收消息
+ * bot-message {botId,chatId,from,fromName,text,at,eventId,msgType,...}  // Telegram / QQ 官方 bot(WS)
  * bot-sent    {botId,chatId,ok,messageId,error?}
  * </pre>
  *
@@ -34,7 +36,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * （{@code dsh-bot-<id>}），stop 时设置 running=false 并 disconnect 在途请求使其尽快退出。
  * 所有状态读写统一在 {@link #lock} 下；缓存上限 {@link #RECENT_LIMIT}。</p>
  *
- * <p>安全：token/accessToken 只来自 Prefs 与内存，不写日志；错误信息由 API 层做 token scrub。</p>
+ * <p>v3.2.0：qqbot 通过 QqBotWsClient 接收 WS 网关事件（bot-message），并对 5 分钟内同 chat 的
+ * botSend 自动附加 msg_id 做被动回复。</p>
+ *
+ * <p>安全：token/accessToken/secret 只来自 Prefs 与内存，不写日志；错误信息由 API 层 scrub。</p>
  */
 public final class BotManager {
 
@@ -51,6 +56,8 @@ public final class BotManager {
     private static final long ERROR_RETRY_DELAY_MS = 5 * 1000L;
     private static final int DEFAULT_RECENT = 50;
     private static final long TARGETS_CACHE_MS = 5 * 60 * 1000L;
+    /** QQ 被动回复 msg_id 有效期（5 分钟）。 */
+    private static final long PASSIVE_REPLY_WINDOW_MS = 5 * 60 * 1000L;
     private static final int MAX_TARGETS = 50;
     private static final int MAX_GUILDS = 15;
 
@@ -79,6 +86,13 @@ public final class BotManager {
         TelegramBotApi telegram;
         OneBotApi onebot;
         QqBotApi qqbot;
+        QqBotWsClient wsClient;
+        String wsStatus = "";
+        String wsMessage = "";
+        long qqEventCount;
+        long qqLastEventAt;
+        /** chatId → 最近一条 inbound 的 eventId（用于被动回复，5 分钟窗口）。 */
+        final Map<String, LastPassiveEvent> lastEvents = new HashMap<>();
         JSONArray targetsCache;
         long targetsCacheAt;
         final Deque<JSONObject> recent = new ArrayDeque<>();
@@ -86,6 +100,17 @@ public final class BotManager {
         BotState(String id, BotConfig config) {
             this.id = id;
             this.config = config;
+        }
+    }
+
+    /** 最近 inbound 消息 id（被动回复用）。 */
+    private static final class LastPassiveEvent {
+        final String eventId;
+        final long at;
+
+        LastPassiveEvent(String eventId, long at) {
+            this.eventId = eventId;
+            this.at = at;
         }
     }
 
@@ -189,6 +214,10 @@ public final class BotManager {
                     item.put("message", state == null || state.message == null ? "" : state.message);
                     item.put("running", state != null && state.running);
                     item.put("recentCount", state == null ? 0 : state.recent.size());
+                    item.put("ws", state == null || state.wsStatus == null ? "" : state.wsStatus);
+                    item.put("wsMessage", state == null || state.wsMessage == null ? "" : state.wsMessage);
+                    item.put("eventCount", state == null ? 0L : state.qqEventCount);
+                    item.put("lastEventAt", state == null ? 0L : state.qqLastEventAt);
                     String username = state == null ? "" : state.botUsername;
                     if (username != null && !username.isEmpty()) {
                         item.put("botUsername", username);
@@ -418,26 +447,55 @@ public final class BotManager {
                 }
                 emitStatus(state.id, STATUS_CONNECTED, message);
             } else {
-                QqBotApi api = new QqBotApi(config.appId, config.secret, config.baseUrl);
+                final QqBotApi api = new QqBotApi(config.appId, config.secret, config.baseUrl);
                 api.getAccessToken();
                 long ttl = api.tokenTtlSeconds();
+                final QqBotWsClient ws = new QqBotWsClient(config.baseUrl,
+                        new QqBotWsClient.TokenProvider() {
+                            @Override
+                            public String getAccessToken() throws java.io.IOException {
+                                return api.getAccessToken();
+                            }
+                        },
+                        new QqBotWsClient.Listener() {
+                            @Override
+                            public void onStatus(String wsStatus, String wsMessage) {
+                                handleQqWsStatus(state, generation, wsStatus, wsMessage);
+                            }
+
+                            @Override
+                            public void onReady(String sessionId) {
+                                // READY 已在 onStatus(connected) 中反映
+                            }
+
+                            @Override
+                            public void onMessage(QqBotWsClient.Incoming incoming) {
+                                handleQqIncoming(state, generation, incoming);
+                            }
+                        });
                 String message = "已连接：QQ 机器人 appId=" + config.appId
-                        + "（AccessToken 有效期 " + ttl + "s）";
+                        + "（AccessToken 有效期 " + ttl + "s，WebSocket 启动中…）";
                 synchronized (lock) {
                     if (!state.running || closed || state.generation != generation) {
                         api.cancel();
+                        ws.stop();
                         return;
                     }
                     state.qqbot = api;
+                    state.wsClient = ws;
                     state.telegram = null;
                     state.onebot = null;
                     state.botUsername = "QQBot:" + config.appId;
                     state.status = STATUS_CONNECTED;
                     state.message = message;
+                    state.wsStatus = QqBotWsClient.STATUS_CONNECTING;
+                    state.wsMessage = "";
                     state.targetsCache = null;
                     state.targetsCacheAt = 0L;
                 }
-                emitStatus(state.id, STATUS_CONNECTED, message);
+                emitStatus(state.id, STATUS_CONNECTED, message,
+                        QqBotWsClient.STATUS_CONNECTING, "");
+                ws.start();
             }
         } catch (Throwable t) {
             String message = message(t);
@@ -503,6 +561,18 @@ public final class BotManager {
                 // 忽略
             }
         }
+        QqBotWsClient ws = state.wsClient;
+        state.wsClient = null;
+        if (ws != null) {
+            try {
+                ws.stop();
+            } catch (Throwable ignored) {
+                // 忽略
+            }
+        }
+        boolean qqBot = state.config != null && state.config.isQqBot();
+        state.wsStatus = qqBot ? QqBotWsClient.STATUS_STOPPED : "";
+        state.wsMessage = qqBot ? "WebSocket 已停止" : "";
         state.targetsCache = null;
         state.targetsCacheAt = 0L;
         Thread thread = state.pollThread;
@@ -512,7 +582,9 @@ public final class BotManager {
         }
         state.status = STATUS_STOPPED;
         state.message = "";
-        emitStatus(state.id, STATUS_STOPPED, "已停止");
+        emitStatus(state.id, STATUS_STOPPED, "已停止",
+                qqBot ? QqBotWsClient.STATUS_STOPPED : "",
+                qqBot ? "WebSocket 已停止" : "");
     }
 
     private static void joinQuietly(List<Thread> threads) {
@@ -591,6 +663,7 @@ public final class BotManager {
         TelegramBotApi telegram = null;
         OneBotApi onebot = null;
         QqBotApi qqbot = null;
+        String passiveMsgId = "";
         synchronized (lock) {
             BotState state = states.get(botId);
             if (state == null) {
@@ -601,10 +674,20 @@ public final class BotManager {
             telegram = state.telegram;
             onebot = state.onebot;
             qqbot = state.qqbot;
+            if (config.isQqBot()) {
+                LastPassiveEvent event = state.lastEvents.get(target);
+                long now = System.currentTimeMillis();
+                if (event != null && event.eventId != null && !event.eventId.isEmpty()
+                        && now - event.at <= PASSIVE_REPLY_WINDOW_MS) {
+                    passiveMsgId = event.eventId;
+                }
+            }
         }
         final TelegramBotApi telegramApi = telegram;
         final OneBotApi onebotApi = onebot;
         final QqBotApi qqbotApi = qqbot;
+        final String passiveEventId = passiveMsgId;
+        final boolean passive = !passiveMsgId.isEmpty();
         ioPool.execute(new Runnable() {
             @Override
             public void run() {
@@ -625,16 +708,16 @@ public final class BotManager {
                     } else {
                         QqBotApi api = qqbotApi != null
                                 ? qqbotApi : new QqBotApi(config.appId, config.secret, config.baseUrl);
-                        messageId = api.sendMessage(target, content);
+                        messageId = api.sendMessage(target, content, passiveEventId);
                     }
                     cacheRecent(botId, target, "bot", "", content, System.currentTimeMillis(),
                             "out", true, messageId, null);
-                    emitSent(botId, target, true, messageId, null);
+                    emitSent(botId, target, true, messageId, null, passive);
                 } catch (Throwable t) {
                     String error = message(t);
                     cacheRecent(botId, target, "bot", "", content, System.currentTimeMillis(),
                             "out", false, "", error);
-                    emitSent(botId, target, false, "", error);
+                    emitSent(botId, target, false, "", error, passive);
                 }
             }
         });
@@ -691,6 +774,129 @@ public final class BotManager {
             while (state.recent.size() > RECENT_LIMIT) {
                 state.recent.removeFirst();
             }
+        }
+    }
+
+    // ------------------------------------------------------------ QQ 官方 Bot WS 事件
+
+    /** WS 状态变化 → 更新 bot 状态并 emit bot-status（额外 ws/wsMessage 字段）。 */
+    private void handleQqWsStatus(BotState state, int generation, String wsStatus,
+                                  String wsMessage) {
+        String status;
+        String message;
+        String emitWs;
+        String emitWsMessage;
+        synchronized (lock) {
+            if (!state.running || closed || state.generation != generation) {
+                return;
+            }
+            state.wsStatus = wsStatus == null ? "" : wsStatus;
+            state.wsMessage = wsMessage == null ? "" : wsMessage;
+            if (QqBotWsClient.STATUS_CONNECTED.equals(state.wsStatus)) {
+                state.status = STATUS_CONNECTED;
+                state.message = "WebSocket 已连接，事件接收中…";
+            } else if (QqBotWsClient.STATUS_STOPPED.equals(state.wsStatus)) {
+                state.message = "WebSocket 已停止";
+            } else {
+                state.message = "WebSocket " + state.wsStatus
+                        + (state.wsMessage.isEmpty() ? "" : "：" + state.wsMessage);
+            }
+            status = state.status;
+            message = state.message;
+            emitWs = state.wsStatus;
+            emitWsMessage = state.wsMessage;
+        }
+        emitStatus(state.id, status, message, emitWs, emitWsMessage);
+    }
+
+    /** 收到 QQ 官方 Bot 事件 → 记录 lastEventId / 缓存 / emit bot-message。 */
+    private void handleQqIncoming(BotState state, int generation,
+                                  QqBotWsClient.Incoming incoming) {
+        if (incoming == null || incoming.chatId.isEmpty()) {
+            return;
+        }
+        Log.i("DSHBot", "incoming chatId=" + incoming.chatId + " from=" + incoming.fromName + " len=" + (incoming.text == null ? 0 : incoming.text.length()) + " event=" + incoming.eventId);
+        JSONObject event = new JSONObject();
+        synchronized (lock) {
+            if (!state.running || closed || state.generation != generation) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (!incoming.eventId.isEmpty()) {
+                state.lastEvents.put(incoming.chatId,
+                        new LastPassiveEvent(incoming.eventId, now));
+            }
+            state.qqEventCount++;
+            state.qqLastEventAt = now;
+            if (QqBotWsClient.STATUS_CONNECTED.equals(state.wsStatus)) {
+                state.message = "WebSocket 已连接，事件接收中…（已收 "
+                        + state.qqEventCount + " 条）";
+            }
+            try {
+                event.put("type", "bot-message");
+                event.put("botId", state.id);
+                event.put("chatId", incoming.chatId);
+                event.put("from", incoming.from);
+                event.put("fromName", incoming.fromName);
+                event.put("text", incoming.text);
+                event.put("at", incoming.at > 0 ? incoming.at : now);
+                event.put("eventId", incoming.eventId);
+                event.put("msgId", incoming.eventId);
+                event.put("msgType", incoming.msgType);
+                event.put("source", incoming.source);
+                if (!incoming.groupId.isEmpty()) {
+                    event.put("groupId", incoming.groupId);
+                }
+                if (!incoming.channelId.isEmpty()) {
+                    event.put("channelId", incoming.channelId);
+                }
+                if (!incoming.guildId.isEmpty()) {
+                    event.put("guildId", incoming.guildId);
+                }
+                if (!incoming.userId.isEmpty()) {
+                    event.put("userId", incoming.userId);
+                }
+            } catch (JSONException ignored) {
+                return;
+            }
+            cacheRecentIncomingLocked(state, incoming, now);
+        }
+        emit(event);
+    }
+
+    private void cacheRecentIncomingLocked(BotState state, QqBotWsClient.Incoming incoming,
+                                           long now) {
+        JSONObject item = new JSONObject();
+        try {
+            item.put("botId", state.id);
+            item.put("chatId", incoming.chatId);
+            item.put("from", incoming.from);
+            item.put("fromName", incoming.fromName);
+            item.put("text", incoming.text);
+            item.put("at", incoming.at > 0 ? incoming.at : now);
+            item.put("direction", "in");
+            item.put("eventId", incoming.eventId);
+            item.put("msgId", incoming.eventId);
+            item.put("msgType", incoming.msgType);
+            item.put("source", incoming.source);
+            if (!incoming.groupId.isEmpty()) {
+                item.put("groupId", incoming.groupId);
+            }
+            if (!incoming.channelId.isEmpty()) {
+                item.put("channelId", incoming.channelId);
+            }
+            if (!incoming.guildId.isEmpty()) {
+                item.put("guildId", incoming.guildId);
+            }
+            if (!incoming.userId.isEmpty()) {
+                item.put("userId", incoming.userId);
+            }
+        } catch (JSONException ignored) {
+            return;
+        }
+        state.recent.addLast(item);
+        while (state.recent.size() > RECENT_LIMIT) {
+            state.recent.removeFirst();
         }
     }
 
@@ -1118,6 +1324,17 @@ public final class BotManager {
                         // 忽略
                     }
                 }
+                QqBotWsClient ws = state.wsClient;
+                state.wsClient = null;
+                if (ws != null) {
+                    try {
+                        ws.stop();
+                    } catch (Throwable ignored) {
+                        // 忽略
+                    }
+                }
+                state.wsStatus = "";
+                state.wsMessage = "";
                 state.targetsCache = null;
                 state.targetsCacheAt = 0L;
                 Thread thread = state.pollThread;
@@ -1140,12 +1357,24 @@ public final class BotManager {
     // ------------------------------------------------------------ 事件
 
     private void emitStatus(String botId, String status, String message) {
+        Log.i("DSHBot", "emitStatus id=" + botId + " status=" + status + " msg=" + message);
+        emitStatus(botId, status, message, "", "");
+    }
+
+    /** bot-status；qqbot 额外带 ws/wsMessage 供 UI 显示 WebSocket 状态。 */
+    private void emitStatus(String botId, String status, String message,
+                            String ws, String wsMessage) {
+        Log.i("DSHBot", "emitStatusWS id=" + botId + " status=" + status + " ws=" + ws + " msg=" + message);
         JSONObject event = new JSONObject();
         try {
             event.put("type", "bot-status");
             event.put("botId", botId == null ? "" : botId);
             event.put("status", status == null ? STATUS_STOPPED : status);
             event.put("message", message == null ? "" : message);
+            if (ws != null && !ws.isEmpty()) {
+                event.put("ws", ws);
+                event.put("wsMessage", wsMessage == null ? "" : wsMessage);
+            }
         } catch (JSONException ignored) {
             return;
         }
@@ -1153,6 +1382,11 @@ public final class BotManager {
     }
 
     private void emitSent(String botId, String chatId, boolean ok, String messageId, String error) {
+        emitSent(botId, chatId, ok, messageId, error, false);
+    }
+
+    private void emitSent(String botId, String chatId, boolean ok, String messageId,
+                          String error, boolean passive) {
         JSONObject event = new JSONObject();
         try {
             event.put("type", "bot-sent");
@@ -1162,6 +1396,9 @@ public final class BotManager {
             event.put("messageId", messageId == null ? "" : messageId);
             if (error != null && !error.isEmpty()) {
                 event.put("error", error);
+            }
+            if (passive) {
+                event.put("passive", true);
             }
         } catch (JSONException ignored) {
             return;

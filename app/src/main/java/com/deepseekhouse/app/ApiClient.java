@@ -157,21 +157,27 @@ public final class ApiClient {
         if (req.cancelled) {
             return;
         }
-        String apiKey = prefs.getApiKey();
-        if (apiKey == null || apiKey.trim().isEmpty()) {
-            emitError(requestId, "未配置 API Key，请先在设置中填写", 401);
-            return;
-        }
-        String url = joinUrl(prefs.getBaseUrl(), "/chat/completions");
-        if (url.isEmpty()) {
-            emitError(requestId, "未配置 Base URL", 400);
-            return;
-        }
         JSONObject input;
         try {
             input = new JSONObject(bodyJson == null || bodyJson.trim().isEmpty() ? "{}" : bodyJson);
         } catch (JSONException e) {
             emitError(requestId, "请求体不是合法 JSON", 400);
+            return;
+        }
+        // v3.3.0：body 顶层可选 apiKey/baseUrl 覆盖（空 = 默认/旧字段）
+        String apiKey = firstNonEmpty(input.optString("apiKey", ""), prefs.getApiKey());
+        String baseUrl = firstNonEmpty(input.optString("baseUrl", ""), prefs.getBaseUrl());
+        if (apiKey.isEmpty()) {
+            emitError(requestId, "未配置 API Key，请先在设置中填写", 401);
+            return;
+        }
+        String url = joinUrl(baseUrl, "/chat/completions");
+        if (url.isEmpty()) {
+            emitError(requestId, "未配置 Base URL", 400);
+            return;
+        }
+        if (!isHttpUrl(url)) {
+            emitError(requestId, "Base URL 仅支持 http/https", 400);
             return;
         }
         JSONObject payload;
@@ -184,7 +190,7 @@ public final class ApiClient {
         boolean stream = payload.optBoolean("stream", true);
         HttpURLConnection conn = null;
         try {
-            conn = open(url, "POST", stream ? "text/event-stream" : "application/json", true);
+            conn = open(url, "POST", stream ? "text/event-stream" : "application/json", true, apiKey);
             req.conn = conn;
             if (req.cancelled) {
                 return;
@@ -414,14 +420,20 @@ public final class ApiClient {
 
     // ------------------------------------------------------------ /models 校验
 
-    /** §3.2 validateKey：GET {baseUrl}/models。 */
+    /** §3.2 validateKey：GET {baseUrl}/models（默认 Key）。 */
     public void validateKey(final String requestId) {
+        validateKey(requestId, null, null);
+    }
+
+    /** v3.3.0：可选覆盖 apiKey/baseUrl 的 validateKey（不改变全局默认）。 */
+    public void validateKey(final String requestId, final String apiKeyOverride,
+                            final String baseUrlOverride) {
         final Request req = register(requestId);
         submit(requestId, req, new Runnable() {
             @Override
             public void run() {
                 try {
-                    runValidate(req, requestId);
+                    runValidate(req, requestId, apiKeyOverride, baseUrlOverride);
                 } finally {
                     req.conn = null;
                     finish(requestId, req);
@@ -430,27 +442,29 @@ public final class ApiClient {
         });
     }
 
-    private void runValidate(Request req, String requestId) {
+    private void runValidate(Request req, String requestId, String apiKeyOverride,
+                             String baseUrlOverride) {
         if (req.cancelled) {
             return;
         }
-        String apiKey = prefs.getApiKey();
-        if (apiKey == null || apiKey.trim().isEmpty()) {
+        String apiKey = firstNonEmpty(apiKeyOverride, prefs.getApiKey());
+        if (apiKey.isEmpty()) {
             String msg = "未配置 API Key";
             emitValidated(requestId, false, null, msg, 401);
             emitError(requestId, msg, 401);
             return;
         }
-        String url = joinUrl(prefs.getBaseUrl(), "/models");
-        if (url.isEmpty()) {
-            String msg = "未配置 Base URL";
+        String baseUrl = firstNonEmpty(baseUrlOverride, prefs.getBaseUrl());
+        String url = joinUrl(baseUrl, "/models");
+        if (url.isEmpty() || !isHttpUrl(url)) {
+            String msg = url.isEmpty() ? "未配置 Base URL" : "Base URL 仅支持 http/https";
             emitValidated(requestId, false, null, msg, 400);
             emitError(requestId, msg, 400);
             return;
         }
         HttpURLConnection conn = null;
         try {
-            conn = open(url, "GET", "application/json", true);
+            conn = open(url, "GET", "application/json", true, apiKey);
             req.conn = conn;
             if (req.cancelled) {
                 return;
@@ -558,7 +572,7 @@ public final class ApiClient {
         }
         HttpURLConnection conn = null;
         try {
-            conn = open(url, method, "application/json, text/plain, */*", false);
+            conn = open(url, method, "application/json, text/plain, */*", false, null);
             conn.setInstanceFollowRedirects(true);
             if (headers != null) {
                 Iterator<String> keys = headers.keys();
@@ -618,13 +632,127 @@ public final class ApiClient {
         }
     }
 
+    /**
+     * v3.3.0：同步测试某个 API Key（GET {baseUrl}/models），供 JsBridge.testApiKey 使用。
+     * 返回 {"ok":true,"models":[".."],"httpStatus":200} 或 {"ok":false,"error":"..","httpStatus":401}。
+     */
+    public String testApiKeySync(String rawApiKey, String rawBaseUrl, int timeoutMs) {
+        String apiKey = rawApiKey == null ? "" : rawApiKey.trim();
+        JSONObject result = new JSONObject();
+        int httpStatus = 0;
+        HttpURLConnection conn = null;
+        try {
+            if (apiKey.isEmpty()) {
+                result.put("ok", false);
+                result.put("error", "API Key 为空");
+                result.put("httpStatus", 0);
+                return result.toString();
+            }
+            String baseUrl = rawBaseUrl == null || rawBaseUrl.trim().isEmpty()
+                    ? prefs.getBaseUrl() : rawBaseUrl.trim();
+            String url = joinUrl(baseUrl, "/models");
+            if (url.isEmpty()) {
+                result.put("ok", false);
+                result.put("error", "未配置 Base URL");
+                result.put("httpStatus", 0);
+                return result.toString();
+            }
+            if (!isHttpUrl(url)) {
+                result.put("ok", false);
+                result.put("error", "Base URL 仅支持 http/https");
+                result.put("httpStatus", 0);
+                return result.toString();
+            }
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(Math.max(5000, timeoutMs));
+            conn.setUseCaches(false);
+            conn.setInstanceFollowRedirects(true);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("Accept-Encoding", "gzip");
+            conn.setRequestProperty("User-Agent", USER_AGENT);
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            httpStatus = conn.getResponseCode();
+            String body = readLimited(wrapStream(conn, httpStatus), MAX_ERROR_BODY * 32);
+            if (httpStatus >= 200 && httpStatus < 300) {
+                JSONArray models = new JSONArray();
+                try {
+                    JSONObject obj = new JSONObject(body);
+                    JSONArray data = obj.optJSONArray("data");
+                    if (data != null) {
+                        for (int i = 0; i < data.length(); i++) {
+                            JSONObject m = data.optJSONObject(i);
+                            if (m == null) {
+                                continue;
+                            }
+                            String id = optText(m, "id", "").trim();
+                            if (!id.isEmpty()) {
+                                models.put(id);
+                            }
+                        }
+                    }
+                } catch (JSONException ignored) {
+                    // 非标准 JSON 时仍算连通（返回空模型列表）
+                }
+                result.put("ok", true);
+                result.put("models", models);
+                result.put("modelCount", models.length());
+                result.put("httpStatus", httpStatus);
+            } else {
+                result.put("ok", false);
+                result.put("error", friendlyHttp(httpStatus, body));
+                result.put("httpStatus", httpStatus);
+            }
+            return result.toString();
+        } catch (Throwable t) {
+            try {
+                result.put("ok", false);
+                result.put("error", netMessage(t));
+                result.put("httpStatus", httpStatus);
+            } catch (JSONException ignored) {
+                return "{\"ok\":false,\"error\":\"测试失败\"}";
+            }
+            return result.toString();
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.disconnect();
+                } catch (Throwable ignored) {
+                    // 忽略
+                }
+            }
+        }
+    }
+
+    private static boolean isHttpUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        String lower = url.trim().toLowerCase(Locale.US);
+        return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    private static String firstNonEmpty(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
     // ------------------------------------------------------------ HTTP 基础
 
     /**
      * @param withAuth true 时附上 API Key（仅 DeepSeek 官方端点）；通用 httpFetch 绝不能带，
      *                 否则插件请求第三方 URL 会泄漏用户 Key。
      */
-    private HttpURLConnection open(String url, String method, String accept, boolean withAuth)
+    private HttpURLConnection open(String url, String method, String accept, boolean withAuth,
+                                   String apiKeyOverride)
             throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setRequestMethod(method);
@@ -637,9 +765,9 @@ public final class ApiClient {
         conn.setRequestProperty("Accept-Encoding", "gzip");
         conn.setRequestProperty("User-Agent", USER_AGENT);
         if (withAuth) {
-            String apiKey = prefs.getApiKey();
-            if (apiKey != null && !apiKey.trim().isEmpty()) {
-                conn.setRequestProperty("Authorization", "Bearer " + apiKey.trim());
+            String apiKey = firstNonEmpty(apiKeyOverride, prefs.getApiKey());
+            if (!apiKey.isEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer " + apiKey);
             }
         }
         return conn;

@@ -103,7 +103,9 @@
     /* v3.0.0：Bot 事件 */
     'bot-status': true,
     'bot-message': true,
-    'bot-sent': true
+    'bot-sent': true,
+    /* v3.3.0：多 Key 测试 */
+    'api-key-test': true
   };
 
   var eventWaiters = Object.create(null); // type -> [{predicate, finish}]
@@ -225,6 +227,7 @@
    * ------------------------------------------------------------------ */
 
   var mockPrefs = defaultPrefs();
+  try { seedMockApiKeys(); } catch (eSeedKeys) { /* ignore */ }
   var mockClipboard = '';
   var mockBackDepth = 0;
   var mockPlugins = Object.create(null); // id -> {code, meta, enabled}
@@ -1122,6 +1125,90 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * v3.3.0：多 API Key / 人设 —— mock 实现
+   * ------------------------------------------------------------------ */
+
+  var mockApiKeys = [];
+  var mockDefaultKeyId = '';
+  var mockPersonas = [];
+  var mockKeySeq = 0;
+  var pendingAuthOverride = null; /* {apiKey,baseUrl} 供下一次请求透传 */
+
+  function seedMockApiKeys() {
+    mockApiKeys = [];
+    mockDefaultKeyId = '';
+    mockKeySeq = 0;
+    mockPersonas = [];
+    var legacy = String(mockPrefs.apiKey || '').trim();
+    if (legacy) {
+      mockKeySeq++;
+      mockApiKeys.push({
+        id: 'default', name: '默认密钥', apiKey: legacy,
+        baseUrl: String(mockPrefs.baseUrl || 'https://api.deepseek.com'),
+        model: String(mockPrefs.model || 'deepseek-chat'),
+        enabled: true, createdAt: Date.now()
+      });
+      mockDefaultKeyId = 'default';
+    }
+  }
+
+  function mockKeyFind(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    for (var i = 0; i < mockApiKeys.length; i++) if (mockApiKeys[i].id === key) return mockApiKeys[i];
+    return null;
+  }
+
+  function mockKeySave(config) {
+    if (!config || typeof config !== 'object') return false;
+    var target = config.id ? mockKeyFind(config.id) : null;
+    if (!target) {
+      if (mockApiKeys.length >= 20) return false;
+      mockKeySeq++;
+      target = { id: 'key-mock-' + mockKeySeq, createdAt: Date.now() };
+      mockApiKeys.push(target);
+    }
+    target.name = String(config.name || target.name || 'API Key').slice(0, 60);
+    if (config.apiKey !== undefined && String(config.apiKey) !== '') target.apiKey = String(config.apiKey).slice(0, 600);
+    if (config.baseUrl !== undefined && String(config.baseUrl) !== '') target.baseUrl = String(config.baseUrl).slice(0, 300);
+    if (config.model !== undefined) target.model = String(config.model || '').slice(0, 80);
+    if (config.enabled !== undefined) target.enabled = !!config.enabled;
+    if (!target.baseUrl) target.baseUrl = 'https://api.deepseek.com';
+    if (!mockDefaultKeyId) mockDefaultKeyId = target.id;
+    return true;
+  }
+
+  function mockKeyTest(id) {
+    var key = mockKeyFind(id);
+    if (!key) return { ok: false, error: '密钥不存在' };
+    if (/^invalid/i.test(String(key.apiKey || ''))) return { ok: false, error: '鉴权失败：API Key 无效（401）' };
+    if (!key.apiKey) return { ok: false, error: '缺少 API Key' };
+    return { ok: true, models: ['deepseek-chat', 'deepseek-reasoner'], message: '连接成功' };
+  }
+
+  function mockPersonaSave(config) {
+    if (!config || typeof config !== 'object') return false;
+    var target = config.id ? mockPersonas.filter(function (p) { return p.id === config.id; })[0] : null;
+    if (!target) {
+      target = { id: config.id || ('persona-mock-' + (++mockKeySeq)), createdAt: Date.now() };
+      mockPersonas.push(target);
+    }
+    ['name', 'emoji', 'description', 'systemPrompt', 'greeting', 'model', 'keyId'].forEach(function (field) {
+      if (config[field] !== undefined) target[field] = String(config[field] === null ? '' : config[field]);
+    });
+    if (config.temperature !== undefined) target.temperature = Math.max(0, Math.min(2, Number(config.temperature) || 1));
+    if (config.builtin !== undefined) target.builtin = !!config.builtin;
+    return true;
+  }
+
+  function mockPersonaDelete(id) {
+    var key = String(id === null || id === undefined ? '' : id);
+    for (var i = 0; i < mockPersonas.length; i++) {
+      if (mockPersonas[i].id === key) { mockPersonas.splice(i, 1); return true; }
+    }
+    return false;
+  }
+
+  /* ------------------------------------------------------------------ *
    * v3.0.0：Bot 集成 —— mock 实现（内存配置 + 模拟收发事件）
    * 注意：mock token 仅用于本地演示，绝不写入任何日志。
    * ------------------------------------------------------------------ */
@@ -1144,6 +1231,8 @@
   ];
   var mockBotMessages = []; /* [{botId,chatId,from,fromName,text,at,direction,ok,messageId,error}] */
   var mockBotSeq = 0;
+  var mockBotWs = {}; /* botId -> {ws,eventCount,lastEventAt} */
+  var mockBotLastInbound = {}; /* botId||chatId -> {eventId,msgId,at} */
 
   function defaultMockBotsSeed() {
     return [
@@ -1190,6 +1279,10 @@
     for (var i = 0; i < keys.length; i++) copy[keys[i]] = bot[keys[i]];
     copy.recentCount = mockBotRecentCount(bot.id);
     copy.running = !!bot.running;
+    var ws = mockBotWs[bot.id] || {};
+    copy.ws = ws.ws || '';
+    copy.eventCount = Number(ws.eventCount) || 0;
+    copy.lastEventAt = Number(ws.lastEventAt) || 0;
     return copy;
   }
 
@@ -1224,6 +1317,8 @@
     if (config.appId !== undefined && String(config.appId) !== '') target.appId = String(config.appId).slice(0, 200);
     if (config.secret !== undefined && String(config.secret) !== '') target.secret = String(config.secret).slice(0, 600);
     if (config.sandbox !== undefined) target.sandbox = !!config.sandbox;
+    if (config.keyId !== undefined) target.keyId = String(config.keyId || '').slice(0, 120);
+    if (config.personaId !== undefined) target.personaId = String(config.personaId || '').slice(0, 120);
     if (config.enabled !== undefined) target.enabled = !!config.enabled;
     if (config.autoReply !== undefined) target.autoReply = !!config.autoReply;
     if (Array.isArray(config.whitelist)) target.whitelist = config.whitelist.slice(0, 50).map(function (v) { return String(v); });
@@ -1231,7 +1326,6 @@
     if (config.cooldownSec !== undefined) target.cooldownSec = Math.max(3, Math.min(300, Math.round(Number(config.cooldownSec) || 8)));
     if (config.hourlyLimit !== undefined) target.hourlyLimit = Math.max(1, Math.min(600, Math.round(Number(config.hourlyLimit) || 60)));
     if (target.type === 'qqbot') {
-      target.autoReply = false;
       if (!String(target.appId || '').trim() || !String(target.secret || '').trim()) return false;
       if (target.baseUrl && !/^https:\/\//i.test(String(target.baseUrl))) return false;
     }
@@ -1267,8 +1361,13 @@
     return out;
   }
 
-  function mockBotStatus(botId, status, message) {
-    emitAgentLater(10, { type: 'bot-status', botId: String(botId || ''), status: String(status || 'stopped'), message: String(message || '') });
+  function mockBotStatus(botId, status, message, extra) {
+    var evt = { type: 'bot-status', botId: String(botId || ''), status: String(status || 'stopped'), message: String(message || '') };
+    if (extra && typeof extra === 'object') {
+      if (extra.ws !== undefined) evt.ws = String(extra.ws);
+      if (extra.wsMessage !== undefined) evt.wsMessage = String(extra.wsMessage);
+    }
+    emitAgentLater(10, evt);
   }
 
   function mockBotStart(id) {
@@ -1276,7 +1375,9 @@
     if (!bot) { mockBotStatus(id, 'error', '机器人不存在'); return false; }
     bot.running = true;
     bot.status = 'connected';
-    mockBotStatus(bot.id, 'connected', bot.type === 'telegram' ? ('@' + bot.name.replace(/\s+/g, '_')) : 'QQ 已连接');
+    mockBotWs[bot.id] = mockBotWs[bot.id] || { ws: '', eventCount: 0, lastEventAt: 0 };
+    mockBotWs[bot.id].ws = bot.type === 'qqbot' ? 'connected' : '';
+    mockBotStatus(bot.id, 'connected', bot.type === 'telegram' ? ('@' + bot.name.replace(/\s+/g, '_')) : (bot.type === 'qqbot' ? 'WebSocket 已连接，事件接收中…' : 'QQ 已连接'), { ws: bot.type === 'qqbot' ? 'connected' : '', wsMessage: bot.type === 'qqbot' ? 'WebSocket 已连接，事件接收中…' : '' });
     return true;
   }
 
@@ -1285,7 +1386,9 @@
     if (!bot) return false;
     bot.running = false;
     bot.status = 'stopped';
-    mockBotStatus(bot.id, 'stopped', '已停止');
+    mockBotWs[bot.id] = mockBotWs[bot.id] || { ws: '', eventCount: 0, lastEventAt: 0 };
+    mockBotWs[bot.id].ws = bot.type === 'qqbot' ? 'stopped' : '';
+    mockBotStatus(bot.id, 'stopped', '已停止', { ws: bot.type === 'qqbot' ? 'stopped' : '', wsMessage: '' });
     return true;
   }
 
@@ -1327,7 +1430,10 @@
     };
     mockBotMessages.push(message);
     if (mockBotMessages.length > 400) mockBotMessages.shift();
-    emitAgentLater(10, { type: 'bot-sent', botId: bot.id, chatId: cid, ok: true, messageId: message.messageId, error: '' });
+    var sent = { type: 'bot-sent', botId: bot.id, chatId: cid, ok: true, messageId: message.messageId, error: '' };
+    var lastIn = mockBotLastInbound[bot.id + '||' + cid];
+    if (bot.type === 'qqbot' && lastIn && (Date.now() - Number(lastIn.at || 0)) < 5 * 60 * 1000) sent.passive = true;
+    emitAgentLater(10, sent);
     return true;
   }
 
@@ -1359,24 +1465,57 @@
     ];
   }
 
-  function mockBotReceive(botId, chatId, text, from, fromName) {
+  function mockBotReceive(botId, chatId, text, from, fromName, extra) {
     var bot = mockBotFind(botId);
     var cid = String(chatId === null || chatId === undefined ? '' : chatId);
+    var more = extra && typeof extra === 'object' ? extra : {};
+    if (!cid) {
+      if (more.channelId && more.guildId) cid = 'channel:' + String(more.guildId) + ':' + String(more.channelId);
+      else if (more.groupId) cid = 'group:' + String(more.groupId);
+      else if (more.userId || more.openid) cid = 'user:' + String(more.userId || more.openid);
+    }
     if (!bot || !cid) return false;
+    var dupEventId = more.eventId ? String(more.eventId) : '';
+    if (dupEventId) {
+      for (var di = mockBotMessages.length - 1; di >= 0; di--) {
+        var dm = mockBotMessages[di];
+        if (!dm || dm.botId !== bot.id || dm.direction !== 'in') continue;
+        if (String(dm.eventId || '') === dupEventId) return true; /* 同 eventId 重复投递：忽略 */
+      }
+    }
     mockBotSeq++;
     var message = {
       botId: bot.id, chatId: cid,
       from: String(from === null || from === undefined ? '10001' : from),
       fromName: String(fromName === null || fromName === undefined ? '用户' : fromName),
       text: String(text === null || text === undefined ? '' : text),
-      at: Date.now(), direction: 'in'
+      at: Date.now(), direction: 'in',
+      eventId: String(more.eventId || ('evt-' + mockBotSeq)),
+      msgId: String(more.msgId || more.messageId || ''),
+      msgType: more.msgType || more.msg_type ? String(more.msgType || more.msg_type) : '',
+      source: String(more.source || ''),
+      groupId: more.groupId ? String(more.groupId) : '',
+      channelId: more.channelId ? String(more.channelId) : '',
+      guildId: more.guildId ? String(more.guildId) : '',
+      userId: more.userId ? String(more.userId) : ''
     };
     mockBotMessages.push(message);
     if (mockBotMessages.length > 400) mockBotMessages.shift();
-    emitAgentLater(10, {
+    mockBotLastInbound[bot.id + '||' + cid] = { eventId: message.eventId, msgId: message.msgId, at: message.at };
+    var wsState = mockBotWs[bot.id] || (mockBotWs[bot.id] = { ws: bot.type === 'qqbot' ? 'connected' : '', eventCount: 0, lastEventAt: 0 });
+    wsState.eventCount = (Number(wsState.eventCount) || 0) + 1;
+    wsState.lastEventAt = message.at;
+    var evt = {
       type: 'bot-message', botId: bot.id, chatId: message.chatId,
-      from: message.from, fromName: message.fromName, text: message.text, at: message.at
-    });
+      from: message.from, fromName: message.fromName, text: message.text, at: message.at,
+      eventId: message.eventId, msgId: message.msgId, msgType: message.msgType,
+      source: message.source || (message.chatId.indexOf('group:') === 0 ? 'group' : (message.chatId.indexOf('channel:') === 0 ? 'channel' : 'user'))
+    };
+    if (message.groupId) evt.groupId = message.groupId;
+    if (message.channelId) evt.channelId = message.channelId;
+    if (message.guildId) evt.guildId = message.guildId;
+    if (message.userId) evt.userId = message.userId;
+    emitAgentLater(10, evt);
     return true;
   }
 
@@ -1409,9 +1548,11 @@
       sandbox: raw.sandbox === undefined || raw.sandbox === null ? false : !!raw.sandbox,
       baseUrl: String(raw.baseUrl === undefined || raw.baseUrl === null ? '' : raw.baseUrl).slice(0, 300),
       enabled: !!raw.enabled,
-      autoReply: type === 'qqbot' ? false : !!raw.autoReply,
+      autoReply: !!raw.autoReply,
       whitelist: whitelist,
       systemPrompt: String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 4000),
+      keyId: raw.keyId ? String(raw.keyId).slice(0, 120) : '',
+      personaId: raw.personaId ? String(raw.personaId).slice(0, 120) : '',
       cooldownSec: num(raw.cooldownSec !== undefined ? raw.cooldownSec : 8, 3, 300, 8),
       hourlyLimit: num(raw.hourlyLimit !== undefined ? raw.hourlyLimit : 60, 1, 600, 60),
       status: String(raw.status || 'stopped'),
@@ -1419,6 +1560,9 @@
       recentCount: Math.max(0, parseInt(raw.recentCount, 10) || 0),
       message: raw.message ? String(raw.message) : '',
       botUsername: raw.botUsername ? String(raw.botUsername) : '',
+      ws: raw.ws ? String(raw.ws) : '',
+      eventCount: Math.max(0, parseInt(raw.eventCount, 10) || 0),
+      lastEventAt: Math.max(0, Number(raw.lastEventAt) || 0),
       createdAt: Math.max(0, Number(raw.createdAt) || 0),
       updatedAt: Math.max(0, Number(raw.updatedAt) || 0)
     };
@@ -1946,6 +2090,31 @@
     botTargets: ['botTargets', 'qqBotTargets']
   };
 
+  /* v3.3.0：多 API Key / 人设 原生方法探测（缺失回落 mock） */
+  var KEY_NATIVE_METHODS = {
+    apiKeys: ['apiKeys'],
+    saveApiKey: ['saveApiKey'],
+    deleteApiKey: ['deleteApiKey'],
+    setDefaultApiKey: ['setDefaultApiKey'],
+    testApiKey: ['testApiKey'],
+    personas: ['personas'],
+    savePersona: ['savePersona'],
+    deletePersona: ['deletePersona']
+  };
+
+  function keyNativeName(op) {
+    if (!hasNative) return '';
+    var names = KEY_NATIVE_METHODS[op] || [];
+    for (var i = 0; i < names.length; i++) {
+      if (hasNativeMethod(names[i])) return names[i];
+    }
+    return '';
+  }
+
+  function keyHasMethod(op) {
+    return !!keyNativeName(op);
+  }
+
   function botNativeName(op) {
     if (!hasNative) return '';
     var names = BOT_NATIVE_METHODS[op] || [];
@@ -2217,6 +2386,17 @@
     startChat: function (requestId, body) {
       if (!requestId) return false;
       var bodyStr = typeof body === 'string' ? body : JSON.stringify(body || {});
+      /* v3.3.0：按会话 Key 覆盖 apiKey/baseUrl（仅本次请求） */
+      if (pendingAuthOverride) {
+        var authDoc = null;
+        try { authDoc = JSON.parse(bodyStr); } catch (eAuth) { authDoc = null; }
+        if (authDoc && typeof authDoc === 'object') {
+          if (!authDoc.apiKey && pendingAuthOverride.apiKey) authDoc.apiKey = pendingAuthOverride.apiKey;
+          if (!authDoc.baseUrl && pendingAuthOverride.baseUrl) authDoc.baseUrl = pendingAuthOverride.baseUrl;
+          try { bodyStr = JSON.stringify(authDoc); } catch (eAuth2) { /* ignore */ }
+        }
+        pendingAuthOverride = null;
+      }
       if (!hasNative) return mockStartChat(requestId, bodyStr);
       try {
         var fn = DSNative.startChat;
@@ -2229,10 +2409,16 @@
       }
     },
 
-    validateKey: function (requestId) {
+    validateKey: function (requestId, authOverride) {
+      if (authOverride && typeof authOverride === 'object') {
+        Bridge.setRequestAuth(authOverride);
+      }
+      var authDoc = pendingAuthOverride ? { apiKey: pendingAuthOverride.apiKey, baseUrl: pendingAuthOverride.baseUrl } : null;
       if (!hasNative) {
+        if (authDoc && authDoc.apiKey) mockPrefs.apiKey = authDoc.apiKey;
         var cfg = Bridge.__mockConfig || {};
         var ok = mockPrefs.apiKey ? !/^invalid/i.test(String(mockPrefs.apiKey)) : true;
+        pendingAuthOverride = null;
         setTimeout(function () {
           if (ok) {
             emit('validated', {
@@ -2253,10 +2439,30 @@
         return true;
       }
       try {
-        if (typeof DSNative.validateKey !== 'function') { warn('原生缺少 validateKey'); return false; }
-        DSNative.validateKey(requestId);
+        var fn = DSNative.validateKey;
+        if (typeof fn !== 'function') { warn('原生缺少 validateKey'); pendingAuthOverride = null; return false; }
+        if (authDoc) {
+          if (typeof DSNative.validateKeyWith === 'function') {
+            DSNative.validateKeyWith(requestId, authDoc.apiKey || '', authDoc.baseUrl || '');
+          } else if (fn.length >= 2) {
+            fn.call(DSNative, requestId, JSON.stringify(authDoc));
+          } else {
+            /* 旧原生无 per-request 覆盖：用 mock 语义按传入 Key 校验（不误用默认 Key） */
+            var okOverride = !!authDoc.apiKey && !/^invalid/i.test(String(authDoc.apiKey));
+            pendingAuthOverride = null;
+            setTimeout(function () {
+              if (okOverride) emit('validated', { type: 'validated', requestId: requestId, ok: true, models: ['deepseek-chat', 'deepseek-reasoner'] });
+              else emit('error', { type: 'error', requestId: requestId, message: 'API Key 无效', httpStatus: 401 });
+            }, 80);
+            return true;
+          }
+        } else {
+          fn.call(DSNative, requestId);
+        }
+        pendingAuthOverride = null;
         return true;
       } catch (e) {
+        pendingAuthOverride = null;
         warn('validateKey 失败：' + (e && e.message));
         return false;
       }
@@ -3329,6 +3535,173 @@
     },
 
     /* ------------------------------------------------------------------ *
+     * v3.3.0：多 API Key / 人设（原生未就绪时内存 mock）
+     * ------------------------------------------------------------------ */
+    apiKeys: function () {
+      var name = keyNativeName('apiKeys');
+      var raw = name ? callNative(name, [], true) : mockApiKeys;
+      if (!Array.isArray(raw)) raw = [];
+      var out = [];
+      for (var i = 0; i < raw.length && i < 20; i++) {
+        var k = raw[i];
+        if (!k || typeof k !== 'object') continue;
+        var id = k.id === undefined || k.id === null ? '' : String(k.id);
+        if (!id) continue;
+        out.push({
+          id: id,
+          name: String(k.name || 'API Key').slice(0, 60),
+          apiKey: String(k.apiKey === undefined || k.apiKey === null ? '' : k.apiKey).slice(0, 600),
+          apiKeyMasked: String(k.apiKeyMasked || ''),
+          baseUrl: String(k.baseUrl === undefined || k.baseUrl === null ? '' : k.baseUrl).slice(0, 300),
+          model: k.model ? String(k.model).slice(0, 80) : '',
+          enabled: k.enabled !== false,
+          createdAt: Math.max(0, Number(k.createdAt) || 0),
+          isDefault: !!(k.isDefault || k.id === mockDefaultKeyId)
+        });
+      }
+      return out;
+    },
+
+    saveApiKey: function (config) {
+      var payload = '';
+      try { payload = JSON.stringify(config || {}); } catch (e) { return null; }
+      var name = keyNativeName('saveApiKey');
+      if (name) {
+        var raw = callNative(name, [payload], false);
+        var parsed = parseJSON(raw, null);
+        if (parsed && typeof parsed === 'object') return parsed.ok === false ? null : parsed;
+        if (raw === true || String(raw) === 'true') {
+          var cfg = config && typeof config === 'object' ? config : {};
+          return { id: String(cfg.id || ''), name: String(cfg.name || 'API Key'), apiKey: String(cfg.apiKey || ''), baseUrl: String(cfg.baseUrl || ''), model: String(cfg.model || ''), enabled: cfg.enabled !== false };
+        }
+        return null;
+      }
+      var obj = config && typeof config === 'object' ? config : {};
+      if (!mockKeySave(obj)) return null;
+      var saved = (obj.id && mockKeyFind(obj.id)) || mockApiKeys[mockApiKeys.length - 1];
+      if (!saved) return null;
+      return { id: saved.id, name: saved.name, apiKey: saved.apiKey, baseUrl: saved.baseUrl, model: saved.model || '', enabled: saved.enabled !== false, createdAt: saved.createdAt };
+    },
+
+    deleteApiKey: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = keyNativeName('deleteApiKey');
+      if (name) { try { callNative(name, [key], false); return true; } catch (e) { return false; } }
+      for (var i = 0; i < mockApiKeys.length; i++) {
+        if (mockApiKeys[i].id === key) {
+          mockApiKeys.splice(i, 1);
+          if (mockDefaultKeyId === key) mockDefaultKeyId = mockApiKeys.length ? mockApiKeys[0].id : '';
+          return true;
+        }
+      }
+      return false;
+    },
+
+    setDefaultApiKey: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = keyNativeName('setDefaultApiKey');
+      if (name) {
+        var raw = callNative(name, [key], false);
+        return raw !== false;
+      }
+      if (!mockKeyFind(key)) return false;
+      mockDefaultKeyId = key;
+      return true;
+    },
+
+    getDefaultKeyId: function () {
+      var name = keyNativeName('apiKeys');
+      if (name) {
+        var list = Bridge.apiKeys();
+        for (var i = 0; i < list.length; i++) if (list[i].isDefault) return list[i].id;
+        return list.length ? list[0].id : '';
+      }
+      return mockDefaultKeyId || (mockApiKeys.length ? mockApiKeys[0].id : '');
+    },
+
+    testApiKey: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return Promise.resolve({ ok: false, error: '密钥 id 无效' });
+      var name = keyNativeName('testApiKey');
+      if (!name) return Promise.resolve(mockKeyTest(key));
+      var raw = callNative(name, [key], false);
+      var parsed = parseJSON(raw, null);
+      if (parsed && typeof parsed === 'object') return Promise.resolve(parsed);
+      if (raw === false) return Promise.resolve({ ok: false, error: '连接测试失败' });
+      return waitForEvent('api-key-test', function (evt) { return evt && (!evt.id || String(evt.id) === key); }, 15000).then(function (evt) {
+        if (!evt) return { ok: false, error: '测试超时' };
+        return { ok: evt.ok !== false, models: Array.isArray(evt.models) ? evt.models : [], error: evt.error ? String(evt.error) : '' };
+      });
+    },
+
+    personas: function () {
+      var name = keyNativeName('personas');
+      var raw = name ? callNative(name, [], true) : mockPersonas;
+      if (!Array.isArray(raw)) raw = [];
+      var out = [];
+      for (var i = 0; i < raw.length && i < 100; i++) {
+        var p = raw[i];
+        if (!p || typeof p !== 'object' || !p.id) continue;
+        out.push({
+          id: String(p.id),
+          name: String(p.name || '人设').slice(0, 40),
+          emoji: String(p.emoji || '').slice(0, 16),
+          description: String(p.description || '').slice(0, 160),
+          systemPrompt: String(p.systemPrompt || '').slice(0, 16000),
+          greeting: String(p.greeting || '').slice(0, 2000),
+          model: p.model ? String(p.model).slice(0, 80) : '',
+          temperature: p.temperature === undefined || p.temperature === null ? 1 : Math.max(0, Math.min(2, Number(p.temperature) || 1)),
+          keyId: p.keyId ? String(p.keyId).slice(0, 120) : '',
+          builtin: !!p.builtin,
+          createdAt: Math.max(0, Number(p.createdAt) || 0)
+        });
+      }
+      return out;
+    },
+
+    savePersona: function (config) {
+      var payload = '';
+      try { payload = JSON.stringify(config || {}); } catch (e) { return null; }
+      var name = keyNativeName('savePersona');
+      if (name) {
+        var raw = callNative(name, [payload], false);
+        var parsed = parseJSON(raw, null);
+        if (parsed && typeof parsed === 'object') return parsed.ok === false ? null : parsed;
+        if (raw === true || String(raw) === 'true') return config && typeof config === 'object' ? config : null;
+        return null;
+      }
+      var obj = config && typeof config === 'object' ? config : {};
+      if (!mockPersonaSave(obj)) return null;
+      var saved = mockPersonas.filter(function (p) { return p.id === obj.id; })[0] || mockPersonas[mockPersonas.length - 1];
+      return saved || null;
+    },
+
+    deletePersona: function (id) {
+      var key = String(id === null || id === undefined ? '' : id);
+      if (!key) return false;
+      var name = keyNativeName('deletePersona');
+      if (name) { try { callNative(name, [key], false); return true; } catch (e) { return false; } }
+      return mockPersonaDelete(key);
+    },
+
+    /** 原生是否真正支持多 Key 存储（否则走 Store 兜底，避免 mock 重复） */
+    keysAreNative: function () {
+      return keyHasMethod('apiKeys') && keyHasMethod('saveApiKey');
+    },
+
+    /** 设置下一次请求的鉴权覆盖（App 在 Api.send/verifyKey 前同步调用） */
+    setRequestAuth: function (auth) {
+      if (!auth || typeof auth !== 'object') { pendingAuthOverride = null; return false; }
+      pendingAuthOverride = {
+        apiKey: String(auth.apiKey === undefined || auth.apiKey === null ? '' : auth.apiKey),
+        baseUrl: String(auth.baseUrl === undefined || auth.baseUrl === null ? '' : auth.baseUrl)
+      };
+      return true;
+    },
+
+    /* ------------------------------------------------------------------ *
      * v3.0.0：Bot 集成（原生未就绪时内存 mock）
      * ------------------------------------------------------------------ */
     /** botsList() → 归一化 bot 数组（含 status/running/recentCount；token 由原生单独返回） */
@@ -3438,7 +3811,15 @@
           direction: String(msg.direction || 'in') === 'out' ? 'out' : 'in',
           ok: msg.ok !== false,
           messageId: msg.messageId ? String(msg.messageId) : '',
-          error: msg.error ? String(msg.error) : ''
+          error: msg.error ? String(msg.error) : '',
+          eventId: msg.eventId ? String(msg.eventId) : '',
+          msgId: msg.msgId ? String(msg.msgId) : '',
+          msgType: msg.msgType ? String(msg.msgType) : '',
+          source: msg.source ? String(msg.source) : '',
+          groupId: msg.groupId ? String(msg.groupId) : '',
+          channelId: msg.channelId ? String(msg.channelId) : '',
+          guildId: msg.guildId ? String(msg.guildId) : '',
+          userId: msg.userId ? String(msg.userId) : ''
         });
       }
       return out;
@@ -3767,6 +4148,10 @@
       mockBots = defaultMockBotsSeed();
       mockBotMessages = [];
       mockBotSeq = 0;
+      mockBotWs = {};
+      mockBotLastInbound = {};
+      seedMockApiKeys();
+      pendingAuthOverride = null;
       return true;
     }
   };
@@ -3796,16 +4181,25 @@
     reset: function () { mockSeedMcp(); return true; }
   };
 
+  /* v3.3.0：多 Key/人设 mock 调试入口（仅测试使用） */
+  Bridge.__mockKey = {
+    list: function () { return Bridge.apiKeys(); },
+    defaultId: function () { return Bridge.getDefaultKeyId(); },
+    add: function (cfg) { return Bridge.saveApiKey(cfg); },
+    personas: function () { return Bridge.personas(); },
+    reset: function () { seedMockApiKeys(); pendingAuthOverride = null; return true; }
+  };
+
   /* v3.0.0：Bot mock 调试/QA 入口（仅测试使用） */
   Bridge.__mockBot = {
     list: function () { return mockBotListPublic(); },
     recent: function (id, limit) { return mockBotRecent(id, limit); },
-    receive: function (botId, chatId, text, from, fromName) { return mockBotReceive(botId, chatId, text, from, fromName); },
+    receive: function (botId, chatId, text, from, fromName, extra) { return mockBotReceive(botId, chatId, text, from, fromName, extra); },
     start: function (id) { return mockBotStart(id); },
     stop: function (id) { return mockBotStop(id); },
     test: function (id) { return mockBotTest(id); },
     send: function (botId, chatId, text) { return mockBotSend(botId, chatId, text); },
-    reset: function () { mockBots = defaultMockBotsSeed(); mockBotMessages = []; mockBotSeq = 0; return true; }
+    reset: function () { mockBots = defaultMockBotsSeed(); mockBotMessages = []; mockBotSeq = 0; mockBotWs = {}; mockBotLastInbound = {}; return true; }
   };
 
   /* ARCH v2.8.0 批次3：图片/壁纸 mock 调试入口（仅测试使用） */
