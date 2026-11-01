@@ -274,6 +274,12 @@
       loaded: false,
       pickerCurrent: '',
       form: { id: null }
+    },
+    /* v3.4.0：本会话独立人设 */
+    chatPersona: {
+      cfg: null,
+      templates: [],
+      label: { name: '', emoji: '🙂' }
     }
   };
 
@@ -1308,7 +1314,8 @@
       isModalOpen(r('edit-message-modal')) || isModalOpen(r('market-detail-modal')) ||
       isModalOpen(r('market-url-install-modal')) || isModalOpen(r('market-code-modal')) ||
       isModalOpen(r('bot-form-modal')) || isModalOpen(r('bot-detail-modal')) ||
-      isModalOpen(r('key-form-modal')) || isModalOpen(r('persona-form-modal'));
+      isModalOpen(r('key-form-modal')) || isModalOpen(r('persona-form-modal')) ||
+      isModalOpen(r('chat-persona-picker'));
     var B = window.Bridge;
     if (B && typeof B.setBackDepth === 'function') {
       try { B.setBackDepth(base + (overlay ? 1 : 0)); } catch (err) { /* 静默 */ }
@@ -1348,7 +1355,7 @@
       'mcp-form-modal', 'memory-item-modal', 'pin-modal', 'pin-setup-modal', 'password-modal',
       'edit-message-modal', 'market-detail-modal', 'market-url-install-modal', 'market-code-modal',
       'bot-form-modal', 'bot-detail-modal', 'key-form-modal', 'persona-form-modal',
-      'key-picker', 'persona-picker'].forEach(function (id) {
+      'key-picker', 'persona-picker', 'chat-persona-picker'].forEach(function (id) {
       closeModal(document.getElementById(id));
     });
   }
@@ -7521,6 +7528,7 @@
     refreshPersonaKeyOptions();
     refreshBotBindingOptions();
     refreshChatKeyName();
+    refreshChatPersonaKeySelect();
     return state.keys.list;
   }
 
@@ -7919,6 +7927,7 @@
     refreshPersonaKeyOptions();
     refreshBotBindingOptions();
     if (!r('persona-picker').hidden) renderPersonaPicker(state.personas.list, state.personas.pickerCurrent);
+    if (r('chat-persona-picker') && !r('chat-persona-picker').hidden) renderChatPersonaTemplates(state.personas.list);
     return state.personas.list;
   }
 
@@ -8098,6 +8107,252 @@
     if (result === undefined) { UI.toast('人设服务尚未就绪'); return; }
     closePersonaPicker();
     UI.toast(personaId ? '已应用人设' : '已清除人设');
+  }
+
+  /* ================================================================== *
+   * v3.4.0：本会话独立人设 + 独立 Key
+   * ================================================================== */
+  function defaultChatPersonaCfg() {
+    return {
+      name: '',
+      emoji: '🙂',
+      systemPrompt: '',
+      greeting: '',
+      model: '',
+      temperature: 1,
+      keyId: '',
+      source: 'none'
+    };
+  }
+
+  function normalizeChatPersonaCfg(cfg) {
+    var info = cfg && typeof cfg === 'object' ? cfg : {};
+    var persona = info.persona && typeof info.persona === 'object' ? info.persona : info;
+    var temperature = Number(persona.temperature);
+    return {
+      name: persona.name != null ? String(persona.name) : '',
+      emoji: persona.emoji ? String(persona.emoji) : '🙂',
+      systemPrompt: persona.systemPrompt != null ? String(persona.systemPrompt)
+        : (persona.prompt != null ? String(persona.prompt) : ''),
+      greeting: persona.greeting != null ? String(persona.greeting) : '',
+      model: persona.model != null ? String(persona.model) : '',
+      temperature: isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 1,
+      keyId: info.keyId != null ? String(info.keyId) : (persona.keyId != null ? String(persona.keyId) : ''),
+      source: info.source ? String(info.source) : (persona.source ? String(persona.source) : 'none')
+    };
+  }
+
+  function setChatPersonaLabel(nameOrObj, emoji) {
+    var name = '';
+    var emojiText = '🙂';
+    if (nameOrObj && typeof nameOrObj === 'object') {
+      name = nameOrObj.name == null ? '' : String(nameOrObj.name);
+      emojiText = nameOrObj.emoji ? String(nameOrObj.emoji) : '🙂';
+    } else {
+      name = nameOrObj == null ? '' : String(nameOrObj);
+      emojiText = emoji ? String(emoji) : '🙂';
+    }
+    state.chatPersona.label = { name: name, emoji: emojiText };
+    var label = r('chat-persona-name');
+    var emojiEl = r('chat-persona-emoji');
+    if (label) label.textContent = name || '默认人设';
+    if (emojiEl) emojiEl.textContent = emojiText || '🙂';
+    return state.chatPersona.label;
+  }
+
+  function refreshChatPersonaKeySelect(keyId) {
+    var select = r('chat-persona-key');
+    if (!select) return;
+    var current = keyId !== undefined ? String(keyId == null ? '' : keyId)
+      : (select.getAttribute('data-current') || '');
+    select.textContent = '';
+    var def = document.createElement('option');
+    def.value = '';
+    def.textContent = '跟随默认密钥';
+    select.appendChild(def);
+    (state.keys.list || []).forEach(function (key) {
+      var option = document.createElement('option');
+      option.value = key.id;
+      option.textContent = key.name + (key.enabled ? '' : '（已禁用）');
+      select.appendChild(option);
+    });
+    select.setAttribute('data-current', current);
+    select.value = current;
+  }
+
+  function renderChatPersonaTemplates(templates) {
+    var sourceList = Array.isArray(templates) ? templates : [];
+    state.chatPersona.templates = sourceList.map(normalizePersona).filter(Boolean);
+    var box = r('chat-persona-templates');
+    if (!box) return state.chatPersona.templates;
+    box.textContent = '';
+    var list = state.chatPersona.templates;
+    if (!list.length) {
+      box.appendChild(makeText('div', 'chat-persona-templates-empty', '人设库还是空的，可到设置 → 人设创建后再导入。'));
+      return list;
+    }
+    list.forEach(function (persona) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chat-persona-template';
+      btn.setAttribute('data-action', 'chat-persona-import');
+      btn.setAttribute('data-persona-id', persona.id);
+      btn.appendChild(makeText('span', 'chat-persona-template-emoji', persona.emoji || '🤖'));
+      var main = el('div', 'chat-persona-template-main');
+      var nameRow = el('div', 'chat-persona-template-name');
+      nameRow.appendChild(makeText('span', '', persona.name));
+      if (persona.builtin) nameRow.appendChild(makeText('span', 'persona-builtin', '内置'));
+      main.appendChild(nameRow);
+      main.appendChild(makeText('div', 'chat-persona-template-desc', persona.description || persona.systemPrompt || ''));
+      btn.appendChild(main);
+      btn.appendChild(makeText('span', 'chat-persona-template-import', '导入'));
+      box.appendChild(btn);
+    });
+    return list;
+  }
+
+  function renderChatPersona(cfg, templates) {
+    var normalized = normalizeChatPersonaCfg(cfg);
+    state.chatPersona.cfg = normalized;
+    var sourceTemplates = templates;
+    if (!Array.isArray(sourceTemplates) && cfg && typeof cfg === 'object' && Array.isArray(cfg.templates)) {
+      sourceTemplates = cfg.templates;
+    }
+    var templatesToRender = Array.isArray(sourceTemplates) ? sourceTemplates : (state.personas.list || []);
+    if (!templatesToRender.length && (state.personas.list || []).length) templatesToRender = state.personas.list;
+    renderChatPersonaTemplates(templatesToRender);
+    if (!state.personas.loaded) invoke('onOpenPersonas');
+    setVal('chat-persona-name-input', normalized.name);
+    setVal('chat-persona-emoji-input', normalized.emoji || '🙂');
+    setVal('chat-persona-prompt', normalized.systemPrompt);
+    setVal('chat-persona-greeting', normalized.greeting);
+    setVal('chat-persona-model', normalized.model);
+    setVal('chat-persona-temperature', String(normalized.temperature));
+    refreshChatPersonaKeySelect(normalized.keyId);
+    var sourceBox = r('chat-persona-source');
+    if (sourceBox) {
+      var sourceText = normalized.source === 'template' ? '来自人设库模板'
+        : (normalized.source === 'inline' ? '已自定义（仅本会话）'
+          : (normalized.source === 'none' ? '默认人设（跟随全局设置）' : ''));
+      sourceBox.hidden = !sourceText;
+      sourceBox.className = 'chat-persona-source' + (normalized.source === 'inline' ? ' is-inline' : (normalized.source === 'none' ? ' is-default' : ''));
+      sourceBox.textContent = '';
+      if (sourceText) sourceBox.appendChild(makeText('span', '', sourceText));
+    }
+    setChatPersonaLabel(normalized.name, normalized.emoji);
+    if (!state.keys.loaded) invoke('onOpenKeys');
+    return normalized;
+  }
+
+  function chatPersonaError(text) {
+    var error = r('chat-persona-error');
+    var message = text == null ? '' : String(text);
+    if (error) {
+      error.textContent = message;
+      error.hidden = !message;
+    }
+  }
+
+  function openChatSettings() {
+    chatPersonaError('');
+    if (!state.keys.loaded) invoke('onOpenKeys');
+    if (!state.chatPersona.cfg) renderChatPersona(defaultChatPersonaCfg(), state.chatPersona.templates);
+    else refreshChatPersonaKeySelect();
+    openModal(r('chat-persona-picker'));
+    if (!invoke('onOpenChatPersona')) {
+      setChatPersonaLabel(state.chatPersona.label ? state.chatPersona.label.name : '', state.chatPersona.label ? state.chatPersona.label.emoji : '🙂');
+    }
+  }
+
+  function closeChatSettings() {
+    closeModal(r('chat-persona-picker'));
+    chatPersonaError('');
+  }
+
+  function collectChatPersona() {
+    var temp = Number((r('chat-persona-temperature') || {}).value);
+    return {
+      name: String((r('chat-persona-name-input') || {}).value || '').trim(),
+      emoji: String((r('chat-persona-emoji-input') || {}).value || '🙂').trim() || '🙂',
+      systemPrompt: String((r('chat-persona-prompt') || {}).value || '').trim(),
+      greeting: String((r('chat-persona-greeting') || {}).value || '').trim(),
+      model: String((r('chat-persona-model') || {}).value || '').trim(),
+      temperature: isFinite(temp) ? Math.max(0, Math.min(2, temp)) : 1,
+      keyId: String((r('chat-persona-key') || {}).value || '')
+    };
+  }
+
+  function saveChatPersona() {
+    var cfg = collectChatPersona();
+    chatPersonaError('');
+    var result = callHandler('onSaveChatPersona', cfg);
+    if (result === undefined) { chatPersonaError('人设服务尚未就绪'); return; }
+    Promise.resolve(result).then(function (done) {
+      if (done === false) { chatPersonaError('保存失败，请重试'); return; }
+      state.chatPersona.cfg = cfg;
+      setChatPersonaLabel(cfg.name, cfg.emoji);
+      closeChatSettings();
+      UI.toast(cfg.name ? ('已保存本会话人设「' + cfg.name + '」') : '已保存本会话设置');
+    }, function () { chatPersonaError('保存失败，请重试'); });
+  }
+
+  function resetChatPersona() {
+    var result = callHandler('onResetChatPersona');
+    if (result === undefined) { chatPersonaError('人设服务尚未就绪'); return; }
+    Promise.resolve(result).then(function (done) {
+      if (done === false) { chatPersonaError('恢复默认失败'); return; }
+      state.chatPersona.cfg = defaultChatPersonaCfg();
+      renderChatPersona(state.chatPersona.cfg, state.chatPersona.templates);
+      setChatPersonaLabel('', '🙂');
+      closeChatSettings();
+      UI.toast('已恢复默认人设');
+    }, function () { chatPersonaError('恢复默认失败'); });
+  }
+
+  function toggleChatPersonaTemplates() {
+    var box = r('chat-persona-templates');
+    var toggle = r('chat-persona-import-toggle');
+    if (!box) return;
+    box.hidden = !box.hidden;
+    if (toggle) toggle.classList.toggle('is-open', !box.hidden);
+    if (!box.hidden && !state.chatPersona.templates.length && !state.personas.loaded) {
+      invoke('onOpenPersonas');
+    }
+  }
+
+  function importChatPersonaToChat(personaId) {
+    if (personaId == null || personaId === '') return;
+    var result = callHandler('onImportPersonaToChat', personaId);
+    if (result === undefined) { UI.toast('人设服务尚未就绪'); return; }
+    var template = null;
+    (state.chatPersona.templates || []).forEach(function (item) {
+      if (item.id === String(personaId)) template = item;
+    });
+    Promise.resolve(result).then(function (done) {
+      if (done === false) { chatPersonaError('导入失败'); return; }
+      if (template) {
+        renderChatPersona({
+          name: template.name,
+          emoji: template.emoji,
+          systemPrompt: template.systemPrompt,
+          greeting: template.greeting,
+          model: template.model,
+          temperature: template.temperature,
+          keyId: template.keyId,
+          source: 'inline'
+        }, state.chatPersona.templates);
+      }
+      UI.toast(template ? ('已导入人设「' + template.name + '」') : '已导入人设');
+    }, function () { chatPersonaError('导入失败'); });
+  }
+
+  function pickChatPersonaKey(keyId) {
+    var id = keyId == null || keyId === '' ? null : String(keyId);
+    var result = callHandler('onChatPickKey', id);
+    if (result === undefined) { UI.toast('密钥服务尚未就绪'); return; }
+    var key = id ? findApiKey(id) : null;
+    setChatKeyName(key ? key.name : '');
+    if (state.chatPersona.cfg) state.chatPersona.cfg.keyId = id || '';
   }
 
   /* ------------------------------------------------------------------ *
@@ -9899,6 +10154,7 @@
     if (isModalOpen(r('persona-form-modal'))) { closePersonaForm(); return true; }
     if (isModalOpen(r('key-picker'))) { closeKeyPicker(); return true; }
     if (isModalOpen(r('persona-picker'))) { closePersonaPicker(); return true; }
+    if (isModalOpen(r('chat-persona-picker'))) { closeChatSettings(); return true; }
     var searchBar = r('chat-search-in');
     if (searchBar && !searchBar.hidden) { closeChatSearch(); return true; }
     if (state.pluginPanelOpen) { closePluginPanel(); return true; }
@@ -10275,6 +10531,25 @@
         break;
       case 'open-key-picker':
         openChatKeyPicker();
+        break;
+      /* -------- v3.4.0：本会话独立人设 -------- */
+      case 'open-chat-settings':
+        openChatSettings();
+        break;
+      case 'close-chat-settings':
+        closeChatSettings();
+        break;
+      case 'chat-persona-save':
+        saveChatPersona();
+        break;
+      case 'chat-persona-reset':
+        resetChatPersona();
+        break;
+      case 'chat-persona-import-toggle':
+        toggleChatPersonaTemplates();
+        break;
+      case 'chat-persona-import':
+        importChatPersonaToChat(node.getAttribute('data-persona-id'));
         break;
       case 'close-key-picker':
         closeKeyPicker();
@@ -10824,6 +11099,11 @@
       setMarketSort(target.value);
       return;
     }
+    /* v3.4.0：本会话设置弹层内 Key 选择即时同步 */
+    if (target.id === 'chat-persona-key') {
+      pickChatPersonaKey(target.value);
+      return;
+    }
     /* v3.3.0：密钥启用开关 */
     if (target.classList && target.classList.contains('key-toggle')) {
       toggleApiKey(target.getAttribute('data-key-id'), target.checked);
@@ -11031,6 +11311,7 @@
     bindModalBackdrop(r('file-preview-modal'), function () { closeFilePreview(); });
     bindModalBackdrop(r('mcp-form-modal'), function () { closeMcpForm(); });
     bindModalBackdrop(r('memory-item-modal'), function () { closeMemoryItemForm(); });
+    bindModalBackdrop(r('chat-persona-picker'), function () { closeChatSettings(); });
     bindModalBackdrop(r('key-form-modal'), function () { closeKeyForm(); });
     bindModalBackdrop(r('persona-form-modal'), function () { closePersonaForm(); });
     bindModalBackdrop(r('key-picker'), function () { closeKeyPicker(); });
@@ -11200,7 +11481,13 @@
       'persona-field-desc', 'persona-field-prompt', 'persona-field-greeting', 'persona-field-model',
       'persona-field-temperature', 'persona-field-key', 'persona-form-error',
       'persona-picker', 'persona-picker-list', 'persona-picker-empty',
-      'login-existing-key', 'chat-key-btn', 'chat-key-name'
+      'login-existing-key', 'chat-key-btn', 'chat-key-name',
+      /* v3.4.0：本会话独立人设 */
+      'chat-persona-btn', 'chat-persona-emoji', 'chat-persona-name',
+      'chat-persona-picker', 'chat-persona-name-input', 'chat-persona-emoji-input',
+      'chat-persona-prompt', 'chat-persona-greeting', 'chat-persona-model',
+      'chat-persona-temperature', 'chat-persona-key', 'chat-persona-templates',
+      'chat-persona-import-toggle', 'chat-persona-source', 'chat-persona-error'
     ];
     ids.forEach(function (id) {
       state.refs[id] = document.getElementById(id);
@@ -11901,6 +12188,15 @@
   UI.openChatKeyPicker = function (keys, currentId) { return openChatKeyPicker(keys, currentId); };
   UI.openKeyPicker = function (keys, currentId) { return openChatKeyPicker(keys, currentId); };
   UI.setChatKeyName = setChatKeyName;
+
+  /* v3.4.0：本会话独立人设 */
+  UI.openChatSettings = openChatSettings;
+  UI.closeChatSettings = closeChatSettings;
+  UI.renderChatPersona = function (cfg, templates) { return renderChatPersona(cfg, templates); };
+  UI.setChatPersonaLabel = setChatPersonaLabel;
+  UI.setChatPersonaName = setChatPersonaLabel;
+  UI.renderChatPersonaTemplates = function (templates) { return renderChatPersonaTemplates(templates); };
+  UI.getChatPersona = function () { return state.chatPersona.cfg ? JSON.parse(JSON.stringify(state.chatPersona.cfg)) : null; };
   UI.renderPersonas = function (list) { return renderPersonas(list); };
   UI.openPersonasPage = openPersonasPage;
   UI.openPersonaForm = openPersonaForm;
@@ -11937,5 +12233,5 @@
   UI.getGlassMode = function () { return state.glassMode || 'frost'; };
   UI.detectGlassMode = detectGlassMode;
 
-  UI.version = '3.3.0';
+  UI.version = '3.4.0';
 })();

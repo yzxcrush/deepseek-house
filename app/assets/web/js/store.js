@@ -696,6 +696,22 @@
     return usage;
   }
 
+  /** v3.4.0：会话内联人设 {name,emoji,systemPrompt,greeting,model?,temperature?} */
+  function normalizeInlinePersona(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    var name = String(raw.name === undefined || raw.name === null ? '' : raw.name).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    var emoji = String(raw.emoji === undefined || raw.emoji === null ? '' : raw.emoji).slice(0, 16);
+    var systemPrompt = String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : '')).slice(0, 16000);
+    var greeting = String(raw.greeting === undefined || raw.greeting === null ? '' : raw.greeting).slice(0, 2000);
+    var model = raw.model ? String(raw.model).trim().slice(0, 80) : '';
+    var temperature = raw.temperature === undefined || raw.temperature === null ? null : Number(raw.temperature);
+    if (!name && !emoji && !systemPrompt && !greeting && !model && temperature === null) return null;
+    var out = { name: name.slice(0, 40), emoji: emoji, systemPrompt: systemPrompt, greeting: greeting };
+    if (model) out.model = model;
+    if (temperature !== null && isFinite(temperature)) out.temperature = Math.max(0, Math.min(2, temperature));
+    return out;
+  }
+
   function normalizeChat(raw) {
     if (!raw || typeof raw !== 'object') return null;
     var chat = {
@@ -717,6 +733,8 @@
     if (raw.keyId) chat.keyId = String(raw.keyId).slice(0, 120);
     if (raw.personaId) chat.personaId = String(raw.personaId).slice(0, 80);
     if (raw.personaPrompt) chat.personaPrompt = String(raw.personaPrompt).slice(0, 16000);
+    var inlinePersona = normalizeInlinePersona(raw.persona);
+    if (inlinePersona) chat.persona = inlinePersona;
     if (raw.systemPrompt) chat.systemPrompt = String(raw.systemPrompt).slice(0, 16000);
     if (Array.isArray(raw.trace)) chat.trace = normalizeTrace(raw.trace);
     if (raw.lastSnapshotId) chat.lastSnapshotId = String(raw.lastSnapshotId).slice(0, 120);
@@ -1350,6 +1368,14 @@
     if (patch.systemPrompt !== undefined) chat.systemPrompt = String(patch.systemPrompt).slice(0, 16000);
     if (patch.keyId !== undefined) chat.keyId = patch.keyId ? String(patch.keyId).slice(0, 120) : '';
     if (patch.personaId !== undefined) chat.personaId = patch.personaId ? String(patch.personaId).slice(0, 80) : '';
+    if (patch.persona !== undefined) {
+      if (patch.persona === null) delete chat.persona;
+      else {
+        var nextPersona = normalizeInlinePersona(patch.persona);
+        if (nextPersona) chat.persona = nextPersona;
+        else delete chat.persona;
+      }
+    }
     if (patch.personaPrompt !== undefined) chat.personaPrompt = String(patch.personaPrompt || '').slice(0, 16000);
     if (patch.temperature !== undefined) chat.temperature = Math.max(0, Math.min(2, Number(patch.temperature) || 1));
     if (patch.lastSnapshotId !== undefined) chat.lastSnapshotId = patch.lastSnapshotId ? String(patch.lastSnapshotId).slice(0, 120) : '';

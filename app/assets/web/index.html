@@ -326,7 +326,7 @@
           </button>
         </div>
 
-        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v3.3.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
+        <div class="profile-foot">DeepSeek House · <b>@惜白.</b> · v3.4.0<br>开源协议 MIT · github.com/yzxcrush/deepseek-house</div>
       </div>
     </section>
 
@@ -343,6 +343,10 @@
           <div class="title" id="header-title">DeepSeek House</div>
           <button class="subtitle subtitle--action" id="header-subtitle" type="button" data-action="open-model-picker" aria-label="选择模型"></button>
         </div>
+        <button class="chat-key-btn chat-persona-btn" id="chat-persona-btn" type="button" data-action="open-chat-settings" aria-label="本会话人设与密钥设置">
+          <span class="chat-persona-emoji" id="chat-persona-emoji">🙂</span>
+          <span id="chat-persona-name">默认人设</span>
+        </button>
         <button class="chat-key-btn" id="chat-key-btn" type="button" data-action="open-key-picker" aria-label="选择会话密钥">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M15 7a4 4 0 1 1-3 6.6L5 20H3v-3l7.4-7A4 4 0 0 1 15 7Z"></path>
@@ -875,7 +879,7 @@
 
         <div class="section-label" data-i18n="settings.about">关于</div>
         <div class="section about">
-          <div class="about-row"><span>版本</span><span>3.3.0</span></div>
+          <div class="about-row"><span>版本</span><span>3.4.0</span></div>
           <div class="about-row"><span>定制</span><span class="about-mark">@惜白.</span></div>
           <div class="about-row"><span>数据</span><span>仅保存在本机</span></div>
           <p class="about-note">DeepSeek House 是第三方客户端，与 DeepSeek 官方无关。聊天记录、设置与 API Key 都只保存在本机。<br>由 <b>@惜白.</b> 定制 · 完全开源（MIT）。</p>
@@ -1710,7 +1714,7 @@
     <div class="drawer-empty" id="chat-list-empty" hidden>暂无会话</div>
     <div class="drawer-foot">
       <span class="drawer-brand">DeepSeek House · <span class="drawer-mark">@惜白.</span></span>
-      <span class="drawer-version">v3.3.0</span>
+      <span class="drawer-version">v3.4.0</span>
     </div>
   </aside>
 
@@ -2485,6 +2489,79 @@
       <div class="modal-actions">
         <button class="btn btn--ghost" type="button" data-action="close-persona-form">取消</button>
         <button class="btn btn--primary" type="button" data-action="persona-form-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 本会话设置（v3.4.0） ============================ -->
+  <div class="model-picker chat-persona-picker" id="chat-persona-picker" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="chat-persona-picker-title">
+    <div class="model-picker-sheet chat-persona-sheet">
+      <div class="picker-handle" aria-hidden="true"></div>
+      <div class="picker-head">
+        <div class="picker-title" id="chat-persona-picker-title">本会话设置</div>
+        <button class="icon-btn" type="button" data-action="close-chat-settings" aria-label="关闭本会话设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="picker-scroll chat-persona-scroll">
+        <div class="chat-persona-source" id="chat-persona-source" hidden></div>
+
+        <div class="section-label">本会话人设</div>
+        <div class="chat-persona-grid">
+          <div class="form-row form-row--col">
+            <span class="form-label">Emoji</span>
+            <input class="input" id="chat-persona-emoji-input" type="text" maxlength="8" placeholder="🙂" autocomplete="off">
+          </div>
+          <div class="form-row form-row--col">
+            <span class="form-label">名称</span>
+            <input class="input" id="chat-persona-name-input" type="text" maxlength="40" placeholder="留空使用默认人设" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row form-row--col">
+          <span class="form-label">系统提示词</span>
+          <textarea class="input input--textarea" id="chat-persona-prompt" rows="4" placeholder="只对本会话生效的系统提示词…" spellcheck="false"></textarea>
+          <span class="form-hint">本会话独立人设只影响当前会话，不修改全局人设库。</span>
+        </div>
+        <div class="form-row form-row--col">
+          <span class="form-label">问候语（可选）</span>
+          <textarea class="input input--textarea" id="chat-persona-greeting" rows="2" placeholder="保存后若会话为空，将插入一条问候消息…" spellcheck="false"></textarea>
+        </div>
+        <div class="chat-persona-grid">
+          <div class="form-row form-row--col">
+            <span class="form-label">模型（可选）</span>
+            <input class="input" id="chat-persona-model" type="text" placeholder="跟随会话模型" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="form-row form-row--col">
+            <span class="form-label">温度</span>
+            <input class="input" id="chat-persona-temperature" type="number" min="0" max="2" step="0.1" value="1">
+          </div>
+        </div>
+
+        <div class="section-label">本会话 API Key</div>
+        <div class="form-row form-row--col">
+          <select class="input input--select" id="chat-persona-key" aria-label="本会话 API Key">
+            <option value="">跟随默认密钥</option>
+          </select>
+        </div>
+
+        <div class="chat-persona-import">
+          <button class="chat-persona-import-toggle" id="chat-persona-import-toggle" type="button" data-action="chat-persona-import-toggle">
+            <span>从人设库导入</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"></path>
+            </svg>
+          </button>
+          <div class="chat-persona-templates" id="chat-persona-templates" hidden></div>
+        </div>
+
+        <div class="modal-error" id="chat-persona-error" role="alert" hidden></div>
+      </div>
+      <div class="chat-persona-actions">
+        <button class="btn btn--ghost chat-persona-reset" type="button" data-action="chat-persona-reset">恢复默认人设</button>
+        <button class="btn btn--ghost" type="button" data-action="close-chat-settings">取消</button>
+        <button class="btn btn--primary" type="button" data-action="chat-persona-save">保存</button>
       </div>
     </div>
   </div>

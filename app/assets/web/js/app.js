@@ -854,7 +854,7 @@
       { label: 'API Key', value: state.apiKey ? '已配置' : '未配置' },
       { label: 'Base URL', value: state.prefs.baseUrl || 'https://api.deepseek.com' },
       { label: '当前模型', value: labelForModelId(state.prefs.model) },
-      { label: '版本', value: '3.3.0' }
+      { label: '版本', value: '3.4.0' }
     ];
     var profile = loadProfile();
     ui('renderProfile', {
@@ -891,12 +891,21 @@
     state.nav = { screen: 'chat', drawerOpen: false, from: cameFrom };
     ui('showScreen', 'chat');
     ui('setUser', { name: 'DeepSeek 用户' });
-    ui('setModel', state.prefs.model);
+    ui('setModel', resolveChatModel(chat));
     applyModelLabel();
     refreshChatList();
     try { if (typeof Store.clearUnread === 'function') Store.clearUnread(chat.id); } catch (e0) { /* ignore */ }
     refreshChatList();
     ui('renderMessages', chat);
+    /* v3.4.0：顶栏人设名称（内联优先，其次模板） */
+    try {
+      var enterPersona = resolveChatPersona(chat);
+      var enterDisplay = enterPersona.inline || enterPersona.template || null;
+      if (typeof UI !== 'undefined' && UI) {
+        if (typeof UI.setChatPersonaLabel === 'function') UI.setChatPersonaLabel(enterDisplay ? (enterDisplay.name || '') : '', enterDisplay ? (enterDisplay.emoji || '') : '');
+        else if (typeof UI.setChatPersonaName === 'function') UI.setChatPersonaName(enterDisplay ? (enterDisplay.name || '') : '', enterDisplay ? (enterDisplay.emoji || '') : '');
+      }
+    } catch (ePersonaName) { /* ignore */ }
     ui('setChatAvatar', chat);
     ui('setStreaming', false);
     ui('setComposer', { value: '', busy: false });
@@ -1301,6 +1310,15 @@
       onPersonaDelete: safe(function (id) { return deletePersonaById(id); }, 'onPersonaDelete'),
       onChatPickKey: safe(function (keyId) { return pickChatKey(keyId); }, 'onChatPickKey'),
       onChatPickPersona: safe(function (personaId) { return pickChatPersona(personaId); }, 'onChatPickPersona'),
+      /* v3.4.0：会话内联人设 */
+      onOpenChatPersona: safe(function () {
+        var data = getChatPersona();
+        renderChatPersonaPanel(data);
+        return data;
+      }, 'onOpenChatPersona'),
+      onSaveChatPersona: safe(function (cfg) { var res = saveChatPersona(cfg); if (!res) return false; renderChatPersonaPanel(res); return true; }, 'onSaveChatPersona'),
+      onResetChatPersona: safe(function () { var res = resetChatPersona(); if (!res) return false; renderChatPersonaPanel(res); return true; }, 'onResetChatPersona'),
+      onImportPersonaToChat: safe(function (personaId) { var res = importPersonaToChat(personaId); if (!res) return false; renderChatPersonaPanel(res); return true; }, 'onImportPersonaToChat'),
       onCloseMarket: safe(function () { return true; }, 'onCloseMarket'),
       onOpenMemory: safe(function () { return refreshMemoryPage(); }, 'onOpenMemory'),
       onMemorySave: safe(function (scope, key, value) { return saveMemoryItem(scope, key, value); }, 'onMemorySave'),
@@ -1502,7 +1520,7 @@
     ui('setComposer', { value: '', busy: true });
     ui('scrollBottom', true);
     refreshChatList();
-    if (imageList.length && !modelSupportsVision(chat.model || state.prefs.model)) {
+    if (imageList.length && !modelSupportsVision(resolveChatModel(chat))) {
       toast('当前模型可能不支持图片识别，仍将发送', true);
     }
     maybeAutoTitle(chat, trimmed || '图片消息');
@@ -1549,8 +1567,16 @@
         if (authResolved.key.model && !chat.model) sendPrefs.model = authResolved.key.model;
       }
     } catch (eAuth) { warn('解析会话密钥失败：' + errText(eAuth)); }
+    /* v3.4.0：内联人设 model/temperature 优先 */
+    var effectiveModel = resolveChatModel(chat);
+    var effectiveTemp = resolveChatTemperature(chat);
+    sendPrefs.temperature = effectiveTemp;
+    var requestChat = {};
+    var chatKeys = Object.keys(chat);
+    for (var ck = 0; ck < chatKeys.length; ck++) requestChat[chatKeys[ck]] = chat[chatKeys[ck]];
+    requestChat.model = effectiveModel;
     var requestId = Api.send({
-      chat: chat,
+      chat: requestChat,
       messages: messages,
       tools: tools,
       prefs: sendPrefs,
@@ -2603,13 +2629,18 @@
   function resolveSystemPrompt(chat) {
     chat = chat || Store.getActiveChat();
     var base = '';
+    /* v3.4.0：会话内联人设 → personaId 模板 → chat.systemPrompt → preset → prefs */
     if (chat) {
-      var chatPrompt = chat.systemPrompt === null || chat.systemPrompt === undefined ? '' : String(chat.systemPrompt);
-      if (chatPrompt.replace(/\s+/g, '')) base = chatPrompt;
-      else if (chat.presetId) {
-        var preset = findPreset(chat.presetId);
-        var presetPrompt = preset && preset.systemPrompt ? String(preset.systemPrompt) : '';
-        if (presetPrompt.replace(/\s+/g, '')) base = presetPrompt;
+      base = resolvePersonaSystemPrompt(chat);
+      if (!base.replace(/\s+/g, '')) {
+        base = '';
+        var chatPrompt = chat.systemPrompt === null || chat.systemPrompt === undefined ? '' : String(chat.systemPrompt);
+        if (chatPrompt.replace(/\s+/g, '')) base = chatPrompt;
+        else if (chat.presetId) {
+          var preset = findPreset(chat.presetId);
+          var presetPrompt = preset && preset.systemPrompt ? String(preset.systemPrompt) : '';
+          if (presetPrompt.replace(/\s+/g, '')) base = presetPrompt;
+        }
       }
     }
     if (!base) base = state.prefs.systemPrompt || '';
@@ -9705,6 +9736,237 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * v3.4.0：会话内联人设（每会话独立人设 + 独立 Key）
+   * ------------------------------------------------------------------ */
+
+  function normalizeChatPersona(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    var name = String(raw.name === undefined || raw.name === null ? '' : raw.name).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    var emoji = String(raw.emoji === undefined || raw.emoji === null ? '' : raw.emoji).slice(0, 16);
+    var prompt = String(raw.systemPrompt !== undefined ? raw.systemPrompt : (raw.prompt !== undefined ? raw.prompt : ''));
+    var greeting = String(raw.greeting === undefined || raw.greeting === null ? '' : raw.greeting).slice(0, 2000);
+    var model = raw.model ? String(raw.model).trim().slice(0, 80) : '';
+    var hasTemp = raw.temperature !== undefined && raw.temperature !== null && raw.temperature !== '';
+    var temperature = hasTemp ? Number(raw.temperature) : null;
+    if (!name && !emoji && !prompt && !greeting && !model && !hasTemp) return null;
+    var out = {
+      name: name.slice(0, 40),
+      emoji: emoji,
+      systemPrompt: prompt.slice(0, 16000),
+      greeting: greeting
+    };
+    if (model) out.model = model;
+    if (hasTemp && isFinite(temperature)) out.temperature = Math.max(0, Math.min(2, temperature));
+    return out;
+  }
+
+  /** 当前会话的有效人设来源：内联副本优先，其次 personaId 模板 */
+  function resolveChatPersona(chat) {
+    chat = chat || Store.getActiveChat();
+    if (!chat) return { inline: null, template: null, source: 'none' };
+    var inline = chat.persona && typeof chat.persona === 'object' ? chat.persona : null;
+    var template = null;
+    if (chat.personaId) {
+      try { template = Store.getPersona(chat.personaId); } catch (e) { template = null; }
+    }
+    var source = 'none';
+    if (inline) source = 'inline';
+    else if (template) source = 'template';
+    return { inline: inline, template: template, source: source };
+  }
+
+  /** prompt 解析顺序：chat.persona.systemPrompt → personaId 模板 → chat.systemPrompt → preset → prefs */
+  function resolvePersonaSystemPrompt(chat) {
+    var resolved = resolveChatPersona(chat);
+    if (resolved.inline && String(resolved.inline.systemPrompt || '').replace(/\s+/g, '')) return String(resolved.inline.systemPrompt);
+    if (resolved.template && String(resolved.template.systemPrompt || '').replace(/\s+/g, '')) return String(resolved.template.systemPrompt);
+    return '';
+  }
+
+  /** 有效模型：内联 persona.model → personaId 模板 model → chat.model → prefs.model */
+  function resolveChatModel(chat) {
+    chat = chat || Store.getActiveChat();
+    var resolved = resolveChatPersona(chat);
+    if (resolved.inline && resolved.inline.model) return String(resolved.inline.model);
+    if (resolved.template && resolved.template.model) return String(resolved.template.model);
+    if (chat && chat.model) return String(chat.model);
+    return String((state.prefs && state.prefs.model) || 'deepseek-chat');
+  }
+
+  /** 有效温度：内联 persona.temperature → 模板 temperature → chat.temperature → prefs.temperature */
+  function resolveChatTemperature(chat) {
+    chat = chat || Store.getActiveChat();
+    var resolved = resolveChatPersona(chat);
+    if (resolved.inline && resolved.inline.temperature !== undefined && resolved.inline.temperature !== null) return Math.max(0, Math.min(2, Number(resolved.inline.temperature) || 0));
+    if (resolved.template && resolved.template.temperature !== undefined && resolved.template.temperature !== null) return Math.max(0, Math.min(2, Number(resolved.template.temperature) || 0));
+    if (chat && chat.temperature !== undefined && chat.temperature !== null) return Math.max(0, Math.min(2, Number(chat.temperature) || 0));
+    var prefTemp = state.prefs && typeof state.prefs.temperature === 'number' ? state.prefs.temperature : 1;
+    return Math.max(0, Math.min(2, prefTemp));
+  }
+
+  function chatPersonaGreetingInserted(chat, greeting) {
+    var text = String(greeting || '').replace(/\s+/g, '');
+    if (!text || !chat) return false;
+    var messages = chat.messages || [];
+    for (var i = 0; i < messages.length; i++) {
+      var m = messages[i];
+      if (m && m.role === 'assistant' && String(m.content === undefined || m.content === null ? '' : m.content).replace(/\s+/g, '') === text) return true;
+    }
+    return false;
+  }
+
+  function maybeInsertChatGreeting(chat, greeting) {
+    if (!chat || !greeting) return null;
+    var messages = chat.messages || [];
+    if (messages.length) return null;
+    if (chatPersonaGreetingInserted(chat, greeting)) return null;
+    try {
+      var msg = Store.appendMessage(chat.id, { role: 'assistant', content: String(greeting).slice(0, 2000) });
+      if (msg && state.nav && state.nav.screen === 'chat' && Store.getActiveChatId() === chat.id) {
+        try { ui('appendMessage', msg); } catch (e) { /* ignore */ }
+      }
+      return msg;
+    } catch (e2) { warn('插入人设问候失败：' + errText(e2)); return null; }
+  }
+
+  function refreshChatPersonaUI(chat) {
+    if (!chat) return;
+    try {
+      if (state.nav && state.nav.screen === 'chat' && Store.getActiveChatId() === chat.id) {
+        var fresh = Store.getChat(chat.id) || chat;
+        ui('renderMessages', fresh);
+        try { ui('setModel', resolveChatModel(fresh)); } catch (e) { /* ignore */ }
+        try { applyModelLabel(); } catch (e2) { /* ignore */ }
+        setHeader(fresh, '');
+      }
+      refreshChatList();
+    } catch (e3) { warn('刷新会话人设 UI 失败：' + errText(e3)); }
+    var resolved = resolveChatPersona(chat);
+    var display = resolved.inline || resolved.template || null;
+    try {
+      if (typeof UI !== 'undefined' && UI) {
+        if (typeof UI.setChatPersonaLabel === 'function') UI.setChatPersonaLabel(display ? (display.name || '') : '', display ? (display.emoji || '') : '');
+        else if (typeof UI.setChatPersonaName === 'function') UI.setChatPersonaName(display ? (display.name || '') : '', display ? (display.emoji || '') : '');
+        else if (typeof UI.setChatPersona === 'function') UI.setChatPersona(display);
+      }
+    } catch (e4) { /* ignore */ }
+  }
+
+  /** App.getChatPersona(chatId?)：当前会话内联人设 + 全局模板 + Key + 有效值 */
+  function getChatPersona(chatId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    if (!chat) return null;
+    var resolved = resolveChatPersona(chat);
+    var defaultKey = null;
+    try { defaultKey = Store.getDefaultApiKey(); } catch (e) { defaultKey = null; }
+    var resolvedKey = resolveChatApiKey(chat);
+    var keyName = resolvedKey.key ? resolvedKey.key.name : (defaultKey ? defaultKey.name : '');
+    var displayPersona = null;
+    if (resolved.inline) displayPersona = JSON.parse(JSON.stringify(resolved.inline));
+    else if (resolved.template) {
+      displayPersona = {
+        name: resolved.template.name || '',
+        emoji: resolved.template.emoji || '',
+        systemPrompt: resolved.template.systemPrompt || '',
+        greeting: resolved.template.greeting || '',
+        model: resolved.template.model || '',
+        temperature: resolved.template.temperature
+      };
+      if (!displayPersona.temperature) delete displayPersona.temperature;
+    }
+    return {
+      chatId: chat.id,
+      persona: displayPersona,
+      templates: getPersonasView(),
+      personaId: chat.personaId || '',
+      source: resolved.source,
+      keyId: chat.keyId || '',
+      keyName: keyName,
+      resolvedKeyId: resolvedKey && resolvedKey.key ? resolvedKey.key.id : '',
+      effective: {
+        systemPrompt: resolveSystemPrompt(chat),
+        model: resolveChatModel(chat),
+        temperature: resolveChatTemperature(chat)
+      }
+    };
+  }
+
+  /** 渲染「本会话设置」弹层数据：UI.renderChatPersona(扁平cfg, templates) */
+  function renderChatPersonaPanel(data) {
+    if (!data) return;
+    var U = getUI();
+    if (!U || typeof U.renderChatPersona !== 'function') return;
+    var p = data.persona || {};
+    var flat = {
+      chatId: data.chatId,
+      name: p.name || '',
+      emoji: p.emoji || '',
+      systemPrompt: p.systemPrompt || '',
+      greeting: p.greeting || '',
+      model: p.model || '',
+      temperature: p.temperature === undefined ? '' : p.temperature,
+      keyId: data.keyId || '',
+      source: data.source || 'none',
+      effective: data.effective || {}
+    };
+    try { U.renderChatPersona(flat, data.templates || []); } catch (e) { warn('UI.renderChatPersona 异常：' + errText(e)); }
+  }
+
+  /** App.saveChatPersona(cfg)：扁平或 {chatId?,persona:{...},keyId?} 两种兼容 */
+  function saveChatPersona(cfg) {
+    var raw = cfg && typeof cfg === 'object' ? cfg : {};
+    var chat = raw.chatId ? Store.getChat(raw.chatId) : Store.getActiveChat();
+    if (!chat) return false;
+    var personaRaw = raw.persona && typeof raw.persona === 'object' ? raw.persona : raw;
+    var persona = normalizeChatPersona(personaRaw);
+    if (!persona) { toast('人设内容不能为空', true); return false; }
+    var patch = { persona: persona };
+    if (raw.keyId !== undefined) {
+      var keyId = raw.keyId === null ? '' : String(raw.keyId || '');
+      if (keyId && !findApiKeyById(keyId)) { toast('API 密钥不存在', true); return false; }
+      patch.keyId = keyId;
+    }
+    try { Store.updateChat(chat.id, patch); } catch (e) { warn('保存会话人设失败：' + errText(e)); return false; }
+    var fresh = Store.getChat(chat.id);
+    maybeInsertChatGreeting(fresh, persona.greeting);
+    refreshChatPersonaUI(fresh);
+    toast('已保存本会话人设');
+    return getChatPersona(chat.id);
+  }
+
+  /** App.resetChatPersona(chatId?)：清空内联人设与模板引用，跟随默认 prompt */
+  function resetChatPersona(chatId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    if (!chat) return false;
+    try { Store.updateChat(chat.id, { persona: null, personaId: '', personaPrompt: '' }); } catch (e) { warn('重置人设失败：' + errText(e)); return false; }
+    refreshChatPersonaUI(Store.getChat(chat.id));
+    toast('已恢复默认人设');
+    return getChatPersona(chat.id);
+  }
+
+  /** App.importPersonaToChat(personaId, chatId?)：全局模板复制为会话内联副本（不再引用） */
+  function importPersonaToChat(personaId, chatId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    if (!chat) return false;
+    var key = String(personaId === null || personaId === undefined ? '' : personaId);
+    var template = null;
+    try { template = Store.getPersona(key); } catch (e) { template = null; }
+    if (!template) { toast('人设模板不存在', true); return false; }
+    var persona = normalizeChatPersona({
+      name: template.name, emoji: template.emoji,
+      systemPrompt: template.systemPrompt, greeting: template.greeting,
+      model: template.model, temperature: template.temperature
+    });
+    if (!persona) { toast('人设模板内容为空', true); return false; }
+    try { Store.updateChat(chat.id, { persona: persona, personaId: '', personaPrompt: '' }); } catch (e2) { warn('导入人设失败：' + errText(e2)); return false; }
+    var fresh = Store.getChat(chat.id);
+    maybeInsertChatGreeting(fresh, persona.greeting);
+    refreshChatPersonaUI(fresh);
+    toast('已导入人设为会话专属副本');
+    return getChatPersona(chat.id);
+  }
+
+  /* ------------------------------------------------------------------ *
    * DOM ready / 对外接口
    * ------------------------------------------------------------------ */
 
@@ -9875,6 +10137,19 @@
   App.deletePersona = safe(function (id) { return deletePersonaById(id); }, 'App.deletePersona');
   App.applyPersonaToChat = safe(function (chatId, personaId) { return applyPersonaToChat(chatId, personaId); }, 'App.applyPersonaToChat');
   App.pickChatPersona = safe(function (personaId) { return pickChatPersona(personaId); }, 'App.pickChatPersona');
+  /* v3.4.0：会话内联人设 API */
+  App.getChatPersona = function (chatId) { return getChatPersona(chatId); };
+  App.saveChatPersona = safe(function (cfg) { return saveChatPersona(cfg); }, 'App.saveChatPersona');
+  App.resetChatPersona = safe(function (chatId) { return resetChatPersona(chatId); }, 'App.resetChatPersona');
+  App.importPersonaToChat = safe(function (personaId, chatId) { return importPersonaToChat(personaId, chatId); }, 'App.importPersonaToChat');
+  App.resolveChatModel = function (chatId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    return resolveChatModel(chat);
+  };
+  App.resolveChatTemperature = function (chatId) {
+    var chat = chatId ? Store.getChat(chatId) : Store.getActiveChat();
+    return resolveChatTemperature(chat);
+  };
   App.openPersonasPage = safe(function () { return openPersonasPage(); }, 'App.openPersonasPage');
   App.showMarketPage = safe(function () { return showMarketPage(); }, 'App.showMarketPage');
   App.fetchMarketIndex = safe(function (url) { return fetchMarketIndex(url); }, 'App.fetchMarketIndex');

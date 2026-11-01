@@ -9607,3 +9607,203 @@ html.glass-frost .persona-card {
   -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
   backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
 }
+
+/* ==========================================================================
+   v3.4.0：本会话独立人设 + 独立 Key
+   ========================================================================== */
+
+.chat-persona-btn {
+  background-color: rgba(79, 208, 91, 0.1);
+  color: #8fe897;
+  max-width: 110px;
+}
+
+.chat-persona-emoji {
+  flex: none;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.chat-persona-btn #chat-persona-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 本会话设置弹层 */
+.chat-persona-picker .chat-persona-sheet {
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-persona-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+.chat-persona-source {
+  margin-bottom: 8px;
+}
+
+.chat-persona-source span {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background-color: rgba(81, 122, 246, 0.14);
+  color: #9db6ff;
+  font-size: 10.5px;
+  line-height: 1.7;
+}
+
+.chat-persona-source.is-inline span {
+  background-color: rgba(79, 208, 91, 0.12);
+  color: #8fe897;
+}
+
+.chat-persona-source.is-default span {
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #9aa0a6;
+}
+
+.chat-persona-grid {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.chat-persona-grid .form-row--col:first-child {
+  max-width: 76px;
+}
+
+.chat-persona-import {
+  margin-top: 6px;
+}
+
+.chat-persona-import-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: #b9b9b9;
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+
+.chat-persona-import-toggle svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 160ms var(--ease);
+}
+
+.chat-persona-import-toggle.is-open svg {
+  transform: rotate(180deg);
+}
+
+.chat-persona-templates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.chat-persona-template {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.04);
+  text-align: left;
+}
+
+.chat-persona-template-emoji {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background-color: rgba(79, 208, 91, 0.1);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.chat-persona-template-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-persona-template-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.chat-persona-template-desc {
+  overflow: hidden;
+  color: #8b8b8b;
+  font-size: 10.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-persona-template-import {
+  flex: none;
+  color: #9db6ff;
+  font-size: 11px;
+}
+
+.chat-persona-templates-empty {
+  padding: 10px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.04);
+  color: #8b8b8b;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.chat-persona-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 9px 12px calc(9px + var(--safe-bottom));
+  border-top: 1px solid var(--divider);
+  background-color: rgba(26, 27, 31, 0.9);
+}
+
+.chat-persona-actions .btn {
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 11px;
+  font-size: 13px;
+}
+
+.chat-persona-actions .chat-persona-reset {
+  flex: 0 0 auto;
+  color: #f0b256;
+}
+
+.chat-persona-actions .btn--primary {
+  flex: 1 1 auto;
+}
+
+/* 液态玻璃 */
+html.glass-liquid .chat-persona-sheet,
+html.glass-liquid .chat-persona-actions,
+html.glass-frost .chat-persona-sheet {
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}
